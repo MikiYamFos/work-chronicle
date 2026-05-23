@@ -1,0 +1,31 @@
+# API keys and config
+.env
+.env.*
+
+# Personal data — not for public repo
+paragraphs.md
+paragraphs_new.md
+library.md
+library_refined.md
+experiences.md
+candidate_profile.toml
+resume_bullets.md
+corrections.md
+story_notes.md
+
+# Generated output
+output/
+
+# Dev/build artifacts
+.venv/
+.pytest_cache/*
+coverletter.egg-info/
+__pycache__/
+*.pyc
+.DS_Store
+
+# Local tool config
+.claude/
+
+# Session memory (internal)
+memory/*
