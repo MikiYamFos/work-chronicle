@@ -22,6 +22,20 @@ _BAD_PATTERNS: list[tuple[str, str]] = [
     (r"how (did|do) you feel about", "asks for feelings — ask about decisions or consequences instead"),
     # Open-ended "walk me through" process questions — produce summaries, not evidence
     (r"^(can you )?(walk me through|take me through|describe the process of)", "asks for a process walkthrough — ask about a specific decision, failure, or consequence instead"),
+    # Breakage/failure narrative imposed on tool competence gaps
+    # These patterns assume a problem-solution story when none exists.
+    (r"\bwhat (broke|was breaking|was failing|was missing|was wrong|stopped working|went wrong|went down|crashed|wasn.t working)\b", "assumes a breakage narrative — only ask about failures if the person described a production incident; for tool/competence gaps ask what they BUILT"),
+    (r"\bwhat (became|was) impossible\b", "assumes a failure narrative — ask what they built or owned instead"),
+    (r"\bwhat (couldn.t|could not|can.t|cannot) (you |the team |the business )?(do|happen|work)", "assumes something was blocked — for competence gaps ask what they built, not what couldn't happen without them"),
+    (r"\bbefore you (introduced|added|implemented|set up|built|created)\b", "assumes the tool was introduced to fix a problem — ask what they built with it instead"),
+    # Technology/service inventory questions
+    (r"what specific (aws|gcp|azure|cloud) (services|tools|resources)", "asks for a service inventory — ask about a specific system they built in that environment instead"),
+    (r"which (aws|gcp|azure|cloud) services", "asks for a service inventory — ask about a specific system they built instead"),
+    # Asking why they chose a tool over another — produces rationale, not evidence
+    (r"(what|why) (did|do|would) (the|that tool|prefect|airflow|dbt|spark|redshift|bigquery).{0,40}(couldn.t|could not|not handle|not have|not support|instead)", "asks why one tool was chosen over another — only ask this if they described a specific constraint that drove the choice; otherwise ask what they built"),
+    # "X could not have handled Y as well" / "X just the right tool" phrasing
+    (r"(could not|couldn.t) have (handled|done|supported).{0,40}(as well|instead|better)", "asks about tool limitations — for competence gaps ask what they built, not what the alternative couldn't do"),
+    (r"(just the right|the better) tool for", "asks about tool selection rationale — for competence gaps ask what they built with the tool"),
 ]
 
 
@@ -42,20 +56,38 @@ def check_patterns(question: str) -> str | None:
 
 _JUDGE_SYSTEM = """\
 You are judging whether a Q&A question will surface concrete, memorable evidence \
-for a cover letter paragraph.
+for a cover letter paragraph. The context tells you what gap or topic is being covered.
 
-A GOOD question:
+GAP TYPE CHANGES WHAT A GOOD QUESTION LOOKS LIKE:
+
+COMPETENCE/TOOL GAPS — context mentions "expertise in X", "proficiency with X", \
+"experience with X", or names specific tools (dbt, Airflow, GCP, AWS, Spark, etc.):
+  GOOD: asks what they built or owned using that tool — "What does the Airflow DAG do?"
+  BAD: asks what broke, what was missing before, why they chose it over another tool,
+       what the tool replaced, what became impossible without it.
+  Competence gaps are about demonstrating capability, not solving a crisis.
+
+PROJECT/PRODUCTION GAPS — context mentions "owns pipelines", "production experience", \
+"system design", "data modeling", incident response:
+  GOOD: specific constraint, failure mode, design decision, or production consequence.
+  Breakage and failure questions ARE appropriate here.
+
+IMPACT/SENIORITY GAPS — context mentions "business impact", "drove decisions", \
+"stakeholder outcomes", "seniority signals":
+  GOOD: what changed or became possible after the work — decision made, team unblocked.
+  BAD: what broke, what was missing — ask about what was ENABLED.
+
+A GOOD question regardless of gap type:
 - Is answerable from memory without needing to check records
-- Surfaces something that proves ownership, stakes, decision-making, or impact
-- Gets a specific answer (a situation, a consequence, a constraint, a decision)
-- Could produce a sentence that would belong in a strong cover letter
+- Gets a specific answer (situation, consequence, constraint, decision, or system)
+- Could produce a sentence that belongs in a strong cover letter
 
-A BAD question:
-- Asks for counts, numbers, or metrics the person likely can't recall
-- Asks for process descriptions ("walk me through") that produce summaries
+A BAD question regardless of gap type:
+- Asks for counts, numbers, or percentages
+- Asks for process walkthroughs ("walk me through")
 - Asks for self-reflection ("what did you learn", "what are you proud of")
 - Is so vague the answer could apply to any job
-- Would produce a generic, interchangeable answer
+- Is a rephrasing of a question already asked in this conversation
 
 Return ONLY valid JSON: {"pass": true} or {"pass": false, "reason": "one sentence"}
 """

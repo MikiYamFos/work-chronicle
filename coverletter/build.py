@@ -52,23 +52,26 @@ role this experience lives in — because it is a gap and nothing is recorded �
 role or company it applies to, or leave it open so the person can answer with whatever \
 examples they have. Never assume a company when you do not know.
 
-GOOD QUESTIONS ask about:
-- The specific constraint, failure, or decision that made this harder than it looked
-- Who depended on the output and what they could not do without it
-- What broke or was at risk when something went wrong
-- What the team or business gained access to after it shipped
-- Scope expressed as consequence and ownership, not inventory counts
+GOOD QUESTIONS depend on gap type — read the gap before asking anything:
 
-GOOD QUESTIONS also surface who the person is — not just what the project did. When you \
-have the core project facts but one exchange remains, consider:
-- "You [described specific choice they made] — what made you go that direction rather \
-than [the obvious alternative]?" — surfaces judgment and how they think
-- "What did you notice about [specific situation they described] that wasn't obvious?" \
-— surfaces observation style and what they attend to
-- "What would you do differently now?" — only when the experience they described had a \
-real failure or constraint; produces real judgment, not generic reflection
-Do NOT ask these as generic openers. Only ask when the person has given you specific \
-material that anchors the question.
+FOR TOOL/COMPETENCE GAPS ("needs X expertise", "proficiency in X", "experience with X"):
+  Ask what they BUILT or OWNED using that tool.
+  "What does the Airflow DAG do and how is it structured?" is correct.
+  NEVER ask: what broke, what was missing before, why they chose it over alternatives.
+  These assume a problem-solution narrative that may not exist for a competence gap.
+
+FOR SYSTEM/PROJECT GAPS ("owns pipelines", "production experience", "data modeling depth"):
+  Ask about the specific constraint or design decision that made it hard.
+  Who depended on the output. What the team gained access to after it shipped.
+  Scope as consequence and ownership, not inventory counts.
+
+FOR IMPACT/SENIORITY GAPS ("business impact", "drove decisions", "stakeholder outcomes"):
+  Ask what became POSSIBLE after the work shipped — decision made, team unblocked, metric moved.
+  Not "what broke" — what changed for the better.
+
+SURFACING JUDGMENT — only when you have specific facts from their answer to anchor it:
+  "You chose X over Y — what made you go that direction?" surfaces how they think.
+  Do NOT use as a generic opener. Only when they gave you something concrete to build from.
 
 BAD QUESTIONS — never ask these:
 - "How many X did you build/write/own?" — inventory counts the person may not recall
@@ -83,9 +86,29 @@ BAD QUESTIONS — never ask these:
   when the alert fired?" — you already know: the team knew the data was late.
 - Anything about what the team or stakeholders did with a signal/result you already
   understand — focus on what was technically hard, not on recapping obvious outcomes
+- "What broke or became impossible when X wasn't working?" — this is a default fallback
+  that fits almost nothing. Only ask about breakage when the person has already described
+  a system failure or production incident. Do not apply it to competence gaps, tool
+  experience, or cloud environment gaps where nothing broke.
+- Rephrasing the same question you already asked in different words. If the person
+  answered it once, draft — do not ask a synonym of the same question.
+- Assuming a problem-solution narrative when the gap is about demonstrating competence.
+  "What was breaking before you introduced Airflow?" assumes Airflow fixed a crisis.
+  If the context is "I know this tool," ask what they BUILT with it.
+- Asking for service or technology inventories: "What specific AWS services have you
+  worked with?" is an inventory question. Ask about a specific project or system they
+  built in that environment instead.
+- Asking a question when the person has already given you a draftable claim. If they say
+  "I have worked in four major cloud environments and I can work in all of them," that IS
+  a paragraph claim. Ask the one question needed to name the environments and draft — do
+  not ask multiple narrow follow-ups about each one.
 
 IMPORTANT NUANCES:
 - Do not force "production environment" framing onto personal projects.
+- PERSONAL PROJECTS: if a project is a personal project (not an employer), the draft must
+  label it clearly as such: "For my personal project...", "In a personal project...".
+  Do NOT present personal projects as employer engagements. If you are not certain whether
+  something is a personal project or an employer, ask before drafting — do not assume.
 - If the context includes a JD gap, focus questions on surfacing experience that \
   speaks to that specific gap and angle.
 - If the context includes an EXPERIENCE FRAMING BLOCK (raw facts + covered/missing angles): \
@@ -93,14 +116,13 @@ IMPORTANT NUANCES:
   Target your questions specifically at the MISSING angles listed. \
   Use the raw facts as grounding so your questions are concrete, not generic.
 
-WHEN TO DRAFT: after 3 substantive exchanges, write DRAFT on a line by itself, \
+WHEN TO DRAFT: after 2 substantive exchanges, write DRAFT on a line by itself, \
 then write the paragraph immediately after. COUNT YOUR EXCHANGES. If you have asked \
-3 questions and received 3 answers, your next output MUST be a draft. \
+2 questions and received 2 answers, your next output MUST be a draft. No exceptions. \
 If asked to draft at any point, draft immediately — do not ask any more questions. \
-When the person has given you a detailed answer describing what they built, who used \
-it, and what it did, that counts as sufficient — draft from it. Early drafting is a \
-failure — do not draft after 1 or 2 exchanges unless the person says 'draft' or \
-has given you a complete picture with no obvious follow-up questions.
+When the person has given you a detailed answer after the first exchange, that is \
+sufficient — draft from it. Do not ask a second question if the first answer gave \
+you a complete picture. Asking the same thing twice in different words is a hard failure.
 
 THE PARAGRAPH IS A COVER LETTER PARAGRAPH — it must carry argumentative weight and \
 read with energy and voice. Dry recitation of facts is a failure. Open with a concrete, \
@@ -466,7 +488,7 @@ def _call_model(client, model: str, messages: list[dict], system: str = BUILD_SY
     """Single model call — separated so the retry loop can call it cleanly."""
     kwargs: dict = dict(
         model=model,
-        max_tokens=2048,
+        max_tokens=4096,
         system=[{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}],
         tools=_TOOLS,
         messages=messages,
@@ -588,22 +610,33 @@ def qa_turn(
 _DRAFT_RULES_REMINDER = """\
 Draft the paragraph now from what was said in this conversation.
 
-BEFORE YOU WRITE — check each rule:
-1. FIRST SENTENCE: must name what was BUILT, OWNED, or DECIDED at a specific company or \
-project. "At Acme Corp, I owned..." is correct. "GCP was my foundation..." is wrong. \
-"I have worked seriously in..." is wrong. If your first sentence does not name a specific \
-company and a specific action, rewrite it.
-2. DO NOT INVENT: every factual claim must trace to something said in this conversation. \
-Do not use phrases or details from library search results. If the person did not say it \
-in this conversation, leave it out.
-3. USE THEIR WORDS: use the person's actual language and level of abstraction. Do not \
+This is a CAPTURE draft — the goal is preserving everything said, not polishing it.
+
+1. DO NOT INVENT: every factual claim must trace to something said in this conversation. \
+Do not use phrases or details from library search results.
+2. USE THEIR WORDS: use the person's actual language and level of abstraction. Do not \
 translate it into polished resume speak.
-4. NO PADDING: cut any sentence that summarizes or restates without adding specific evidence.
-5. BANNED: em-dashes (—), sentences starting with "That", "actually", "not just", \
-"not only", "not simply", fake contrast ("not X but Y").
+3. INCLUDE ALL DETAIL: every specific technical detail, fact, explanation, and nuance \
+the person provided must appear. If they explained something in depth, include it in full. \
+Do not compress, summarize, or cut any of it. Length is fine — completeness matters more \
+than concision at this stage.
+4. DO NOT EDITORIALIZE: do not add framing, conclusions, or structure the person did not \
+explicitly provide.
 
 Write DRAFT on its own line, then the paragraph immediately after.\
 """
+
+
+def _looks_like_question(text: str) -> bool:
+    """Return True if text appears to be a question rather than a draft paragraph."""
+    stripped = text.strip()
+    # A question: short, ends with ?, no newlines (a paragraph would be multi-sentence)
+    if stripped.endswith("?") and len(stripped.split()) < 40:
+        return True
+    # Multiple sentences but starts with a question word and ends with ?
+    if stripped.endswith("?") and _re.match(r'^(what|who|when|where|why|how|which|did|was|were|is|are|can|could|would)\b', stripped, _re.IGNORECASE):
+        return True
+    return False
 
 
 def force_draft(
@@ -614,11 +647,27 @@ def force_draft(
     voyage_api_key: str = "",
     system: str = BUILD_SYSTEM,
 ) -> str:
-    """Force a draft from current history regardless of exchange count."""
+    """Force a draft from current history regardless of exchange count.
+
+    If the model returns a question instead of a draft, retries once with a
+    harder instruction before returning whatever it gave us.
+    """
     forced = history + [{"role": "user", "content": _DRAFT_RULES_REMINDER}]
     draft, raw = qa_turn(forced, api_key, model, all_paragraphs, voyage_api_key=voyage_api_key, system=system)
-    # If the model drafted without the marker, raw contains the paragraph text
-    return draft or raw or ""
+    if draft:
+        return draft
+    # raw may be a question — if so, retry with an explicit "no questions" override
+    if raw and _looks_like_question(raw):
+        harder = history + [{"role": "user", "content": (
+            _DRAFT_RULES_REMINDER +
+            "\n\nDO NOT ASK A QUESTION. Write the paragraph. "
+            "If you need more information you do not have, write the best paragraph possible "
+            "from what was already said and mark any uncertain claim with [?]."
+        )}]
+        draft2, raw2 = qa_turn(harder, api_key, model, all_paragraphs, voyage_api_key=voyage_api_key, system=system)
+        return draft2 or raw2 or raw
+    # raw is a paragraph without the DRAFT marker — acceptable
+    return raw or ""
 
 
 def _build_initial_context(

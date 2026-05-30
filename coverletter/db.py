@@ -105,6 +105,32 @@ CANONICAL_ANGLES: dict[str, str] = {
         "working backwards from what someone needs to understand, figuring out what the problem "
         "actually is before trying to solve it. Thriving when the path is not obvious."
     ),
+    "problem-definition": (
+        "Identifying what the actual problem was before anyone else had framed it correctly — "
+        "recognizing that the stated requirement was a symptom, not the root cause, and doing "
+        "the upstream work to redefine the question itself. I figured out what we were solving "
+        "before we built anything, and that reframing changed what got built."
+    ),
+    "trust": (
+        "Being the person whose numbers had to be right — not approximately right, not "
+        "directionally correct, but exact and defensible. The output fed executive decisions, "
+        "campaign results, or public-facing products, and the accountability for its accuracy "
+        "was mine personally, not shared or buffered. The number had to be right and I made "
+        "sure it was."
+    ),
+    "recovery": (
+        "Stepping into something already broken, wrong, or on fire and making it right — "
+        "diagnosing a data failure in production, rebuilding a corrupted migration, correcting "
+        "a reporting error before it became a crisis, staying with the problem until the system "
+        "was back to a state I would stand behind. Includes understanding why it broke and "
+        "building the safeguards that prevented recurrence."
+    ),
+    "scope-expansion": (
+        "Doing significantly more than my title or role formally required — owning systems, "
+        "functions, or decisions that belonged above my level, filling gaps nobody else was "
+        "filling, covering scope that was not in my job description but needed to happen and "
+        "I made it happen. I did the job of a more senior person without the title or support."
+    ),
 }
 
 # ---------------------------------------------------------------------------
@@ -165,12 +191,25 @@ CREATE TABLE IF NOT EXISTS sentence_embeddings (
     indexed_at   TEXT DEFAULT (datetime('now'))
 );
 
+-- Raw Q&A responses captured during build/gap sessions.
+-- Linked to the paragraph they produced via para_text_hash.
+-- Source of truth for claim extraction — preserves detail that may have been
+-- compressed in the refined paragraph text.
+CREATE TABLE IF NOT EXISTS raw_responses (
+    id              INTEGER PRIMARY KEY,
+    para_text_hash  TEXT,                           -- paragraph produced from this session (may be NULL if not yet saved)
+    session_topic   TEXT,                           -- gap description or build topic
+    responses_md    TEXT NOT NULL,                  -- full Q&A as markdown: Q then A alternating
+    captured_at     TEXT DEFAULT (datetime('now'))
+);
+
 CREATE INDEX IF NOT EXISTS idx_para_hash       ON paragraphs(text_hash);
 CREATE INDEX IF NOT EXISTS idx_para_source     ON paragraphs(source_file, active);
 CREATE INDEX IF NOT EXISTS idx_para_type       ON paragraphs(type, active);
 CREATE INDEX IF NOT EXISTS idx_para_angle      ON paragraphs(angle, active);
 CREATE INDEX IF NOT EXISTS idx_para_angles_ang ON paragraph_angles(angle);
 CREATE INDEX IF NOT EXISTS idx_sent_para       ON sentences(paragraph_id);
+CREATE INDEX IF NOT EXISTS idx_raw_para_hash   ON raw_responses(para_text_hash);
 """
 
 
@@ -201,6 +240,46 @@ def open_db(path: Path) -> sqlite3.Connection:
     conn.executescript(_SCHEMA)
     conn.commit()
     return conn
+
+
+def save_raw_response(
+    conn: "sqlite3.Connection",
+    history: list[dict],
+    topic: str,
+    para_text_hash: str | None = None,
+) -> None:
+    """Save the user's raw Q&A answers from a build/gap session to the DB.
+
+    Formats the conversation as alternating Q (assistant) / A (user) markdown,
+    preserving every word the person said before it gets compressed into a draft.
+    Only captures human-readable turns — skips system messages and tool calls.
+    """
+    lines: list[str] = []
+    for msg in history:
+        if not isinstance(msg.get("content"), str):
+            continue  # skip tool results and structured content
+        role = msg["role"]
+        text = msg["content"].strip()
+        if not text:
+            continue
+        # Skip the very first system-context message (topic/JD framing)
+        if role == "user" and lines == [] and len(text) > 400:
+            continue
+        if role == "assistant":
+            # Coach question — render as prompt
+            lines.append(f"**Q:** {text}\n")
+        elif role == "user":
+            lines.append(f"**A:** {text}\n")
+
+    if not lines:
+        return
+
+    responses_md = "\n".join(lines)
+    conn.execute(
+        "INSERT INTO raw_responses (para_text_hash, session_topic, responses_md) VALUES (?, ?, ?)",
+        (para_text_hash, topic, responses_md),
+    )
+    conn.commit()
 
 
 def db_path(paragraphs_files: list[Path]) -> Path:
@@ -616,6 +695,175 @@ def query_sentences(
         })
 
     return results
+
+
+def paragraph_hash(text: str) -> str:
+    """Public wrapper — same hash used when syncing from markdown."""
+    return _hash(text)
+
+
+def rank_paragraphs_by_sentences(
+    conn: sqlite3.Connection,
+    query_text: str,
+    voyage_api_key: str,
+    model: str = "voyage-3-lite",
+) -> dict[str, float]:
+    """Return {text_hash: best_sentence_score} for all paragraphs with sentence embeddings.
+
+    Score is the highest cosine similarity of any sentence in the paragraph against
+    the query. Use this to re-rank a prefiltered paragraph list with sentence-level
+    precision — more targeted than paragraph-level embeddings alone.
+    """
+    rows = conn.execute(
+        """SELECT p.text_hash, se.vector
+           FROM sentences s
+           JOIN sentence_embeddings se ON s.id = se.sentence_id
+           JOIN paragraphs p ON s.paragraph_id = p.id
+           WHERE p.active = 1"""
+    ).fetchall()
+
+    if not rows:
+        return {}
+
+    try:
+        import voyageai  # type: ignore
+        client = voyageai.Client(api_key=voyage_api_key)
+        result = client.embed([query_text], model=model, input_type="query")
+        query_vec = result.embeddings[0]
+    except Exception:
+        return {}
+
+    best: dict[str, float] = {}
+    for row in rows:
+        score = _cosine(query_vec, json.loads(row["vector"]))
+        h = row["text_hash"]
+        if score > best.get(h, -1.0):
+            best[h] = score
+
+    return best
+
+
+def build_angle_evidence(
+    conn: sqlite3.Connection,
+    jd_text: str,
+    voyage_api_key: str,
+    top_angles: int = 4,
+    sentences_per_angle: int = 3,
+    model: str = "voyage-3-lite",
+    thesis_text: str | None = None,
+) -> list[dict]:
+    """Return angle-organized evidence for letter synthesis.
+
+    Scores canonical angles against the JD to find the top argument categories
+    the role needs, then retrieves the most JD-relevant sentences from paragraphs
+    tagged with each angle — with a sentence of context on each side for grounding.
+
+    One sentence per source paragraph (forces diversity across experiences).
+
+    Returns:
+        [
+            {
+                "angle": "ownership",
+                "sentences": [
+                    {
+                        "text": "I owned the pipeline...",   # key sentence
+                        "context_before": "...",             # sentence before (or "")
+                        "context_after": "...",              # sentence after (or "")
+                        "role": "Data Engineer",
+                        "section": "Voter File",
+                    },
+                    ...
+                ]
+            },
+            ...
+        ]
+    """
+    try:
+        import voyageai  # type: ignore
+        client = voyageai.Client(api_key=voyage_api_key)
+    except (ImportError, Exception):
+        return []
+
+    # Score each canonical angle description against the JD (+ thesis beacon when available)
+    angle_names = list(CANONICAL_ANGLES.keys())
+    angle_descriptions = list(CANONICAL_ANGLES.values())
+
+    # Combining the provisional argument with the JD gives the query more semantic
+    # specificity — angles are ranked against what the letter SHOULD argue, not just
+    # what the JD mentions. This focuses sentence retrieval on the argument that matters.
+    query_text = f"{thesis_text}\n\n{jd_text}" if thesis_text else jd_text
+
+    try:
+        jd_result = client.embed([query_text], model=model, input_type="query")
+        jd_vec = jd_result.embeddings[0]
+        desc_result = client.embed(angle_descriptions, model=model, input_type="document")
+    except Exception:
+        return []
+
+    angle_scores = sorted(
+        zip(angle_names, desc_result.embeddings),
+        key=lambda x: _cosine(jd_vec, x[1]),
+        reverse=True,
+    )
+    top_angle_names = [name for name, _ in angle_scores[:top_angles]]
+
+    result = []
+    for angle in top_angle_names:
+        # Fetch all sentences from paragraphs tagged with this angle
+        rows = conn.execute(
+            """SELECT s.id, s.text, s.position, s.paragraph_id,
+                      p.role, p.section, se.vector
+               FROM sentences s
+               JOIN sentence_embeddings se ON s.id = se.sentence_id
+               JOIN paragraphs p ON s.paragraph_id = p.id
+               JOIN paragraph_angles pa ON p.id = pa.paragraph_id
+               WHERE pa.angle = ? AND p.active = 1""",
+            (angle,),
+        ).fetchall()
+
+        if not rows:
+            continue
+
+        # Score each sentence against the JD and sort best first
+        scored = sorted(
+            rows,
+            key=lambda r: _cosine(jd_vec, json.loads(r["vector"])),
+            reverse=True,
+        )
+
+        # Take top sentences_per_angle sentences — at most one per source paragraph
+        # to force diversity of evidence across different experiences
+        sentences = []
+        seen_paragraphs: set[int] = set()
+        for row in scored:
+            if len(sentences) >= sentences_per_angle:
+                break
+            if row["paragraph_id"] in seen_paragraphs:
+                continue
+            seen_paragraphs.add(row["paragraph_id"])
+
+            # Get one sentence of context on each side (by stored position)
+            ctx = {
+                r["position"]: r["text"]
+                for r in conn.execute(
+                    """SELECT position, text FROM sentences
+                       WHERE paragraph_id = ? AND position BETWEEN ? AND ?
+                       ORDER BY position""",
+                    (row["paragraph_id"], row["position"] - 1, row["position"] + 1),
+                )
+            }
+            sentences.append({
+                "text": row["text"],
+                "context_before": ctx.get(row["position"] - 1, ""),
+                "context_after": ctx.get(row["position"] + 1, ""),
+                "role": row["role"],
+                "section": row["section"],
+            })
+
+        if sentences:
+            result.append({"angle": angle, "sentences": sentences})
+
+    return result
 
 
 def query_similar(

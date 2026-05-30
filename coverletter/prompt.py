@@ -2,6 +2,7 @@ import re
 from collections import Counter
 from collections.abc import Sequence
 
+from coverletter.db import CANONICAL_ANGLES
 from coverletter.parser import Paragraph
 
 # Angle tags that mark a paragraph as narrative frame rather than skill evidence.
@@ -43,22 +44,33 @@ THE OPENER IS ALWAYS WRITTEN FRESH:
 Do not copy an opener paragraph from the source library. Use the library opener paragraphs
 as voice and style reference only — absorb the candidate's voice, register, and concrete
 claim style, then write a new opener paragraph that:
-- CONNECTS THE CANDIDATE TO THIS SPECIFIC EMPLOYER FIRST. The opener is about why THIS
-  company and THIS role, not about the candidate's background. Lead with what this
-  organization does, what about their work connects to the candidate's, and why this is
-  the right fit — not with credentials or previous employers.
+
+- OPENS WITH THE CANDIDATE, NOT WITH THE EMPLOYER. The opener is not a tribute to the
+  organization. Do not explain why the company matters, summarize their mission, or praise
+  their work. That is filler. Lead with what the CANDIDATE has specifically been doing —
+  a concrete pattern, constraint, or type of problem they have worked on — and then name
+  why this role is the right place to do more of it. The company is named as the target,
+  not praised as the subject.
+- CONCRETE MEANS SPECIFIC TO THIS PERSON. Not an adjective anyone could claim. "Worked
+  with high-stakes data," "built consequential systems," "operated in critical environments"
+  are not concrete claims — they are generic adjectives that describe nothing specific about
+  this candidate. A concrete opener names the specific type of work they did, the specific
+  role they played, the specific constraint they operated under, or the specific decision
+  they had to make. It should be something another engineer with a different background
+  could NOT have written.
+- The connection to this employer must be EARNED, not asserted. "My background aligns with
+  your mission" is an assertion. A sentence that says what the candidate has actually been
+  doing and what that has in common with what this role requires is earned. The reader
+  should be able to see why this candidate is writing to this employer specifically — not
+  because the candidate said so, but because the candidate's work makes it obvious.
 - Does NOT name previous employers — those belong in body paragraphs
-- Does NOT open with the candidate's credentials or employment history
-- Sets up the body argument by establishing the connection to this role
+- Does NOT open with "I am excited to apply", the job title, or a credential summary
+- Does NOT echo the employer's own language back at them — no paraphrased mission
+  statements, no JD vocabulary, no internal team names. If the first sentence could appear
+  on the employer's own website, rewrite it.
+- Sets up the body argument — what follows should feel like proof of what the opener claimed
 - Uses the candidate's actual voice and phrasing patterns from the library openers
 - Is 3-5 sentences
-- Never opens with "I am excited to apply" or restates the job title
-- NEVER quotes or paraphrases the JD back at the employer. Do not echo their mission
-  statement, their team names, or their role description language. Describe what the
-  organization does in the candidate's own words — if it sounds like it came from the
-  JD, rewrite it. Internal org names from the JD (e.g. "Data Platform Mission",
-  "People Analytics Team") are not a connection point — they are org chart labels.
-  Do not use them as if they are meaningful.
 
 THE CLOSER IS ALWAYS WRITTEN FRESH:
 Do not copy a closer paragraph from the source library. Write a fresh closer that:
@@ -104,9 +116,33 @@ BANNED STRUCTURES:
     phrases may appear in source paragraphs and can be included verbatim — but do NOT
     write them yourself. Passion is color, not an argument.
 
+═══ ARGUMENT EVIDENCE ═══
+When `=== ARGUMENT TARGET ===` and `=== ARGUMENT EVIDENCE ===` appear in the user message,
+the letter body is assembled from the evidence sentences. The paragraph library contains only
+opener, closer, and narrative-frame paragraphs — no body evidence paragraphs are present.
+
+ARGUMENT TARGET: the single argument every body paragraph builds toward.
+
+ARGUMENT EVIDENCE: the complete build material for all body paragraphs.
+- Each `── ANGLE ──` block = one body paragraph
+- `→` = the key sentence for that argument. Use it verbatim.
+- Indented lines = context sentences from the same source. Use them verbatim for coherence.
+- Do NOT write any body sentence that does not appear verbatim in this block
+- Do NOT combine `→` sentences from different angle blocks into one paragraph
+- Do NOT paraphrase, summarize, or smooth — use the sentences as written
+- Every body sentence is traceable to a specific line in the evidence block. No exceptions.
+
+When no argument evidence is present: SELECT 3-4 body paragraphs from the library following
+STEP A (explicit JD requirements first) then STEP B (best argument fit).
+
 ═══ ASSEMBLY RULES ═══
 1. Write a fresh opener paragraph in the candidate's voice (see opener rules above).
-2. SELECT 3-4 body paragraphs from the source library. Follow this priority order:
+   When an ARGUMENT TARGET is present, the opener must set up THAT specific argument.
+2. When ARGUMENT EVIDENCE is present: build 3-4 body paragraphs from the evidence sentences only.
+   The library contains no body paragraphs in this mode — do not try to select them.
+   See ARGUMENT EVIDENCE above for assembly rules.
+   When no ARGUMENT EVIDENCE is present: SELECT 3-4 body paragraphs from the library.
+   Follow this priority order (library selection mode only):
 
    STEP A — COVER EXPLICIT JD REQUIREMENTS FIRST.
    Scan the JD for named technologies, tools, and explicit qualifications (e.g. "Expert
@@ -140,10 +176,15 @@ BANNED STRUCTURES:
 
 ═══ COVER LETTER STRUCTURE ═══
 A strong cover letter is a hiring argument, not a credential summary.
-- OPENER (synthesized fresh): Connects the candidate to THIS employer specifically. Leads
-  with what this organization does and why it connects to the candidate's work — NOT with
-  the candidate's background or previous employers. Sets up the body argument.
-  3-5 sentences. Voice matches the library opener paragraphs. No previous employer names.
+- OPENER (synthesized fresh): Opens with the CANDIDATE — a concrete pattern or type of work
+  they have been doing — then names why THIS employer is the right place for more of it.
+  NOT a tribute to the organization. NOT a paraphrase of their mission. The company is the
+  target, not the subject. The connection must be earned by the candidate's work, not
+  asserted. 3-5 sentences. Voice matches the library opener paragraphs. No previous employer
+  names. Nothing that could have come from the employer's own website.
+  CONCRETE: names the specific type of work, role, constraint, or decision — not a
+  generic quality-adjective ("high-stakes data," "consequential systems," "critical
+  infrastructure") that any data engineer at any company could claim.
 - BODY (3-4 paragraphs, assembled from source): Each proves one specific part of the
   argument with evidence. Each opens with a concrete claim. Each closes by landing its
   point — not trailing off into a list or a vague summary. Every sentence from source.
@@ -531,6 +572,8 @@ def build_user_message(
     values: list[str] | None = None,
     goals: list[str] | None = None,
     avoid: list[str] | None = None,
+    angle_evidence: list[dict] | None = None,  # from db.build_angle_evidence — JD-specific, not cached
+    argument: str | None = None,  # provisional argument target — beacon for assembly
 ) -> list[ContentBlock]:
     """Return structured content blocks with the library portion marked as cacheable.
 
@@ -552,12 +595,34 @@ def build_user_message(
         for item in goals:
             library_lines.append(f"- {item}")
         library_lines.append("")
-    library_lines.append("=== YOUR PARAGRAPH LIBRARY ===\n")
+    if angle_evidence:
+        library_lines.append(
+            "=== YOUR PARAGRAPH LIBRARY (VOICE REFERENCE — opener and closer only) ===\n"
+            "When argument evidence is present, do not select body paragraphs from this library.\n"
+            "Use it for opener voice, tone, and phrasing patterns. Use it for the closer.\n"
+        )
+    else:
+        library_lines.append("=== YOUR PARAGRAPH LIBRARY ===\n")
     if role:
         library_lines.append(f"Target role: {role}\n")
     if company:
         library_lines.append(f"Company: {company}\n")
-    for p in paragraphs:
+
+    # In synthesis mode: show ONLY opener, closer, and narrative-frame paragraphs.
+    # Body evidence paragraphs are stripped — forcing the model to assemble body content
+    # from the ARGUMENT EVIDENCE block instead of reverting to blob paragraph selection.
+    if angle_evidence:
+        display_paragraphs = [
+            p for p in paragraphs
+            if p.meta.get("tone") in ("opener", "closer")
+            or _is_perspective(p)
+            or "why this role" in p.section.lower()
+            or "closing" in p.section.lower()
+        ]
+    else:
+        display_paragraphs = paragraphs
+
+    for p in display_paragraphs:
         meta_str = ""
         if p.meta:
             meta_str = "  [" + ", ".join(f"{k}={v}" for k, v in p.meta.items()) + "]"
@@ -631,6 +696,47 @@ def build_user_message(
             "text": "\n".join(bio_lines),
             "cache_control": {"type": "ephemeral"},
         })
+
+    # Argument target + evidence — JD-specific, NOT cached.
+    # The argument target is the beacon: what the letter must argue.
+    # The evidence block is the build material: sentences the body paragraphs are assembled from.
+    if angle_evidence:
+        if argument:
+            blocks.append({
+                "type": "text",
+                "text": f"=== ARGUMENT TARGET ===\n{argument}",
+            })
+        ev_lines = [
+            "=== ARGUMENT EVIDENCE ===",
+            "BUILD MATERIAL for body paragraphs — not a selection guide.",
+            "Each block = one body paragraph argument.",
+            "→ = the key sentence. Use it verbatim.",
+            "Indented = context from the same source paragraph. Use verbatim for coherence.",
+            "Every body sentence must come verbatim from this block. No other body sentences.\n",
+        ]
+        for block in angle_evidence:
+            angle_name = block["angle"].upper()
+            angle_desc = CANONICAL_ANGLES.get(block["angle"], "")
+            # Truncate description to one short clause
+            short_desc = angle_desc.split(" — ")[0].split(".")[0][:80] if angle_desc else ""
+            ev_lines.append(f"── {angle_name} ──")
+            if short_desc:
+                ev_lines.append(f"[{short_desc}]")
+            ev_lines.append("")
+            for entry in block["sentences"]:
+                source = f"({entry['role']} / {entry['section']})"
+                ev_lines.append(source)
+                if entry["context_before"]:
+                    ev_lines.append(f'  "{entry["context_before"]}"')
+                ev_lines.append(f'→ "{entry["text"]}"')
+                if entry["context_after"]:
+                    ev_lines.append(f'  "{entry["context_after"]}"')
+                ev_lines.append("")
+        blocks.append({
+            "type": "text",
+            "text": "\n".join(ev_lines),
+        })
+
     blocks.append({
         "type": "text",
         "text": "=== JOB DESCRIPTION ===\n" + job_description.strip(),

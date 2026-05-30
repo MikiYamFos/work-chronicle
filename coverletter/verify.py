@@ -82,40 +82,58 @@ def _token_coverage(letter_sent: str, source_sent: str) -> float:
     return len(l_words & s_words) / len(l_words)
 
 
+@dataclass
+class CopyViolation:
+    """Flags a letter paragraph that is too close to a single source paragraph — wholesale copy."""
+    letter_para: str
+    source_para: str
+    score: float  # average token coverage across sentences
+
+
 def verbatim_check(
     letter_text: str,
     source_paragraphs: list[Paragraph],
     threshold: float = 0.72,
+    synthesis_mode: bool = False,
+    evidence_sentences: list[str] | None = None,
 ) -> list[VerbatimViolation]:
     """
-    Checks each letter sentence against all source sentences.
-    Returns sentences where less than `threshold` fraction of words
-    appear in any source sentence — catches wholesale invention while
-    tolerating trimming and minor tense/inflection changes.
-    Skips the salutation line and the final paragraph (closer).
+    Checks each letter body sentence against all source sentences.
+
+    evidence_sentences: when provided (synthesis mode), checks body sentences against
+    the exact sentences the model was given in the ARGUMENT EVIDENCE block.
+    Uses a higher threshold (0.80) since the model had verbatim sentences to work from.
+    Any body sentence that doesn't match the provided evidence is a genuine invention.
+
+    synthesis_mode: legacy flag — when True with no evidence_sentences, lowers threshold
+    to 0.55. Superseded by evidence_sentences when both are provided.
+
+    Skips the salutation, opener, and closer paragraphs.
     """
-    # Collect all source sentences
-    source_sentences: list[str] = []
-    for p in source_paragraphs:
-        source_sentences.extend(_split_sentences(p.text))
+    if evidence_sentences is not None:
+        # Strict check: model was given exact sentences, body should match them closely
+        source_sentences = [s for s in evidence_sentences if s.strip()]
+        effective_threshold = 0.80
+    else:
+        effective_threshold = 0.55 if synthesis_mode else threshold
+        source_sentences = []
+        for p in source_paragraphs:
+            source_sentences.extend(_split_sentences(p.text))
 
     if not source_sentences:
         return []
 
-    # Split letter into paragraphs, skip salutation (first), opener (second),
-    # and closer (last) — opener and closer are synthesized fresh, not source-checked.
     letter_paras = [p.strip() for p in letter_text.split("\n\n") if p.strip()]
     if len(letter_paras) <= 3:
         return []
 
-    body_paras = letter_paras[2:-1]  # skip salutation, opener, and closer
+    body_paras = letter_paras[2:-1]
     letter_sentences: list[str] = []
     for para in body_paras:
         letter_sentences.extend(_split_sentences(para))
 
     violations: list[VerbatimViolation] = []
     for sent in letter_sentences:
-        # Skip very short sentences — likely fragments or transitions
         if len(sent.split()) < 6:
             continue
         best_score = 0.0
@@ -125,8 +143,54 @@ def verbatim_check(
             if score > best_score:
                 best_score = score
                 best_src = src
-        if best_score < threshold:
+        if best_score < effective_threshold:
             violations.append(VerbatimViolation(sentence=sent, best_match=best_src, score=best_score))
+
+    return violations
+
+
+def copy_check(
+    letter_text: str,
+    source_paragraphs: list[Paragraph],
+    threshold: float = 0.82,
+) -> list[CopyViolation]:
+    """Anti-copy judge — flags letter paragraphs that are too close to a single source paragraph.
+
+    When sentence evidence is provided, the model should synthesize across sources.
+    A high average token overlap with one source paragraph means it copy-pasted instead.
+    Only runs when synthesis_mode is active (called explicitly from the generate pipeline).
+    """
+    letter_paras = [p.strip() for p in letter_text.split("\n\n") if p.strip()]
+    if len(letter_paras) <= 3:
+        return []
+    body_paras = letter_paras[2:-1]
+
+    violations: list[CopyViolation] = []
+    for letter_para in body_paras:
+        letter_sents = _split_sentences(letter_para)
+        if len(letter_sents) < 2:
+            continue
+        best_para_score = 0.0
+        best_para_text = ""
+        for src_para in source_paragraphs:
+            src_sents = _split_sentences(src_para.text)
+            if not src_sents:
+                continue
+            # Average token coverage of letter sentences against this source paragraph
+            scores = []
+            for ls in letter_sents:
+                best = max((_token_coverage(ls, ss) for ss in src_sents), default=0.0)
+                scores.append(best)
+            avg = sum(scores) / len(scores)
+            if avg > best_para_score:
+                best_para_score = avg
+                best_para_text = src_para.text
+        if best_para_score >= threshold:
+            violations.append(CopyViolation(
+                letter_para=letter_para,
+                source_para=best_para_text,
+                score=best_para_score,
+            ))
 
     return violations
 
