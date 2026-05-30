@@ -7,7 +7,7 @@ from rich.spinner import Spinner
 from rich.table import Table
 from rich.live import Live
 
-from coverletter.align import AlignmentResult, alignment_report, generate_thesis, has_library_coverage
+from coverletter.align import AlignmentResult, alignment_report, generate_argument, generate_thesis, has_library_coverage
 from coverletter.profile import CandidateProfile, load_profile
 from coverletter.costs import running_total
 from coverletter.coach import WeakSentence, analyze_letter, get_context, rewrite_sentence
@@ -17,7 +17,7 @@ from coverletter.output import _flush_stdin, _prompt_choice, render_letter, save
 from coverletter.parser import Paragraph, available_roles, filter_by_role, load_paragraphs, library_stats
 from coverletter.prompt import SHORT_RESPONSE_SYSTEM, SYSTEM_PROMPT, build_user_message, embed_classify, embed_prefilter, prefilter
 from coverletter.resume import load_resume
-from coverletter.verify import VerbatimViolation, verbatim_check, verify_letter
+from coverletter.verify import verbatim_check, verify_letter
 
 console = Console()
 
@@ -298,7 +298,7 @@ def _gap_loop(
                 console.print("\n[yellow]Library match found — may already cover this gap:[/yellow]")
                 console.print(Panel(match_text[:600] + ("…" if len(match_text) > 600 else ""), border_style="yellow"))
                 _flush_stdin()
-                confirm = input("Does this already cover the gap? [y to skip / Enter to continue]: ").strip().lower()
+                confirm = input("[Y] yes, this covers it — skip   [Enter] no, build new paragraph → ").strip().lower()
                 if confirm == "y":
                     console.print("[dim]Skipped.[/dim]")
                     continue
@@ -417,38 +417,75 @@ def _run_verification(
     messages: list[dict[str, str]],
     api_key: str,
     model: str,
+    source_paragraphs: list[Paragraph] | None = None,
+    evidence_sentences: list[str] | None = None,
 ) -> None:
-    """Verify and propose fixes for human review — no silent auto-revision."""
+    """Verify and propose fixes for human review — no silent auto-revision.
+
+    Runs two checks in one pass:
+    - Quality check (LLM): list-pile endings, generic body openers, AI/template prose
+    - Verbatim check (deterministic): body sentences not traceable to any source paragraph
+
+    Both sets of failures are surfaced together and fixed in a single proposed revision.
+    """
     from rich.rule import Rule
     current = messages[-1]["content"]
-    with Live(Spinner("dots", text="Checking quality rules..."), refresh_per_second=10, console=console):
-        result = verify_letter(current, api_key, model)
 
-    if result.passed:
+    with Live(Spinner("dots", text="Checking quality and source tracing..."), refresh_per_second=10, console=console):
+        result = verify_letter(current, api_key, model)
+        verbatim_violations = verbatim_check(
+            current, source_paragraphs or [],
+            evidence_sentences=evidence_sentences,
+        ) if (source_paragraphs or evidence_sentences) else []
+
+    quality_failures = result.failures
+    total_issues = len(quality_failures) + len(verbatim_violations)
+
+    if total_issues == 0:
         console.print("[green]Quality check: PASS[/green]")
         return
 
-    n = len(result.failures)
-    console.print(f"\n[yellow]Quality check: {n} issue(s) found[/yellow]\n")
-    for f in result.failures:
-        console.print(f"  [yellow]• {f}[/yellow]")
+    # Display all issues
+    if quality_failures:
+        console.print(f"\n[yellow]Quality issues ({len(quality_failures)}):[/yellow]")
+        for f in quality_failures:
+            console.print(f"  [yellow]• {f}[/yellow]")
+
+    if verbatim_violations:
+        console.print(f"\n[bold red]Invented sentences ({len(verbatim_violations)}) — not found in source:[/bold red]")
+        for v in verbatim_violations:
+            console.print(f"  [red]• {v.sentence[:120]}[/red]")
+            console.print(f"    [dim]closest source ({v.score:.0%}): {v.best_match[:100]}[/dim]")
+
+    # Build unified feedback prompt
+    feedback_parts = ["FIX REQUIRED. Address all violations below.\n"]
+
+    if quality_failures:
+        feedback_parts.append("QUALITY VIOLATIONS — fix each using the minimal change possible:")
+        feedback_parts.append("- Stay as close to the existing language as you can")
+        feedback_parts.append("- Do not add any claim or language not already present in the letter")
+        feedback_parts.append("- Do not introduce new violations")
+        feedback_parts.append("")
+        for f in quality_failures:
+            feedback_parts.append(f"  - {f}")
+        feedback_parts.append("")
+
+    if verbatim_violations:
+        feedback_parts.append("INVENTED SENTENCES — these body sentences were not found in the source library.")
+        feedback_parts.append("For each: replace it with a sentence already in the source that serves the same")
+        feedback_parts.append("purpose, or cut it entirely. Do not paraphrase source language — lift it directly.")
+        feedback_parts.append("")
+        for v in verbatim_violations:
+            feedback_parts.append(f"  - \"{v.sentence}\"")
+        feedback_parts.append("")
+
+    feedback_parts.append(
+        "If a violation cannot be fixed without inventing new language, leave the sentence "
+        "as-is and add a comment after the letter: 'COULD NOT FIX: [quote the sentence]'"
+    )
+    feedback = "\n".join(feedback_parts)
 
     console.print()
-    failure_list = "\n".join(f"- {f}" for f in result.failures)
-    feedback = (
-        "QUALITY FIX REQUIRED. The following violations must be addressed.\n\n"
-        "Rules:\n"
-        "- Fix each violation using the minimal change possible\n"
-        "- Stay as close to the existing language as you can — prefer cutting or restructuring "
-        "over rewriting\n"
-        "- Do not add any claim or language not already present in the letter\n"
-        "- If you cannot fix a violation without inventing new language, leave the sentence "
-        "as-is and add a comment after the letter: 'COULD NOT FIX: [quote the sentence]'\n"
-        "- Do not introduce new violations\n\n"
-        "Violations:\n"
-        + failure_list
-    )
-
     with Live(Spinner("dots", text="Proposing fixes..."), refresh_per_second=10, console=console):
         parts: list[str] = []
         for chunk in stream_revision(SYSTEM_PROMPT, messages, feedback, api_key, model):
@@ -462,7 +499,6 @@ def _run_verification(
         for line in proposed.splitlines()
         if line.strip().startswith("COULD NOT FIX:")
     ]
-    # Strip the comments from the proposed letter before showing it
     proposed_clean = "\n".join(
         line for line in proposed.splitlines()
         if not line.strip().startswith("COULD NOT FIX:")
@@ -481,28 +517,35 @@ def _run_verification(
     console.print()
     _flush_stdin()
     choice = _prompt_choice(
-        "[A]ccept fix  [E]dit manually (revision loop)  [S]kip (keep current): ",
+        "[A]ccept fix  [E]nter revision loop (keep current, fix manually)  [S]kip (keep current, ignore): ",
         {"a", "e", "s"},
     )
 
     if choice == "a":
         messages.append({"role": "user", "content": feedback})
         messages.append({"role": "assistant", "content": proposed_clean})
-        # Re-verify after accepting
+        # Re-check both after accepting
         with Live(Spinner("dots", text="Re-checking..."), refresh_per_second=10, console=console):
             recheck = verify_letter(proposed_clean, api_key, model)
-        if recheck.passed:
+            recheck_verbatim = verbatim_check(
+                proposed_clean, source_paragraphs or [],
+                evidence_sentences=evidence_sentences,
+            ) if (source_paragraphs or evidence_sentences) else []
+        remaining = len(recheck.failures) + len(recheck_verbatim)
+        if remaining == 0:
             console.print("[green]Quality check: PASS[/green]")
         else:
-            console.print(f"[yellow]Still {len(recheck.failures)} issue(s) — use the revision loop to resolve.[/yellow]")
+            console.print(f"[yellow]Still {remaining} issue(s) — use the revision loop to resolve.[/yellow]")
             for f in recheck.failures:
                 console.print(f"  [dim]• {f}[/dim]")
+            for v in recheck_verbatim:
+                console.print(f"  [dim]• Invented: {v.sentence[:100]}[/dim]")
     elif choice == "e":
-        messages.append({"role": "user", "content": feedback})
-        messages.append({"role": "assistant", "content": proposed_clean})
-        console.print("[dim]Use the revision loop below to fix manually.[/dim]")
+        # E = "I'll handle this myself" — do NOT accept proposed_clean.
+        # Keep the current letter; user addresses issues in the revision loop.
+        console.print("[dim]Current letter kept. Address issues in the revision loop below.[/dim]")
     else:
-        console.print("[dim]Keeping current letter. Use the revision loop to fix manually.[/dim]")
+        console.print("[dim]Skipping fix. Current letter kept.[/dim]")
 
 
 @click.group(invoke_without_command=True)
@@ -611,10 +654,97 @@ def main(
         if n_applied:
             console.print(f"[dim]Applied {n_applied} correction(s) from corrections.md[/dim]\n")
 
+    # Generate provisional argument (beacon) from JD alone — before the letter exists.
+    # This seeds sentence retrieval so the evidence is focused on what the letter must argue.
+    provisional_argument: str | None = None
+    if cfg.voyage_api_key and not fast:
+        with Live(Spinner("dots", text="Deriving argument target..."), refresh_per_second=10, console=console):
+            try:
+                provisional_argument = generate_argument(
+                    job_description, cfg.api_key, cfg.model, profile=profile
+                )
+            except Exception:
+                provisional_argument = None
+        if provisional_argument:
+            console.print(f"[dim]Argument: {provisional_argument}[/dim]")
+
+    # Re-rank corrected paragraphs by sentence-level relevance (for library ordering)
+    # and build angle-organized argument evidence (for synthesis).
+    # Auto-syncs any new paragraphs added since the last coverletter sync run.
+    angle_evidence: list[dict] | None = None
+    evidence_sentences: list[str] = []
+    _conn = None  # DB connection — kept in scope for the post-gap-loop regeneration path
+    if cfg.voyage_api_key:
+        try:
+            from coverletter.db import (
+                open_db, db_path, paragraph_hash,
+                sync_from_markdown, compute_embeddings,
+                extract_and_store_sentences, compute_sentence_embeddings,
+                assign_angles_canonical,
+                rank_paragraphs_by_sentences, build_angle_evidence,
+            )
+            _db = db_path(cfg.paragraphs_files)
+            if _db.exists():
+                _conn = open_db(_db)
+
+                # Detect paragraphs added since the last sync
+                all_hashes = {paragraph_hash(p.text) for p in all_paragraphs}
+                existing_hashes = {
+                    row[0] for row in _conn.execute(
+                        "SELECT text_hash FROM paragraphs WHERE active = 1"
+                    )
+                }
+                new_count = len(all_hashes - existing_hashes)
+                if new_count:
+                    with Live(
+                        Spinner("dots", text=f"Syncing {new_count} new paragraph(s) to DB..."),
+                        refresh_per_second=10, console=console,
+                    ):
+                        sync_from_markdown(_conn, all_paragraphs, cfg.paragraphs_files)
+                        compute_embeddings(_conn, cfg.voyage_api_key)
+                        extract_and_store_sentences(_conn)
+                        compute_sentence_embeddings(_conn, cfg.voyage_api_key)
+                        assign_angles_canonical(_conn, cfg.voyage_api_key)
+                    console.print(f"[dim]Synced {new_count} new paragraph(s).[/dim]")
+
+                # Re-rank library paragraphs by sentence-level precision
+                sentence_scores = rank_paragraphs_by_sentences(
+                    _conn, job_description, cfg.voyage_api_key
+                )
+                if sentence_scores:
+                    def _sent_score(p: Paragraph) -> float:
+                        return sentence_scores.get(paragraph_hash(p.text), 0.0)
+                    corrected = sorted(corrected, key=_sent_score, reverse=True)
+
+                # Build argument evidence organized by angle.
+                # thesis_text focuses retrieval on the argument target — not just JD vocabulary.
+                angle_evidence = build_angle_evidence(
+                    _conn, job_description, cfg.voyage_api_key,
+                    top_angles=4, sentences_per_angle=3,
+                    thesis_text=provisional_argument,
+                )
+                if angle_evidence:
+                    n_sents = sum(len(a["sentences"]) for a in angle_evidence)
+                    console.print(f"[dim]Argument evidence: {len(angle_evidence)} angles, {n_sents} sentences[/dim]")
+                    # Extract the flat sentence list for verbatim check.
+                    # Model was given exactly these sentences; any body sentence not
+                    # matching them is genuinely invented.
+                    for block in angle_evidence:
+                        for entry in block["sentences"]:
+                            if entry["context_before"]:
+                                evidence_sentences.append(entry["context_before"])
+                            evidence_sentences.append(entry["text"])
+                            if entry["context_after"]:
+                                evidence_sentences.append(entry["context_after"])
+        except Exception:
+            pass
+
     user_message = build_user_message(
         job_description, corrected, role=role, company=company,
         resume=resume_text or None,
         template=template_text, notes=notes,
+        angle_evidence=angle_evidence,
+        argument=provisional_argument,
     )
 
     # Build conversation history — enables revision loop
@@ -632,25 +762,12 @@ def main(
     console.print(f"[dim]{running_total()}[/dim]")
     render_letter(letter_text)
 
-    _run_verification(letter_text, messages, cfg.api_key, cfg.model)
+    _run_verification(
+        letter_text, messages, cfg.api_key, cfg.model,
+        source_paragraphs=filtered,
+        evidence_sentences=evidence_sentences or None,
+    )
     letter_text = messages[-1]["content"]
-
-    # Verbatim source check — flag sentences not traceable to source paragraphs
-    violations = verbatim_check(letter_text, filtered)
-    if violations:
-        from rich.panel import Panel
-        from rich.text import Text
-        console.print(f"\n[bold red]{len(violations)} sentence(s) not found verbatim in source:[/bold red]")
-        for v in violations:
-            console.print()
-            console.print(Text(f"  LETTER:  {v.sentence}", style="red"))
-            console.print(Text(f"  CLOSEST: {v.best_match}", style="dim"))
-            console.print(f"  [dim]similarity: {v.score:.0%}[/dim]")
-        console.print()
-        console.print("[dim]These sentences may be LLM-paraphrased or invented. Use the revision loop to fix them.[/dim]")
-        console.print()
-    else:
-        console.print("[green]Verbatim check: all body sentences trace to source.[/green]")
 
     if not fast:
         # Letter thesis — what argument is this letter actually making?
@@ -702,9 +819,56 @@ def main(
                     filtered = prefilter(role_paragraphs, job_description, cfg.top_n)
                 corrections = load_corrections(corrections_file)
                 corrected = apply_corrections(filtered, corrections)
+
+                # Re-sync newly saved paragraphs into the DB and rebuild angle evidence
+                # so synthesis mode can use the gap paragraphs just written.
+                regen_angle_evidence: list[dict] | None = angle_evidence
+                regen_evidence_sentences: list[str] = evidence_sentences
+                if cfg.voyage_api_key and _conn is not None:
+                    try:
+                        all_hashes_regen = {paragraph_hash(p.text) for p in all_paragraphs}
+                        existing_hashes_regen = {
+                            row[0] for row in _conn.execute(
+                                "SELECT text_hash FROM paragraphs WHERE active = 1"
+                            )
+                        }
+                        new_regen_count = len(all_hashes_regen - existing_hashes_regen)
+                        if new_regen_count:
+                            with Live(
+                                Spinner("dots", text=f"Syncing {new_regen_count} new paragraph(s)..."),
+                                refresh_per_second=10, console=console,
+                            ):
+                                sync_from_markdown(_conn, all_paragraphs, cfg.paragraphs_files)
+                                compute_embeddings(_conn, cfg.voyage_api_key)
+                                extract_and_store_sentences(_conn)
+                                compute_sentence_embeddings(_conn, cfg.voyage_api_key)
+                                assign_angles_canonical(_conn, cfg.voyage_api_key)
+                        # Rebuild angle evidence with newly-added paragraphs
+                        with Live(Spinner("dots", text="Rebuilding argument evidence..."), refresh_per_second=10, console=console):
+                            regen_angle_evidence = build_angle_evidence(
+                                _conn, job_description, cfg.voyage_api_key,
+                                top_angles=4, sentences_per_angle=3,
+                                thesis_text=provisional_argument,
+                            )
+                        regen_evidence_sentences = []
+                        if regen_angle_evidence:
+                            for block in regen_angle_evidence:
+                                for entry in block["sentences"]:
+                                    if entry["context_before"]:
+                                        regen_evidence_sentences.append(entry["context_before"])
+                                    regen_evidence_sentences.append(entry["text"])
+                                    if entry["context_after"]:
+                                        regen_evidence_sentences.append(entry["context_after"])
+                            n_sents = sum(len(a["sentences"]) for a in regen_angle_evidence)
+                            console.print(f"[dim]Argument evidence: {len(regen_angle_evidence)} angles, {n_sents} sentences[/dim]")
+                    except Exception:
+                        pass
+
                 user_message = build_user_message(
                     job_description, corrected, role=role, company=company,
                     resume=resume_text or None, template=template_text, notes=notes,
+                    angle_evidence=regen_angle_evidence,
+                    argument=provisional_argument,
                 )
                 messages = [{"role": "user", "content": user_message}]
                 console.print()
@@ -715,7 +879,11 @@ def main(
                 letter_text = "".join(parts)
                 messages.append({"role": "assistant", "content": letter_text})
                 render_letter(letter_text)
-                _run_verification(letter_text, messages, cfg.api_key, cfg.model)
+                _run_verification(
+                    letter_text, messages, cfg.api_key, cfg.model,
+                    source_paragraphs=filtered,
+                    evidence_sentences=regen_evidence_sentences or None,
+                )
                 letter_text = messages[-1]["content"]
                 console.print()
                 with Live(Spinner("dots", text="Re-analyzing alignment..."), refresh_per_second=10, console=console):
@@ -883,7 +1051,7 @@ def _qa_session(
 
     accepted: str | None = None
     exchange_count = 0
-    MAX_EXCHANGES = 4
+    MAX_EXCHANGES = 2
 
     while True:
         if pending_draft is not None:
@@ -901,20 +1069,21 @@ def _qa_session(
                     continue
                 RULES_REMINDER = (
                     "Revise the draft per the direction above.\n\n"
-                    "CHECK EVERY RULE before writing:\n"
-                    "FIRST SENTENCE: must name what was BUILT, OWNED, or DECIDED at a specific company. "
-                    "'At Acme Corp, I owned...' is correct. 'GCP was my foundation...' is wrong."
-                    "'I have worked seriously in...' is wrong.\n"
+                    "This is a CAPTURE revision — preserve everything, do not polish.\n"
                     "DO NOT INVENT: every claim must trace to this conversation, not library results.\n"
-                    "USE THEIR WORDS: their language, not polished resume language.\n"
-                    "NO PADDING: cut sentences that summarize without adding evidence.\n"
-                    "BANNED: em-dashes (—), sentences starting with 'That', "
-                    "'actually'/'not just'/'not only'/'not simply', fake contrast 'not X but Y'."
+                    "USE THEIR WORDS: their language and level of abstraction, not resume speak.\n"
+                    "INCLUDE ALL DETAIL: every specific technical detail, fact, and explanation "
+                    "the person provided must appear in full — including everything in this redirect. "
+                    "Do not compress, summarize, or cut any of it. Length is fine.\n"
+                    "DO NOT EDITORIALIZE: do not add framing or conclusions the person did not provide."
                 )
                 history.append({"role": "assistant", "content": pending_draft})
                 history.append({"role": "user", "content": f"Revise the draft: {redirect}\n\n{RULES_REMINDER}"})
                 with Live(Spinner("dots", text="Revising..."), refresh_per_second=10, console=console):
-                    pending_draft = force_draft(history, cfg.api_key, cfg.model, all_paragraphs, voyage_api_key=voyage_api_key)
+                    # Use qa_turn directly — history already ends with the revision instruction.
+                    # force_draft would append a second user message, causing the model to ignore the redirect.
+                    _draft_r, _raw_r = qa_turn(history, cfg.api_key, cfg.model, all_paragraphs, voyage_api_key=voyage_api_key)
+                    pending_draft = _draft_r or _raw_r or ""
 
             elif choice == "k":
                 history.append({"role": "assistant", "content": pending_draft})
@@ -977,6 +1146,21 @@ def _qa_session(
 
     append_to_library(priority_file, save_role, save_section, accepted, meta)
     console.print(f"\n[green]Saved to {priority_file.name}[/green] under {save_role} / {save_section}\n")
+
+    # Save raw Q&A responses to DB — preserves the user's exact words before
+    # they get compressed into the refined paragraph. Used by claim extraction.
+    try:
+        from coverletter.db import open_db, db_path, save_raw_response, paragraph_hash
+        _raw_db = db_path(cfg.paragraphs_files)
+        if _raw_db.exists():
+            _raw_conn = open_db(_raw_db)
+            save_raw_response(
+                _raw_conn, history, topic,
+                para_text_hash=paragraph_hash(accepted),
+            )
+    except Exception:
+        pass  # raw response saving is best-effort — never block the save
+
     return accepted
 
 
@@ -1136,23 +1320,21 @@ def reflect(
                     continue
                 RULES_REMINDER = (
                     "Revise the draft per the direction above.\n\n"
-                    "CHECK EVERY RULE before writing:\n"
-                    "FIRST SENTENCE: must name what was BUILT, OWNED, or DECIDED at a specific company. "
-                    "'At Acme Corp, I owned...' is correct. 'GCP was my foundation...' is wrong."
-                    "'I have worked seriously in...' is wrong.\n"
+                    "This is a CAPTURE revision — preserve everything, do not polish.\n"
                     "DO NOT INVENT: every claim must trace to this conversation, not library results.\n"
-                    "USE THEIR WORDS: their language, not polished resume language.\n"
-                    "NO PADDING: cut sentences that summarize without adding evidence.\n"
-                    "BANNED: em-dashes (—), sentences starting with 'That', "
-                    "'actually'/'not just'/'not only'/'not simply', fake contrast 'not X but Y'."
+                    "USE THEIR WORDS: their language and level of abstraction, not resume speak.\n"
+                    "INCLUDE ALL DETAIL: every specific technical detail, fact, and explanation "
+                    "the person provided must appear in full — including everything in this redirect. "
+                    "Do not compress, summarize, or cut any of it. Length is fine.\n"
+                    "DO NOT EDITORIALIZE: do not add framing or conclusions the person did not provide."
                 )
                 history.append({"role": "assistant", "content": pending_draft})
                 history.append({"role": "user", "content": f"Revise the draft: {redirect}\n\n{RULES_REMINDER}"})
                 with Live(Spinner("dots", text="Revising..."), refresh_per_second=10, console=console):
-                    pending_draft = force_draft(
-                        history, cfg.api_key, cfg.model, all_paragraphs,
-                        voyage_api_key=cfg.voyage_api_key, system=PERSPECTIVE_SYSTEM,
-                    )
+                    # Use qa_turn directly — history already ends with the revision instruction.
+                    # force_draft would append a second user message, causing the model to ignore the redirect.
+                    _draft_r, _raw_r = qa_turn(history, cfg.api_key, cfg.model, all_paragraphs, voyage_api_key=cfg.voyage_api_key, system=PERSPECTIVE_SYSTEM)
+                    pending_draft = _draft_r or _raw_r or ""
             elif choice == "k":
                 history.append({"role": "assistant", "content": pending_draft})
                 history.append({"role": "user", "content": "Keep going — what else do you need to know?"})
@@ -1498,18 +1680,21 @@ def _intake_evidence(cfg: "Config", all_paragraphs: list["Paragraph"], priority_
                     continue
                 RULES_REMINDER = (
                     "Revise the draft per the direction above.\n\n"
-                    "FIRST SENTENCE: must name what was BUILT, OWNED, or DECIDED at a specific company.\n"
-                    "DO NOT INVENT: every claim must trace to this conversation.\n"
-                    "USE THEIR WORDS. NO PADDING. BANNED: em-dashes, 'That' sentence starters, "
-                    "'actually'/'not just'/'not only', fake contrast."
+                    "This is a CAPTURE revision — preserve everything, do not polish.\n"
+                    "DO NOT INVENT: every claim must trace to this conversation, not library results.\n"
+                    "USE THEIR WORDS: their language and level of abstraction, not resume speak.\n"
+                    "INCLUDE ALL DETAIL: every specific technical detail, fact, and explanation "
+                    "the person provided must appear in full — including everything in this redirect. "
+                    "Do not compress, summarize, or cut any of it. Length is fine.\n"
+                    "DO NOT EDITORIALIZE: do not add framing or conclusions the person did not provide."
                 )
                 history.append({"role": "assistant", "content": pending_draft})
                 history.append({"role": "user", "content": f"Revise the draft: {redirect}\n\n{RULES_REMINDER}"})
                 with Live(Spinner("dots", text="Revising..."), refresh_per_second=10, console=console):
-                    pending_draft = force_draft(
-                        history, cfg.api_key, cfg.model, all_paragraphs,
-                        voyage_api_key=cfg.voyage_api_key, system=BUILD_SYSTEM,
-                    )
+                    # Use qa_turn directly — history already ends with the revision instruction.
+                    # force_draft would append a second user message, causing the model to ignore the redirect.
+                    _draft_r, _raw_r = qa_turn(history, cfg.api_key, cfg.model, all_paragraphs, voyage_api_key=cfg.voyage_api_key, system=BUILD_SYSTEM)
+                    pending_draft = _draft_r or _raw_r or ""
             elif choice == "k":
                 history.append({"role": "assistant", "content": pending_draft})
                 history.append({"role": "user", "content": "Keep going — what else do you need to know?"})
@@ -2247,7 +2432,7 @@ def build_profile(ctx: click.Context, paragraphs: str | None, model: str | None)
 
                     accepted_shift: str | None = None
                     exchange_count = 0
-                    MAX_EXCHANGES = 4
+                    MAX_EXCHANGES = 2
 
                     while True:
                         if pending_draft is not None:
