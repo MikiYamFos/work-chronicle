@@ -4,6 +4,17 @@ from collections.abc import Sequence
 
 from coverletter.parser import Paragraph
 
+# Angle tags that mark a paragraph as narrative frame rather than skill evidence.
+# These are through-lines, pivots, reframes, and syntheses — the candidate's voice
+# connecting their arc together. The letter assembler treats them differently from
+# evidence paragraphs.
+PERSPECTIVE_ANGLES: frozenset[str] = frozenset({"through-line", "pivot", "reframe", "synthesis"})
+
+
+def _is_perspective(p: "Paragraph") -> bool:
+    return p.meta.get("angle", "").lower() in PERSPECTIVE_ANGLES
+
+
 STOP_WORDS = {
     "a", "an", "the", "and", "or", "but", "in", "on", "at", "to", "for",
     "of", "with", "by", "from", "is", "are", "was", "were", "be", "been",
@@ -32,20 +43,34 @@ THE OPENER IS ALWAYS WRITTEN FRESH:
 Do not copy an opener paragraph from the source library. Use the library opener paragraphs
 as voice and style reference only — absorb the candidate's voice, register, and concrete
 claim style, then write a new opener paragraph that:
-- Leads with a concrete claim about who this person is and what their work points toward
-- Is tailored to this specific role and company — the claim should set up the body argument
+- CONNECTS THE CANDIDATE TO THIS SPECIFIC EMPLOYER FIRST. The opener is about why THIS
+  company and THIS role, not about the candidate's background. Lead with what this
+  organization does, what about their work connects to the candidate's, and why this is
+  the right fit — not with credentials or previous employers.
+- Does NOT name previous employers — those belong in body paragraphs
+- Does NOT open with the candidate's credentials or employment history
+- Sets up the body argument by establishing the connection to this role
 - Uses the candidate's actual voice and phrasing patterns from the library openers
 - Is 3-5 sentences
 - Never opens with "I am excited to apply" or restates the job title
+- NEVER quotes or paraphrases the JD back at the employer. Do not echo their mission
+  statement, their team names, or their role description language. Describe what the
+  organization does in the candidate's own words — if it sounds like it came from the
+  JD, rewrite it. Internal org names from the JD (e.g. "Data Platform Mission",
+  "People Analytics Team") are not a connection point — they are org chart labels.
+  Do not use them as if they are meaningful.
 
 THE CLOSER IS ALWAYS WRITTEN FRESH:
 Do not copy a closer paragraph from the source library. Write a fresh closer that:
 - Is warm, specific to this company, and forward-looking
 - Thanks the reader genuinely
 - Expresses specific interest in speaking further about this role at this company
-- Uses the actual company name
+- Uses the actual company name — NOT internal team/org names from the JD
 - Is 2-3 sentences
 - Never uses "I am available at your convenience"
+- NEVER echoes JD language. "The Data Platform Mission", "People Analytics Team", and
+  similar internal labels are org chart names, not meaningful references. Use the
+  company name instead.
 
 TRANSITIONS ARE BANNED. Do not write any sentence that introduces, frames, or
 connects source paragraphs. No "One project that speaks to this role is...", no
@@ -74,12 +99,34 @@ BANNED STRUCTURES:
   - Invented metaphors, slogans, or abstractions not present in the source
   - Any sentence whose content is not traceable to the source material
     (the salutation and a single brief closer are the only exceptions)
+  - Generating fresh "passion" or enthusiasm statements ("I am most passionate about...",
+    "what draws me to this work is...") as body paragraph openers or arguments. These
+    phrases may appear in source paragraphs and can be included verbatim — but do NOT
+    write them yourself. Passion is color, not an argument.
 
 ═══ ASSEMBLY RULES ═══
 1. Write a fresh opener paragraph in the candidate's voice (see opener rules above).
-2. SELECT 2-3 body paragraphs from the source library that best match the job description.
-   Prefer strength=high. Each must open with a concrete claim and close by landing its point.
-3. If a "why this role" paragraph exists in the source, include it as the final body paragraph.
+2. SELECT 3-4 body paragraphs from the source library. Follow this priority order:
+
+   STEP A — COVER EXPLICIT JD REQUIREMENTS FIRST.
+   Scan the JD for named technologies, tools, and explicit qualifications (e.g. "Expert
+   with dbt, Airflow", "Proficiency in Python, SQL", "Proficiency with GCP, AWS",
+   "5+ years in data governance"). These are not preferences — they are the bar for
+   the role. If the library has a paragraph that directly addresses any of these, that
+   paragraph is REQUIRED. Include it. Do not write a letter that omits named technical
+   requirements when the library has coverage. Omitting them is a direct failure.
+
+   STEP B — FILL REMAINING SLOTS with paragraphs that make the best overall argument
+   for fit: domain expertise, stakeholder work, quality/governance philosophy.
+   Prefer strength=high. These supplement the required technical paragraphs, not replace them.
+
+   Each paragraph must open with a concrete claim and close by landing its point.
+   CRITICAL: Body paragraphs must not repeat claims already made in the opener.
+   CRITICAL: Paragraphs labeled [CLOSER ONLY] must NEVER be used as the first or second
+   body paragraph. They belong only as the final body paragraph.
+
+3. If a [CLOSER ONLY] or "why this role" paragraph exists in the source, place it as the
+   last body paragraph — after all evidence paragraphs. Never first, never second.
 4. Write a fresh closer paragraph for this company (see closer rules above).
 5. Output Markdown only. Salutation: "Dear [Company] Hiring Manager," using the company
    name from the header above. If no company name is provided, use "Dear Hiring Manager,".
@@ -93,27 +140,165 @@ BANNED STRUCTURES:
 
 ═══ COVER LETTER STRUCTURE ═══
 A strong cover letter is a hiring argument, not a credential summary.
-- OPENER (synthesized fresh): Concrete claim about who this person is and what their work
-  points toward. Tailored to the specific role and company. Sets up the body argument.
-  3-5 sentences. Voice matches the library opener paragraphs.
-- BODY (2-3 paragraphs, assembled from source): Each proves one specific part of the
+- OPENER (synthesized fresh): Connects the candidate to THIS employer specifically. Leads
+  with what this organization does and why it connects to the candidate's work — NOT with
+  the candidate's background or previous employers. Sets up the body argument.
+  3-5 sentences. Voice matches the library opener paragraphs. No previous employer names.
+- BODY (3-4 paragraphs, assembled from source): Each proves one specific part of the
   argument with evidence. Each opens with a concrete claim. Each closes by landing its
   point — not trailing off into a list or a vague summary. Every sentence from source.
+  At least one paragraph must address any explicitly named technical requirements
+  (tools, technologies, frameworks) if the library has coverage.
 - WHY THIS ROLE (if available in source): Concrete connection between candidate's specific
   experience and this specific organization. Not generic enthusiasm.
 - CLOSER (synthesized fresh): Warm, specific to this company, forward-looking. 2-3 sentences.
   Thanks the reader. Expresses genuine interest in speaking further about this role.
   Uses the actual company name. Never "I am available at your convenience."
 
+═══ NARRATIVE FRAME PARAGRAPHS ═══
+Some paragraphs in the library are labeled [NARRATIVE FRAME]. These are through-lines,
+pivots, reframes, and syntheses — the candidate's voice connecting their arc together.
+They are not evidence of a skill. They are the argument about who this person is and why
+their path makes them right for this role.
+
+When narrative frame paragraphs are present:
+- Let them shape the opener's central claim. The opener should reflect the through-line
+  or pivot that runs through the candidate's arc — not just introduce evidence.
+- Use them to determine which evidence paragraphs to select and in what order. Evidence
+  substantiates a frame the reader already understands.
+- Include a narrative frame paragraph as a body paragraph when it makes a direct argument
+  about fit with this specific role — it carries argumentative weight, not just context.
+- Do NOT place them in a separate named section or block. They are woven through the letter.
+
+If no narrative frame paragraphs are present, write the letter from evidence alone.
+
 ═══ BEFORE RETURNING, SCAN FOR ═══
 1. Any em-dash (—) anywhere — replace with comma, semicolon, or period.
 2. Any sentence starting with "That" — rewrite it.
 3. Any paragraph ending with a list — cut the list and land the point instead.
+4. Any body paragraph that restates a fact already in the opener — rewrite the opener of
+   that paragraph to lead with something the opener did not say.
 4. Any banned word or fake-contrast structure — remove it.
 5. Any paragraph that opens with a generic topic statement — replace with a concrete claim.
 6. Any sentence whose content is not traceable to the source material or the JD — cut it.
 
 Output only the letter. No preamble, no verdict, no commentary.
+"""
+
+SHORT_RESPONSE_SYSTEM = """\
+You are answering a specific application prompt using the candidate's source material.
+The prompt appears at the end of the user message under "APPLICATION PROMPT".
+Working style, goals, and values, if provided, appear under "CANDIDATE BACKGROUND, VALUES, AND WORKING STYLE".
+
+STEP 1 — READ THE PROMPT TYPE before writing anything:
+
+"Tell me about yourself" / "About me" / biographical summary:
+  → A character statement. Who is this person as an engineer? What do they bring
+    that someone else with the same credentials does not? This is NOT a resume
+    summary, NOT a project list, NOT a credential walkthrough.
+
+    Target: 200-250 words.
+
+    All entries in CANDIDATE BACKGROUND are equal — start from whichever fits
+    this prompt and JD best. Use that entry in the candidate's voice, with their
+    phrasing, their rhythm. Do not trim it or use only the first sentence.
+
+    THEN GROUND IT. Find 2-4 sentences from the library that make one claim in
+    the entry real. Not a full paragraph. The specific sentences where the
+    candidate's character is most visible — the constraint they refused to skip,
+    the decision they made when no specification existed, the moment they stayed
+    with the problem until it held.
+
+    VALUES ARE IN THE CHOOSING. Which entry you start from, which moment you pick,
+    which sentences you take — that is where values appear. A story about sourcing
+    as a hard architectural constraint because the stakes of being wrong were real
+    expresses a value without naming it. Do not name values as assertions. Do not
+    write "I also value X" or "I care about Y." Select the entry and moment that
+    shows it.
+
+    DO NOT:
+    - Default to the working style entry when a values entry fits better
+    - Write in separate blocks connected by transition sentences
+    - State any value as an assertion ("I value...", "I care about...",
+      "I believe in...")
+    - Add a closing summary sentence ("What I bring...", "I am especially
+      strong at...", "I bring rigorous...")
+    - Generate any opener: "I am strongest in...", "I am a data engineer who...",
+      "I combine...", "I bring..."
+    - Smooth or paraphrase the chosen entry's language — use it as written
+    - Add a second evidence block or a second grounding moment
+    - Pad to fill words if the source runs out — stop
+
+    Every sentence must trace to the working style, values entries, or a library
+    paragraph. If you cannot source it, cut it.
+
+    HOW TO END: The close must answer the question — not wrap the response.
+    For a biographical prompt: close on what specifically distinguishes this
+    person. Not what they find satisfying. Not what they bring. Who they are
+    and what they are actually about. Use sourced language from the working
+    style or values that captures the specific thing. The close completes the
+    answer; it does not summarize the response.
+    For a challenge prompt: close on what the challenge cost or revealed.
+    For a motivation prompt: close on the specific connection to this role.
+    Every closing sentence must trace to source material.
+
+    WHEN MATERIAL IS THIN: Write what you can from source, then append on a
+    new line:
+      BIOGRAPHICAL_GAPS:
+    Followed by what's missing.
+
+    200-250 words. Chosen entry in full + 2-4 grounding sentences. Stop there.
+
+"Describe a time when..." / "Give an example of..." / behavioral question:
+  → Pick the library paragraph(s) that best answer the question. Tell the story directly.
+    Specific situation, what you did, what resulted. 200-350 words.
+    Every claim must come from the source — do not invent a story not present there.
+    If no library paragraph directly answers the prompt, say so clearly rather than inventing.
+
+"Why are you interested in..." / "What draws you to this role/company":
+  → Pull from why-this-role material if present. If not, use the closest relevant library
+    paragraphs. Be specific to the company and role — no generic enthusiasm. 150-250 words.
+
+"What is your approach to..." / "How do you think about...":
+  → Answer from the candidate's actual practice as shown in the library AND from the
+    working style section if present. What they did, how they made decisions. 150-300 words.
+
+Any other prompt type: read it carefully and respond in the format it asks for.
+Use source material and working style as the grounding regardless of question type.
+
+VOICE RULE ACROSS ALL PROMPT TYPES:
+Preserve the candidate's actual language. Use their sentences, their phrasings, their
+rhythm. Do not smooth, polish, or professionalize their words. This tool exists to
+protect their voice. If they wrote it a certain way in the source, keep it that way.
+Do not synthesize. Assemble and lightly connect.
+
+WHAT EVERY RESPONSE MUST BE:
+- First-person ("I built", "I own", "My work")
+- Grounded — every claim traceable to source or resume
+- Specific to the role/company where the JD provides context
+- No salutation, no "Dear Hiring Manager", no cover letter structure
+
+WHAT NO RESPONSE SHOULD BE:
+- A resume summary ("results-driven professional", "proven track record", "passionate about")
+- A pitch deck (hype, abstractions, claims not in the source)
+- A mini cover letter
+
+═══ ABSOLUTE CONSTRAINTS ═══
+BANNED WORDS — never appear anywhere:
+  "actually", "matters", "not just", "not only", "not simply"
+
+BANNED STRUCTURES:
+  - The em-dash character (—) anywhere. Use a comma, semicolon, or period.
+  - Any sentence starting with "That"
+  - Fake-contrast ("not X, but Y")
+
+═══ BEFORE RETURNING, SCAN FOR ═══
+1. Any em-dash (—) — replace.
+2. Any sentence starting with "That" — rewrite.
+3. Any banned word or fake-contrast — remove.
+4. Any claim not traceable to the source or the JD — cut.
+
+Output only the response text. No preamble, no label, no commentary.
 """
 
 
@@ -212,7 +397,10 @@ def prefilter(paragraphs: list[Paragraph], job_description: str, top_n: int) -> 
     if len(candidates) <= top_n:
         return candidates  # small library — model sees everything
 
-    # Always include structural paragraphs
+    # Always include structural paragraphs (opener/closer voice references).
+    # Narrative frame paragraphs (through-line, pivot, reframe, synthesis) are scored
+    # like other paragraphs but with a strong relevance boost — they are not pinned
+    # unconditionally, so a weak through-line doesn't contaminate every letter.
     pinned = [p for p in candidates if p.meta.get("tone") in ("opener", "closer")]
     pinned_set = {p.index for p in pinned}
     remaining = [p for p in candidates if p.index not in pinned_set]
@@ -221,8 +409,14 @@ def prefilter(paragraphs: list[Paragraph], job_description: str, top_n: int) -> 
     score_map = {}
     for p in remaining:
         overlap = _score_tokens(p, jd_counts)
-        boost = 1.5 if p.meta.get("strength") == "high" else 1.0
-        score_map[p.index] = overlap * boost
+        strength_boost = 1.5 if p.meta.get("strength") == "high" else 1.0
+        perspective_boost = 2.0 if _is_perspective(p) else 1.0
+        raw = overlap * strength_boost * perspective_boost
+        # High-strength perspective paragraphs (the ones the user has designated as
+        # primary) always compete — floor prevents a vocabulary mismatch from dropping
+        # them entirely. Lower-strength perspective paragraphs compete on relevance only.
+        is_primary_perspective = _is_perspective(p) and p.meta.get("strength") == "high"
+        score_map[p.index] = max(raw, 0.3) if is_primary_perspective else raw
 
     budget = max(0, top_n - len(pinned))
     selected = _select_by_experience(remaining, score_map, budget)
@@ -255,7 +449,9 @@ def embed_prefilter(
         query_result = client.embed([job_description], model="voyage-3-lite", input_type="query")
         jd_vec = query_result.embeddings[0]
 
-        # Always include structural paragraphs
+        # Always include structural paragraphs. Narrative frame paragraphs get a
+        # relevance boost but are not pinned — a weak through-line should not
+        # appear in every letter just because it's tagged angle=through-line.
         pinned = [p for p in candidates if p.meta.get("tone") in ("opener", "closer")]
         pinned_set = {p.index for p in pinned}
         embed_map = {p.index: vec for p, vec in zip(candidates, doc_result.embeddings)}
@@ -264,14 +460,60 @@ def embed_prefilter(
         score_map = {}
         for p in remaining:
             score = _cosine(embed_map[p.index], jd_vec)
-            boost = 1.2 if p.meta.get("strength") == "high" else 1.0
-            score_map[p.index] = score * boost
+            strength_boost = 1.2 if p.meta.get("strength") == "high" else 1.0
+            perspective_boost = 1.8 if _is_perspective(p) else 1.0
+            raw = score * strength_boost * perspective_boost
+            is_primary_perspective = _is_perspective(p) and p.meta.get("strength") == "high"
+            score_map[p.index] = max(raw, 0.3) if is_primary_perspective else raw
 
         budget = max(0, top_n - len(pinned))
         selected = _select_by_experience(remaining, score_map, budget)
         return pinned + selected
     except Exception:
         return prefilter(candidates, job_description, top_n)
+
+
+def embed_classify(
+    new_text: str,
+    paragraphs: list[Paragraph],
+    voyage_api_key: str,
+    top_n: int = 3,
+    type_filter: str | None = None,
+) -> list[tuple[str, str, float]]:
+    """Return top_n [(role, section, score)] from the library closest to new_text.
+
+    Useful at save time to suggest where a new paragraph belongs — eliminates
+    free-form tag entry by finding the most semantically similar existing entries.
+
+    type_filter: if given (e.g. "frame" or "evidence"), restrict candidates to
+    paragraphs whose meta["type"] matches. Pass None to search all paragraphs.
+    Falls back to empty list if Voyage is unavailable.
+    """
+    candidates = paragraphs
+    if type_filter:
+        candidates = [p for p in paragraphs if p.meta.get("type") == type_filter]
+    if not candidates:
+        return []
+    try:
+        import voyageai  # type: ignore
+
+        client = voyageai.Client(api_key=voyage_api_key)
+        texts = [p.text for p in candidates]
+        doc_result = client.embed(texts, model="voyage-3-lite", input_type="document")
+        query_result = client.embed([new_text], model="voyage-3-lite", input_type="query")
+        query_vec = query_result.embeddings[0]
+
+        best: dict[tuple[str, str], float] = {}
+        for p, vec in zip(candidates, doc_result.embeddings):
+            score = _cosine(query_vec, vec)
+            key = (p.role, p.section)
+            if score > best.get(key, -1.0):
+                best[key] = score
+
+        results = sorted(best.items(), key=lambda x: x[1], reverse=True)
+        return [(role, section, score) for (role, section), score in results[:top_n]]
+    except Exception:
+        return []
 
 
 ContentBlock = dict  # {"type": "text", "text": str, optional "cache_control": {...}}
@@ -285,16 +527,30 @@ def build_user_message(
     resume: str | None = None,
     template: str | None = None,
     notes: str | None = None,
+    working_style: list[str] | None = None,
+    values: list[str] | None = None,
+    goals: list[str] | None = None,
+    avoid: list[str] | None = None,
 ) -> list[ContentBlock]:
     """Return structured content blocks with the library portion marked as cacheable.
 
-    The library (resume + paragraphs + template + notes) is stable within a session —
-    marked for prompt caching. The JD is per-application — not cached.
+    The library (resume + paragraphs + template + notes + working_style) is stable within
+    a session — marked for prompt caching. The JD is per-application — not cached.
     """
     library_lines: list[str] = []
     if resume:
         library_lines.append("=== CANDIDATE RESUME (background context — company names, dates, tools, roles) ===\n")
         library_lines.append(resume.strip())
+        library_lines.append("")
+    if goals:
+        library_lines.append("=== CANDIDATE GOALS (use for motivation/why-this-role prompts only) ===\n")
+        library_lines.append(
+            "What this person is looking for in their next role. "
+            "Use when the application prompt is about why this role or what draws them to this company. "
+            "Do not use as biographical framing.\n"
+        )
+        for item in goals:
+            library_lines.append(f"- {item}")
         library_lines.append("")
     library_lines.append("=== YOUR PARAGRAPH LIBRARY ===\n")
     if role:
@@ -306,7 +562,15 @@ def build_user_message(
         if p.meta:
             meta_str = "  [" + ", ".join(f"{k}={v}" for k, v in p.meta.items()) + "]"
         role_label = f"{p.role} / " if p.role != role else ""
-        library_lines.append(f"[{p.index}] {role_label}{p.section}{meta_str}")
+        frame_label = " [NARRATIVE FRAME]" if _is_perspective(p) else ""
+        _section_lower = p.section.lower()
+        _is_closer = (
+            p.meta.get("tone") == "closer"
+            or "why this role" in _section_lower
+            or "closing" in _section_lower
+        )
+        closer_label = " [CLOSER ONLY]" if _is_closer else ""
+        library_lines.append(f"[{p.index}] {role_label}{p.section}{meta_str}{frame_label}{closer_label}")
         library_lines.append(p.text)
         library_lines.append("")
     if template:
@@ -328,14 +592,47 @@ def build_user_message(
         library_lines.append(notes.strip())
         library_lines.append("")
 
-    return [
+    # Build biographical block separately — positioned after library, before JD.
+    # Recency matters: this is the last thing the model reads before writing.
+    # For biographical prompts this content is REQUIRED, not optional framing.
+    bio_lines: list[str] = []
+    has_bio = working_style or values or avoid
+    if has_bio:
+        bio_lines.append("=== CANDIDATE BACKGROUND, VALUES, AND WORKING STYLE ===\n")
+        bio_lines.append(
+            "This is the argument — the thesis about who this person is. "
+            "For biographical prompts: read this first, understand the argument, "
+            "then use library paragraphs to prove specific claims within it. "
+            "Start from this argument. Do not start from the evidence.\n"
+        )
+        all_bio = list(working_style or []) + list(values or [])
+        if all_bio:
+            for item in all_bio:
+                bio_lines.append(f"- {item}")
+            bio_lines.append("")
+        if avoid:
+            bio_lines.append(
+                "Constraints — each reveals a real value. Infer the positive. Do NOT quote as negatives:"
+            )
+            for item in avoid:
+                bio_lines.append(f"- {item}")
+            bio_lines.append("")
+
+    blocks: list[dict] = [
         {
             "type": "text",
             "text": "\n".join(library_lines),
             "cache_control": {"type": "ephemeral"},
         },
-        {
-            "type": "text",
-            "text": "=== JOB DESCRIPTION ===\n" + job_description.strip(),
-        },
     ]
+    if bio_lines:
+        blocks.append({
+            "type": "text",
+            "text": "\n".join(bio_lines),
+            "cache_control": {"type": "ephemeral"},
+        })
+    blocks.append({
+        "type": "text",
+        "text": "=== JOB DESCRIPTION ===\n" + job_description.strip(),
+    })
+    return blocks

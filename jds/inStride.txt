@@ -1,0 +1,57 @@
+Data Engineer II
+Remote, US
+About Us
+
+InStride Health’s mission is to deliver specialty anxiety and OCD care that works for every kid, teen, young adult, and family who needs it. Through this mission, we are expanding access to insurance-based care, increasing engagement in treatment, and improving treatment outcomes. We are doing this by combining research-backed clinical care and innovative technology to eliminate the major problems with care today: difficulty finding providers, months of waiting to be seen, arduous onboarding processes, and inconsistent use of evidence-based therapies and outcomes tracking. Our vision is to become the nation’s most trusted provider of pediatric anxiety and OCD care.
+
+Team InStride Health: Our Core Values
+
+Give Heart: We lead with heart, treating patients and their families the way we want our loved ones to be treated. 
+Work Smart: We find smarter ways to solve hard problems and fix the broken mental health system by leveraging technology, diversity of thought, and innovation.
+Have Humility: We leave our egos at the door, empowering our team to collaborate, celebrate diversity, and adopt a growth mindset.
+Embrace Community: We all belong. We are in this together, and we never worry alone. We believe in each other and recognize that every voice matters.
+About the Role
+
+We are looking for a Data Engineer II to help design, build, and maintain the scalable data infrastructure that powers clinical and operational decision-making across InStride. In this role, you will develop and own reliable ETL/ELT pipelines, contribute to our data warehouse architecture, and partner closely with our analytics and business intelligence teams to ensure high-quality, trusted data reaches every corner of the business. This is a high-impact, hands-on engineering role for someone who takes pride in building systems that are not just functional, but resilient, observable, and built to scale. This role reports to the Director of Data Engineering and is a fully remote position.
+
+Responsibilities:
+
+Design, develop, and maintain robust, scalable ETL/ELT data pipelines using Python, SQL, and data processing frameworks including dbt, Matillion, and AWS services.
+Implement data quality checks, monitoring, and alerting across all data pipelines to ensure data integrity and reliability.
+Optimize existing pipelines for performance, cost-efficiency, and error handling.
+Contribute to the design and maintenance of InStride’s data warehouse and data lake solutions, including schema design, data modeling, and indexing strategies in Amazon Redshift.
+Ensure data security, HIPAA compliance, and proper handling of protected health information (PHI) within all data infrastructure.
+Work closely with data analysts, data scientists, and business intelligence engineers to understand their data requirements and deliver reliable, high-quality data access.
+Troubleshoot and resolve complex production data issues with urgency and root-cause rigor.
+Develop and maintain clear documentation for data models, pipelines, and data sources to enable self-service analytics.
+Participate in code reviews and contribute to technical discussions, bringing a constructive and detail-oriented perspective.
+Stay current on emerging data technologies and tools, bringing relevant insights to the team.
+What You Need to Succeed in the Role
+
+3+ years of experience designing, developing, and deploying data pipelines and data warehouse solutions in production environments.
+Strong proficiency in SQL and Python for data engineering and transformation work.
+Hands-on experience with cloud data warehouses (Amazon Redshift preferred; Snowflake or BigQuery also valued) and familiarity with ETL/ELT tools such as dbt, Matillion, or similar.
+Working knowledge of AWS services relevant to data engineering (e.g., S3, Glue, Lambda, Redshift).
+Demonstrated understanding of HIPAA compliance requirements and experience working with sensitive or regulated data.
+Ability to design and build data systems that are scalable, observable, and built to handle growth in data volume and complexity.
+Strong understanding of data integration patterns, including APIs, webhooks, and batch ingestion techniques.
+Experience giving and receiving structured feedback through pull request reviews and technical discussions.
+Strong communication skills, with the ability to translate complex technical concepts for both technical and non-technical stakeholders.
+Comfortable operating in a fast-paced startup environment, balancing competing priorities and making sound tradeoffs.
+Experience working with healthcare data is a plus.
+The expected annual salary for this role is between $110,000–$125,000. Actual starting salary will be determined on an individualized basis and will be based on several factors including but not limited to specific skill set, work experience, etc.
+
+Why Join Our Team
+
+Generous benefits package (401k with match, Flexible PTO, paid holidays, paid service days, 4 week paid sabbatical, 12 week paid parental leave, health benefits starting on your first day, and more)
+Opportunity to join a mission-driven company that is changing the landscape of pediatric mental health treatment
+Chance to make a far-reaching impact by helping children and families access desperately-needed, evidence-based care
+Opportunity to work with talented and experienced team members who have devoted their lives to solving this problem
+Fully virtual: work from the comfort of your home with periodic in-person retreats
+Commitment to Diversity, Equity, Inclusion, & Belonging (DEIB)
+
+We want to make our clinical services available for everyone, no matter where you come from, what you look like, or how you identify. To achieve this, we recognize we must continually make progress in building a more diverse, equitable, and inclusive team. Through these efforts, we support two primary objectives at InStride Health:
+
+Providing high quality patient care to families. We are in a privileged position to support families during a vulnerable time in their lives. We approach all families and each other with compassion and are most effective as a diverse team where all individuals feel valued, respected, and accepted.
+Building a mission-driven business that lasts. Specifically, we believe our commitment to a supportive culture improves innovation, decision-making, and efficiency.
+We invite you to share any additional information about yourself or your experiences that may not be reflected in your CV. Inclusion of this information is completely voluntary.

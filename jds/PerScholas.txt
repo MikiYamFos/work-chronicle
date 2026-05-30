@@ -1,0 +1,85 @@
+Data Engineer
+United States
+ABOUT PER SCHOLAS:
+
+For 30 years, Per Scholas has been on a mission to drive mobility and opportunity in the ever-advancing technology landscape by unlocking the untapped potential of individuals, uplifting communities, and meeting the needs of employers through rigorous tech training. By teaming up with dynamic employer partners, ranging from Fortune 500 companies to innovative startups, we're forging inclusive tech talent pipelines, fulfilling an ever-increasing need for skilled talent. With national remote training and campuses in 20+ cities and counting, Per Scholas offers no-cost training programs in the most sought-after tech skills, spanning Cloud, Cybersecurity, Data Engineering, IT Support, Software Engineering, and more. To date, 30,000+ individuals have been trained through Per Scholas, propelling their professional trajectories into high-growth tech careers with salaries three times higher than their pre-training earnings. Learn more by visiting PerScholas.org and follow us on LinkedIn, X, Facebook, Instagram, and YouTube.
+
+Per Scholas preferred hires reside within the following states: AZ, CA, CO, FL, GA, IL, IN, KS, MD, MA, MI, MO, NC, NJ, NY, OH, PA, TX, WA
+
+
+Position Title: Data Engineer 
+Location: Remote 
+
+Reports To: EVP, IT
+
+ 
+
+Position Summary
+Per Scholas is seeking a Data Engineer to maintain and expand our enterprise data infrastructure. This role focuses on the technical execution of our data strategy, specifically managing the flow of data into our newly established Snowflake Data Lake. You will be the "bridge" that ensures data from various sources is accurately ingested, transformed, and ready for visualization in Tableau.
+
+Core Responsibilities
+1. Data Pipeline Management
+Set up and monitor automated data ingestion connectors using Fivetran.
+Troubleshoot sync errors and work with API providers to ensure continuous data flow.
+Write and optimize SQL transformations within Snowflake to prepare data for reporting.
+Familiarity or experience with OpenFlow data ingestion is nice-to-have
+ 
+
+2. Data Lake Maintenance
+Maintain the structure of the Snowflake Data Lake (schemas, tables, and views) as defined in partnership with InterWorks.
+Perform regular data quality checks to ensure the "source of truth" remains accurate.
+Monitor warehouse performance and assist in managing Snowflake credit consumption.
+3. Reporting & Visualization Support
+Build and maintain "Published Data Sources" in Tableau for use by various departments.
+Assist team members in building complex Tableau dashboards by providing the necessary back-end data structures.
+Translate business requests into technical requirements for new data pipelines.
+4. Privacy & Compliance
+Execute data masking and access control policies to ensure compliance with Data Privacy frameworks.
+Assist in maintaining documentation for data lineage and the organizational data dictionary.
+Required Qualifications
+Excellent communication skills, able to communicate technical requirements to non technical audiences
+A clear understanding of data modeling and best practices
+2–4 years of professional experience in data engineering or a highly technical data analyst role.
+Experience with CI/CD pipelines
+Snowflake: Hands-on experience querying and managing tables within a Snowflake environment.
+Fivetran: Proficiency in setting up and managing SaaS connectors.
+Experience writing and implementing data transformations with dbt (Data Build Tool)
+Tableau: Experience in data modeling for Tableau (calculating fields, joining data sets, and optimizing for performance).
+Technical Skills: Strong SQL skills are mandatory. Experience with Python for basic scripting is preferred.
+Mission-Driven: A genuine interest in using technology to support Per Scholas’ mission of closing the opportunity gap.
+LI#- Remote
+
+For this position, our target salary is $139,000, with a range of $129,000 to $139,000. The variation in compensation typically hinges on factors such as the candidate's geographic location and their qualifications and experience that align with the role.
+
+
+Benefits & Perks
+
+Per Scholas offers a comprehensive benefits package designed to support your health, financial well-being, and overall quality of life!
+
+Holidays & PTO: Full-Time Per Scholas team members enjoy over 40 days of paid time off each year through a mix of holidays, vacation, and sick/personal time! All employees are eligible for Holiday pay upon hire (a total of 22 holidays annually, including a week off for Independence day and a week before the New Year). Full-Time Benefits Eligible employees also receive 80 Wellness Hours to use for Sick, Safe, or Personal reasons and accrue Vacation at a rate of 8 hours at the beginning of every month, supporting rest, recharge, and work-life balance. Vacation accruals increase with tenure. Part-time employees are afforded time off on a prorated basis and in accordance with local requirements. 
+
+Comprehensive Medical Coverage: Benefit eligible employees can choose from multiple medical plans through Cigna or Kaiser Permanente (where available), with options to fit your needs. Eligible employees also have access to a Health Reimbursement Account (HRA) that reimburses eligible out-of-pocket expenses, up to $4,000 for individuals and $8,000 for families.
+
+Dental and Vision Insurance: Eligible employees can select from two dental plan options and a vision plan. Employees who waive medical coverage receive employer paid dental and vision premiums.
+
+Retirement Savings: 401(k) plan with a current 100% employer match on contributions up to 6%, eligible employees are offered entry and full vesting after 90 days with the company.
+
+Employee Assistance Program (EAP): Free, confidential, 24/7 access to counseling, legal support, and financial resources for employees and their household members
+
+Parental Leave: Eligible employees are offered up to 6 weeks of 100% paid parental leave to support employees as they welcome a new child and bond with their family.
+
+Additional Benefits & Perks: Eligible employees have access to employer-paid life and AD&D Insurance, as well as employer-paid short-term disability coverage, with the option to elect additional life coverage and long-term disability insurance. Flexible Spending accounts are available for healthcare, dependent care, and commuting expenses. Per Scholas also offers a range of voluntary benefits, including: Accident, Critical Illness, Hospital Indemnity, Legal Services, and Pet Insurance. Additional resources include healthcare concierge support, financial wellness tools, and employee discount programs.
+
+
+
+QUESTIONS?
+
+If you have any questions about this role, please feel free to email our Talent team at jobs@perscholas.org. We look forward to viewing your application!
+
+Equal Employment Opportunity
+
+We're proud to be an equal opportunity employer. All qualified applicants will receive consideration for employment without regard to age, race, color, religion, sex, sexual orientation, gender identity or national origin.
+
+PII Policies
+
+Non-Discrimination Policy

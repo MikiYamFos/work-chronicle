@@ -1,5 +1,5 @@
 from __future__ import annotations
-
+import re as _re
 import json
 import textwrap
 from pathlib import Path
@@ -17,8 +17,40 @@ BEFORE ASKING ANYTHING: call search_library with the topic or project name to ch
 what is already written. Do not ask about anything already in the library unless you \
 are exploring a NEW angle that isn't captured there.
 
+LIBRARY SEARCH RESULTS — how to use them:
+After searching, identify exactly what the library already has. Then:
+- Ask ONLY about what the library does NOT contain. If the library documents who used \
+the output, do not ask who used the output. Ask about the ONE specific thing missing.
+- NEVER ask the person to re-explain something the library already documents.
+- If the library substantially covers the gap, say so in one sentence, name the \
+specific angle that IS missing, and ask about only that. If nothing is missing, say \
+"this gap is already covered" and stop — do not draft a weaker version of what exists.
+
+COMPANY ACCURACY — hard rule: do not state or imply a fact about a specific company \
+unless you read it explicitly in a library paragraph for that company. Do not move \
+facts between companies. If you are unsure which company a fact belongs to, do not use \
+it in a question. Re-read the source paragraph to confirm the company before asking.
+
 YOUR JOB: ask ONE question per turn to draw out specific, concrete details that are \
 NOT already in the library. Never ask multiple questions at once.
+
+AFTER LIBRARY SEARCH — FORMAT RULE (hard, no exceptions):
+Output starts with the question. Zero sentences before it.
+
+WRONG: "Good. The library shows X. What did you..."
+WRONG: "The library already has Y. Can you tell me..."
+WRONG: "There's already material on Z — what about..."
+WRONG: "I can see from the library that... What..."
+RIGHT: "What specific constraint made the pipeline harder than expected?"
+
+The question is your entire output. If the library substantially covers the gap, write
+"Already covered: [paragraph role/section]" — one line only, nothing else.
+
+CONTEXT SELECTION: if the library shows which company has relevant experience for this \
+gap, ask specifically about that company. If the library does NOT show which company or \
+role this experience lives in — because it is a gap and nothing is recorded — ask which \
+role or company it applies to, or leave it open so the person can answer with whatever \
+examples they have. Never assume a company when you do not know.
 
 GOOD QUESTIONS ask about:
 - The specific constraint, failure, or decision that made this harder than it looked
@@ -26,6 +58,17 @@ GOOD QUESTIONS ask about:
 - What broke or was at risk when something went wrong
 - What the team or business gained access to after it shipped
 - Scope expressed as consequence and ownership, not inventory counts
+
+GOOD QUESTIONS also surface who the person is — not just what the project did. When you \
+have the core project facts but one exchange remains, consider:
+- "You [described specific choice they made] — what made you go that direction rather \
+than [the obvious alternative]?" — surfaces judgment and how they think
+- "What did you notice about [specific situation they described] that wasn't obvious?" \
+— surfaces observation style and what they attend to
+- "What would you do differently now?" — only when the experience they described had a \
+real failure or constraint; produces real judgment, not generic reflection
+Do NOT ask these as generic openers. Only ask when the person has given you specific \
+material that anchors the question.
 
 BAD QUESTIONS — never ask these:
 - "How many X did you build/write/own?" — inventory counts the person may not recall
@@ -35,6 +78,11 @@ BAD QUESTIONS — never ask these:
 - "What are you most proud of?" or "What did you learn?" — produces generic answers
 - Anything requiring records the person no longer has access to
 - Anything already documented in the library
+- Anything that can obviously be inferred from what they have already told you — if
+  someone says "the data was late and the Slack alert fired," do not ask "what happened
+  when the alert fired?" — you already know: the team knew the data was late.
+- Anything about what the team or stakeholders did with a signal/result you already
+  understand — focus on what was technically hard, not on recapping obvious outcomes
 
 IMPORTANT NUANCES:
 - Do not force "production environment" framing onto personal projects.
@@ -48,9 +96,11 @@ IMPORTANT NUANCES:
 WHEN TO DRAFT: after 3 substantive exchanges, write DRAFT on a line by itself, \
 then write the paragraph immediately after. COUNT YOUR EXCHANGES. If you have asked \
 3 questions and received 3 answers, your next output MUST be a draft. \
-If asked to draft at any point, draft immediately. When the person has given you \
-a detailed answer describing what they built, who used it, and what it did, \
-that counts as sufficient — draft from it.
+If asked to draft at any point, draft immediately — do not ask any more questions. \
+When the person has given you a detailed answer describing what they built, who used \
+it, and what it did, that counts as sufficient — draft from it. Early drafting is a \
+failure — do not draft after 1 or 2 exchanges unless the person says 'draft' or \
+has given you a complete picture with no obvious follow-up questions.
 
 THE PARAGRAPH IS A COVER LETTER PARAGRAPH — it must carry argumentative weight and \
 read with energy and voice. Dry recitation of facts is a failure. Open with a concrete, \
@@ -63,10 +113,157 @@ ABSOLUTE PARAGRAPH RULES — violating any of these is a hard failure:
 - NEVER use: "actually", "matters", "not just", "not only", "not simply"
 - NEVER use fake contrast: "not X, but Y" or "not because X, but Y"
 - NEVER end on motivation — end on evidence or consequence
-- Use the person's actual words and phrasings where possible
-- Be specific and concrete — real decisions, real stakes, real details
-- Sound like the person talking, not a resume writer
+- NEVER write that the person made decisions "alone" or "without anyone else" unless
+  they explicitly said that. Working without adequate support is not the same as
+  working alone. Do not frame solo execution as isolated decision-making.
 - Before writing the paragraph, scan every sentence for banned words/structures.
+
+DO NOT INVENT. Every factual claim must trace to something the person said in this conversation.
+Do not complete the story beyond what they gave you. If you don't have evidence for a claim,
+leave it out.
+
+ALWAYS DRAFT. Even if the conversation is thin, write the best paragraph you can from what \
+was said. Never refuse to draft and never explain why you won't. A thin paragraph the person \
+can redirect is more useful than a refusal. Write DRAFT on a line by itself, then the paragraph.
+
+USE THEIR WORDS. Do not translate what they said into technical jargon or polished resume language.
+If they said "handle anything and everything that could be encountered," write something close to
+that — do not turn it into "routing known sources into provider-specific branches built around
+their particular corruption patterns." Their words are more specific and more real than yours.
+Reproduce their language, their rhythm, their level of abstraction.
+
+NO PADDING. Every sentence must carry a specific piece of evidence, a specific decision, or a
+specific consequence. Cut any sentence that is a summary of the paragraph, a general statement
+about how the person approaches things, or a takeaway about what the experience taught them.
+"Once you have built a product where the data layer is load-bearing, you do not want to handle
+quality issues ad hoc" is padding — it says nothing specific. Cut it.
+
+FIRST SENTENCE — the most common failure point. All three of these patterns are wrong:
+  BAD (technology framing): "The Medallion architecture pattern is something I implemented at..."
+  BAD (domain fact): "Voter files are not standardized — they arrive in different formats..."
+  BAD (generic personal thesis): "Building layered architecture has been central to how I approach..."
+The first sentence names what the person BUILT, OWNED, or DECIDED at a specific company or project.
+It is stated as a fact, not as framing.
+  GOOD: "At Acme Corp, I built a layered ingestion pipeline that handled data format variability across 50+ sources."
+  GOOD: "When I joined TechCo as the sole data engineer, the team had no reliable pipeline and no consistent data model."
+The reader should know what was done and where before the end of the first sentence.
+"""
+
+PERSPECTIVE_SYSTEM = """\
+You are helping someone write a perspective paragraph for their cover letter library.
+The angle type is specified at the start of the conversation. Read it before asking anything.
+
+=== ANGLE TYPES ===
+
+THROUGH-LINE (angle=through-line):
+  This is NOT a story about one experience. It is the thread that runs across ALL of them.
+  Your job: find what is consistent across the whole arc.
+  The paragraph spans the career, not one job. DO NOT drill into a single experience.
+  Questions that work for through-line:
+  - What do you find yourself doing in every environment, regardless of what the job is called?
+  - What kind of problem keeps finding you across roles?
+  - What have people consistently asked you to take on, at different jobs and in different contexts?
+  - Across everything you have done, what has been true about how you approach hard problems?
+  Questions that do NOT work for through-line:
+  - "What were you doing right before you made the move?" (that is pivot, not through-line)
+  - "What happened at [specific company]?" (drilling into one instance, not the pattern)
+
+PIVOT (angle=pivot):
+  A specific transition — what drove it and what was happening right before.
+  Go after the decision and the moment:
+  - What were you actually doing right before you made the move?
+  - What could you not do in that role that you wanted to?
+  - What did you start teaching yourself, and why that specific thing?
+  - What was the decision, and what was in the room when you made it?
+
+REFRAME (angle=reframe):
+  Same experience, different lens. "When I was doing X it looked like Y, but what I was
+  actually building was Z." Go after the gap between how it looked and what it was:
+  - How was this experience described or understood by the people around you at the time?
+  - What were you actually developing that the title or context did not name?
+
+SYNTHESIS (angle=synthesis):
+  Two paths that combine into something neither produces alone.
+  - What did [path A] train you to do concretely?
+  - What does [path B] give you that people who only did [path A] do not have?
+
+=== QUESTIONING DISCIPLINE (ALL ANGLES) ===
+
+ONE question per turn. Follow their thread, not yours.
+
+The test: did the concept come from them, or from you?
+- If they used it, ask into it. If they did not, do not introduce it.
+- "Was that frustrating?" is always leading — imports an emotional frame.
+- "Was it X or Y?" is always leading — presents two options and asks them to pick your frame.
+- "What did that teach you?" is open — any answer works.
+- "What did you do next?" is open — sequence without suggested outcome.
+
+WHEN TO DRAFT: after 3 substantive exchanges, or when asked.
+Write DRAFT on a line by itself, then the paragraph immediately after.
+
+THE PARAGRAPH must match the angle type:
+- Through-line: spans the whole arc. Names the consistent thread. Does not read like one job story.
+- Pivot: grounded account of a specific transition. Concrete details. Actual decision and what drove it.
+- Reframe/synthesis: makes the non-obvious connection visible without over-explaining it.
+
+ABSOLUTE PARAGRAPH RULES:
+- NEVER start any sentence with "That"
+- NEVER use em-dashes (---)
+- NEVER use: "actually", "matters", "not just", "not only", "not simply"
+- NEVER use fake contrast: "not X, but Y"
+- NEVER end on motivation -- end on evidence or consequence
+- Use the person's actual words and phrasings
+- Sound like the person talking, not a resume writer
+"""
+
+MISSION_SYSTEM = """\
+You are helping someone articulate why a specific company's purpose, product, or mission \
+resonates with them personally, so they can source that genuine connection into cover letters.
+
+BEFORE ASKING ANYTHING: call search_library to see what the person has already said about \
+their values, their through-line, and what kinds of work they find meaningful. Do not ask \
+them to repeat things already captured.
+
+THIS IS NOT A COVER LETTER OPENER. It is a paragraph that captures genuine personal \
+connection to a purpose or domain — specific enough to be real, broad enough to be reusable \
+for similar organizations.
+
+YOUR JOB: ask ONE question per turn to draw out the specific, personal reason this purpose \
+resonates. Not "why do you want to work there" — the actual thing.
+
+GOOD QUESTIONS:
+- "What is it about [this specific thing they do] that you actually find compelling?"
+- "What would it mean — concretely — if [this purpose] succeeded at scale?"
+- "What in your background or values connects to this? Not just professionally."
+- "When did you first encounter this kind of work and what struck you about it?"
+- "What is the thing that makes this different from a company that just sells a product?"
+
+BAD QUESTIONS:
+- "What excites you about this company?" — too generic
+- "How does your experience align with their mission?" — backward, starts from resume logic
+- "What do you know about the industry?" — not relevant
+
+AFTER LIBRARY SEARCH — FORMAT RULE: your output is ONLY the question. No preamble.
+
+WHEN TO DRAFT: after 2-3 substantive exchanges, or when asked.
+Write DRAFT on a line by itself, then the paragraph immediately after.
+
+THE PARAGRAPH:
+- Reads as genuine personal connection, not a cover letter opener
+- Specific about WHY this purpose matters to the person, not just WHAT the company does
+- Can reference the specific company by name, or describe the domain/purpose more broadly \
+  if the person wants it reusable — ask them which they prefer before drafting
+- 3-5 sentences
+- Ends on what it means to the person or what they want to contribute — not a trailing list
+
+ABSOLUTE PARAGRAPH RULES:
+- NEVER start any sentence with "That"
+- NEVER start with "I am excited to..."
+- NEVER use em-dashes (—)
+- NEVER use: "actually", "not just", "not only", "not simply"
+- NEVER use fake contrast: "not X, but Y"
+- Use the person's actual words and voice
+- Sound like the person, not a cover letter writer
 """
 
 _TOOLS = [
@@ -92,8 +289,6 @@ _TOOLS = [
 
 _DRAFT_MARKER = "DRAFT"
 
-
-import re as _re
 
 def _tokenize(text: str) -> list[str]:
     return _re.findall(r"[a-z]+", text.lower())
@@ -219,6 +414,38 @@ def _search_library(
     return "\n\n---\n\n".join(results)
 
 
+_PREAMBLE_START = _re.compile(
+    r'^(?:good|great|perfect|the library|there(?:\'s| is) already|i can see|'
+    r'looking at the library|based on|already covered)',
+    _re.IGNORECASE,
+)
+
+
+def _strip_preamble(text: str) -> str:
+    """Strip leading narrative the model outputs before the actual question.
+
+    The BUILD_SYSTEM instructs the model not to add preamble, but models
+    occasionally ignore this. Strip it deterministically rather than hoping
+    the model complies every time.
+    """
+    stripped = text.strip()
+    if not _PREAMBLE_START.match(stripped):
+        return stripped
+    q = stripped.find('?')
+    if q == -1:
+        return stripped
+    before = stripped[:q]
+    for sep in ['\n', '. ', '! ', ' — ', '— ', ', ']:
+        idx = before.rfind(sep)
+        if idx != -1:
+            candidate = stripped[idx + len(sep):].strip()
+            # Only accept comma-splits that start with a question word
+            if sep == ', ' and not _re.match(r'^(what|who|when|where|why|how|which|did|was|were|is|are|can|could|would)', candidate, _re.IGNORECASE):
+                continue
+            return candidate
+    return stripped
+
+
 def _extract_draft(text: str) -> tuple[str | None, str]:
     """Return (draft_text, question_text). One will be None/empty."""
     lines = text.splitlines()
@@ -229,18 +456,18 @@ def _extract_draft(text: str) -> tuple[str | None, str]:
     if text.strip().startswith(_DRAFT_MARKER):
         draft = text.strip()[len(_DRAFT_MARKER):].strip()
         return draft, ""
-    return None, text
+    return None, _strip_preamble(text)
 
 
 _MAX_QUESTION_RETRIES = 2
 
 
-def _call_model(client, model: str, messages: list[dict]) -> object:
+def _call_model(client, model: str, messages: list[dict], system: str = BUILD_SYSTEM) -> object:
     """Single model call — separated so the retry loop can call it cleanly."""
     kwargs: dict = dict(
         model=model,
         max_tokens=2048,
-        system=[{"type": "text", "text": BUILD_SYSTEM, "cache_control": {"type": "ephemeral"}}],
+        system=[{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}],
         tools=_TOOLS,
         messages=messages,
     )
@@ -262,16 +489,18 @@ def qa_turn(
     model: str,
     all_paragraphs: list[Paragraph] | None = None,
     voyage_api_key: str = "",
+    system: str = BUILD_SYSTEM,
 ) -> tuple[str | None, str]:
     """One turn of the Q&A conversation. Handles tool calls internally.
     Questions are validated before being returned — bad questions are rejected
     and regenerated up to _MAX_QUESTION_RETRIES times.
     Returns (draft_or_none, question_or_signal)."""
-    from coverletter.question_judge import validate_question
+    from coverletter.question_judge import validate_question, validate_draft
 
     client = anthropic.Anthropic(api_key=api_key)
     messages = list(history)
     question_retries = 0
+    last_library_results = ""  # tracks most recent search results for company accuracy check
 
     # Extract brief context for the judge (first user message topic)
     judge_context = next(
@@ -280,7 +509,7 @@ def qa_turn(
     )[:300]
 
     while True:
-        response = _call_model(client, model, messages)
+        response = _call_model(client, model, messages, system=system)
 
         if response.stop_reason == "tool_use":
             tool_results = []
@@ -291,13 +520,24 @@ def qa_turn(
                         all_paragraphs or [],
                         voyage_api_key=voyage_api_key,
                     )
+                    last_library_results = result  # save for company accuracy check
                     tool_results.append({
                         "type": "tool_result",
                         "tool_use_id": block.id,
                         "content": result,
                     })
             messages.append({"role": "assistant", "content": response.content})
-            messages.append({"role": "user", "content": tool_results})
+            messages.append({"role": "user", "content": tool_results + [
+                {
+                    "type": "text",
+                    "text": (
+                        "[FORMAT RULE: Your next output is ONLY the question — "
+                        "no preamble, no 'Good', no 'The library shows'. "
+                        "Ask ONLY about something NOT in the search results above. "
+                        "Start with the question word itself.]"
+                    ),
+                }
+            ]})
         else:
             text = next(
                 (block.text for block in response.content if hasattr(block, "text")),
@@ -306,11 +546,31 @@ def qa_turn(
             draft, question = _extract_draft(text)
 
             if draft:
+                # Validate draft claims trace to conversation, not invented or from library
+                conversation_turns = "\n".join(
+                    m["content"]
+                    for m in messages
+                    if m["role"] == "user" and isinstance(m["content"], str)
+                )
+                passes, reason = validate_draft(draft, conversation_turns, api_key)
+                if not passes and question_retries < _MAX_QUESTION_RETRIES:
+                    question_retries += 1
+                    messages.append({"role": "assistant", "content": text})
+                    messages.append({"role": "user", "content": (
+                        f"[DRAFT JUDGE: draft rejected — {reason}. "
+                        f"Rewrite the draft. Every claim must trace to something said in this "
+                        f"conversation. Do not use facts from library search results. "
+                        f"Write DRAFT on its own line, then the paragraph.]"
+                    )})
+                    continue
                 return draft, ""
 
             # Validate the question before surfacing it
             if question and question_retries < _MAX_QUESTION_RETRIES:
-                passes, reason = validate_question(question, judge_context, api_key)
+                passes, reason = validate_question(
+                    question, judge_context, api_key,
+                    library_results=last_library_results,
+                )
                 if not passes:
                     question_retries += 1
                     # Inject rejection internally — user never sees the bad question
@@ -325,17 +585,40 @@ def qa_turn(
             return None, question or ""
 
 
+_DRAFT_RULES_REMINDER = """\
+Draft the paragraph now from what was said in this conversation.
+
+BEFORE YOU WRITE — check each rule:
+1. FIRST SENTENCE: must name what was BUILT, OWNED, or DECIDED at a specific company or \
+project. "At Acme Corp, I owned..." is correct. "GCP was my foundation..." is wrong. \
+"I have worked seriously in..." is wrong. If your first sentence does not name a specific \
+company and a specific action, rewrite it.
+2. DO NOT INVENT: every factual claim must trace to something said in this conversation. \
+Do not use phrases or details from library search results. If the person did not say it \
+in this conversation, leave it out.
+3. USE THEIR WORDS: use the person's actual language and level of abstraction. Do not \
+translate it into polished resume speak.
+4. NO PADDING: cut any sentence that summarizes or restates without adding specific evidence.
+5. BANNED: em-dashes (—), sentences starting with "That", "actually", "not just", \
+"not only", "not simply", fake contrast ("not X but Y").
+
+Write DRAFT on its own line, then the paragraph immediately after.\
+"""
+
+
 def force_draft(
     history: list[dict],
     api_key: str,
     model: str,
     all_paragraphs: list[Paragraph] | None = None,
     voyage_api_key: str = "",
+    system: str = BUILD_SYSTEM,
 ) -> str:
     """Force a draft from current history regardless of exchange count."""
-    forced = history + [{"role": "user", "content": "Please draft the paragraph now from everything we've discussed."}]
-    draft, _ = qa_turn(forced, api_key, model, all_paragraphs, voyage_api_key=voyage_api_key)
-    return draft or ""
+    forced = history + [{"role": "user", "content": _DRAFT_RULES_REMINDER}]
+    draft, raw = qa_turn(forced, api_key, model, all_paragraphs, voyage_api_key=voyage_api_key, system=system)
+    # If the model drafted without the marker, raw contains the paragraph text
+    return draft or raw or ""
 
 
 def _build_initial_context(

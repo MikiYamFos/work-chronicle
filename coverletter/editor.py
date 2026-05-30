@@ -150,12 +150,17 @@ def delete_paragraph(paragraphs_file: Path, paragraph: Paragraph) -> bool:
 
 
 def read_multiline(prompt: str) -> str:
-    """Read until Ctrl-D. Returns stripped text."""
+    """Read lines until a blank line (Enter twice). Returns stripped text."""
     print(prompt)
+    print("Press Enter twice when done.")
     lines = []
     try:
-        for line in sys.stdin:
+        while True:
+            line = input()
+            if line == "" and lines and lines[-1] == "":
+                lines.pop()
+                break
             lines.append(line)
-    except KeyboardInterrupt:
-        return ""
-    return "".join(lines).strip()
+    except (EOFError, KeyboardInterrupt):
+        pass
+    return "\n".join(lines).strip()

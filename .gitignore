@@ -3,12 +3,14 @@
 .env.*
 
 # Personal data — not for public repo
+library.db
 paragraphs.md
 paragraphs_new.md
 library.md
 library_refined.md
 experiences.md
 candidate_profile.toml
+candidate_profile_*.toml
 resume_bullets.md
 corrections.md
 story_notes.md

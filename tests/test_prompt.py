@@ -10,8 +10,15 @@ PARAGRAPHS = [
 ]
 
 
+def _text(msg) -> str:
+    """Extract all text from a build_user_message result (list of content blocks)."""
+    if isinstance(msg, list):
+        return " ".join(block["text"] for block in msg if isinstance(block, dict) and "text" in block)
+    return str(msg)
+
+
 def test_build_user_message_contains_sections() -> None:
-    msg = build_user_message("We are hiring a Python data engineer.", PARAGRAPHS)
+    msg = _text(build_user_message("We are hiring a Python data engineer.", PARAGRAPHS))
     assert "Technical" in msg
     assert "Closing" in msg
     assert "JOB DESCRIPTION" in msg
@@ -19,12 +26,12 @@ def test_build_user_message_contains_sections() -> None:
 
 
 def test_build_user_message_with_role() -> None:
-    msg = build_user_message("Python data engineer role.", PARAGRAPHS, role="Data Engineering")
+    msg = _text(build_user_message("Python data engineer role.", PARAGRAPHS, role="Data Engineering"))
     assert "Target role: Data Engineering" in msg
 
 
 def test_build_user_message_paragraph_index() -> None:
-    msg = build_user_message("job", PARAGRAPHS)
+    msg = _text(build_user_message("job", PARAGRAPHS))
     assert "[0]" in msg
     assert "[1]" in msg
 

@@ -1,14 +1,14 @@
-# WorkerChronicle — an engineer's experience library and cover letter generator
+# WorkerChronicle — a worker's experience library and cover letter generator
 
 Engineers ship constantly. Projects stack up. Two years later you remember you built something important but you've lost the nuance — what was actually at stake, what made it hard, what you had to figure out, what broke, what downstream decisions depended on your work. The resume bullet survives. The story doesn't.
 
 The gap between "what I actually did" and "what I can articulate I did to an outsider" is enormous for most engineers. That gap costs you in interviews, in cover letters, in performance reviews, in any moment where you need someone who wasn't there to understand the value of your work.
 
-I built this because I was writing a lot of cover letters and kept losing the pivotal details of my own work. Generic LLM is almost perfectly wrong for this task — it flattens the story, over-polishes the voice, loses the facts, and produces something that sounds like a cover letter while destroying the evidence that would make it good. This tool does the opposite.
+I built this tool because I was writing a lot of cover letters and kept losing the pivotal details of my own work. Generic LLM is almost perfectly wrong for the task of writing cover letters — it flattens your story, over-polishes your voice, loses the facts, and produces something that sounds like a cover letter while destroying the evidence that would actually make it compelling. This tool does the opposite because your letters are rooted in your words and your experience.
 
 **Letters are assembled from your own paragraphs, not generated from scratch.** The model writes a fresh opener and closer per application. Every body sentence traces back to your source library. Library quality drives letter quality.
 
-This tool works for anyone — not just engineers. If you're working through a career transition or have a non-standard work history, I'd especially love to hear how it works for you.
+This tool works for anyone — not just engineers. If you're working through a career transition or have a non-standard work history, I'd especially love to hear how it works for you!
 
 ---
 
@@ -59,19 +59,48 @@ uv run coverletter build --about "the time I rebuilt our deployment pipeline fro
 ### 3. Build your candidate profile
 
 ```bash
-uv run coverletter profile --model opus   # run once; use opus, it's worth it
+uv run coverletter profile --model opus   # run once; use opus or another more robust LLM, it's worth it
 ```
 
-When prompted, press **G** to have the tool read your library and draft all four profile sections for you:
+When prompted, press **G** to have the tool read your library and draft profile sections for you, or **E** to edit what's already there.
+
+The profile has seven sections:
 
 - **goals** — what kind of work and scope you're looking for right now
-- **differentiators** — what makes your background distinct
-- **focus_areas** — specific skills or domains to emphasize
-- **avoid** — roles, environments, or work types that are wrong fits
+- **differentiators** — what makes your background distinct (specific technologies, scale, ownership — not generic claims)
+- **focus_areas** — skills or domains you want to go deeper in
+- **avoid** — roles, environments, or work types that are wrong fits. Also used in biographical responses: each avoid entry reveals a real value — the tool infers the positive claim, it doesn't quote the constraint
+- **seniority_signals** — what separates senior candidates from mid-level ones in your domain
+- **working_style** — how you work and think day-to-day. Not skill claims. Not project evidence. How you operate. Used as thesis material in biographical responses alongside `values`
+- **values** — what you believe and care about as a programmer, teammate, and person. Open-source development, mentorship, test discipline, how you show up on a team, what kind of engineer you are at a deeper level. Write affirmatively in your own voice. Used as thesis material in biographical responses alongside `working_style`
 
-Review and edit each section before saving. This is a prerequisite for full letter quality — without it the thesis is generic, the alignment report has no goal-fit signal, and gap analysis can't tell you whether a role actually serves your goals.
+**On seniority signals:** these describe your expertise level, not the job title on the posting. If you have a senior data engineering background, your signals stay the same whether the role is called "Senior Data Engineer," "Staff Analytics Engineer," or "AI/ML Engineer with a DE focus." They travel with you across applications. You'd only revisit them if your direction genuinely shifts — crossing into a new discipline, moving from IC to staff, that kind of change.
 
-Re-run when your goals shift. This is the argument you're making about yourself right now, not a permanent document.
+Example signals for a senior data engineering background:
+- `Business impact: quantified outcomes, not just "built X" — what did it enable?`
+- `Production ownership: SLAs, incidents, reliability decisions — not greenfield only`
+- `System design judgment: trade-offs made and articulated, not just tool choices`
+- `Data modeling depth: schema decisions, SCD handling, warehouse design`
+- `Cross-functional effectiveness: translating infra needs to business context`
+
+**On working_style and values:** these two sections are the biographical argument — the thesis about who you are. They are not decorative framing. For biographical prompts, the tool reads them as the argument it needs to make, then selects library paragraphs that prove specific claims within that argument. Strong claims without evidence are just assertions. Evidence without the argument is just a resume. The two work together: biographical content organizes what gets said, library paragraphs prove it.
+
+`working_style` example entries:
+- `I'm the person people think through a problem with to figure out how to build it`
+- `I move naturally between technical and non-technical audiences — I translate, not present`
+- `I think creatively about data problems; my background gives me angles that pure backend engineers don't have`
+
+`values` example entries:
+- `I believe in open-source development — the community is how consequential engineering gets built outside commercial walled gardens`
+- `I care about mentorship and pay forward what I've received from people who made time for me`
+- `I write tests because I've been burned by not writing them, not because a process requires it`
+- `I am direct and honest with teammates even when it's uncomfortable — I learned early that clarity builds trust and cuts through wasted effort`
+
+A PM, a solutions engineer, a frontend lead — they'd write completely different entries. The tool does not infer them; you define them. Update them when your direction genuinely shifts.
+
+Review and edit each section before saving. Without a profile the thesis is generic, the alignment report has no goal-fit signal, and biographical prompts produce resume summaries instead of an argument about who you are.
+
+Re-run when your goals or direction shift. When you save a new profile, the previous one is automatically archived with a date stamp in the same directory — your goal history is preserved, not overwritten.
 
 ### 4. Generate a letter
 
@@ -90,6 +119,8 @@ Paste the job description, enter the company name, and the tool runs the full fl
 | `uv run coverletter` | Generate a cover letter — the main flow |
 | `uv run coverletter seed` | Extract paragraphs from existing material (cover letters, resume, notes) |
 | `uv run coverletter build` | Write a paragraph for a specific experience through Q&A |
+| `uv run coverletter reflect` | Capture a through-line, pivot, reframe, or synthesis through Q&A |
+| `uv run coverletter blurb` | Answer a short application prompt — "about me", behavioral, motivation |
 | `uv run coverletter profile` | Build or update your candidate profile |
 | `uv run coverletter show-library` | Show library stats and experience coverage |
 | `uv run coverletter resume` | Generate a tailored resume PDF alongside a letter |
@@ -101,9 +132,14 @@ uv run coverletter --model haiku             # cheaper, faster
 uv run coverletter --model sonnet            # default
 uv run coverletter profile --model opus      # worth it for one-time profile generation
 
+# --fast / -f skips thesis and alignment — generate, review, and revise only
+uv run coverletter --fast
+uv run coverletter -f
+
 # Useful shortcuts
 uv run coverletter --role "Senior Data Engineer"                    # skip role selection
 uv run coverletter build --about "rebuilt the deployment pipeline"  # skip the about prompt
+uv run coverletter reflect --about "shift from analyst to engineer" --angle pivot
 uv run coverletter seed --file resume.txt                          # read from file
 uv run coverletter resume --company Google                         # skip company prompt
 ```
@@ -163,15 +199,23 @@ Paste the full job description. Press **Ctrl-D** when done. Enter a company name
 
 The tool selects the most relevant paragraphs from your library (ranked by overlap with the JD, capped at 2 paragraphs per experience so no single experience dominates) and assembles a letter. The opener and closer are written fresh for this specific role and company. Every body sentence traces back to your source paragraphs.
 
+**Opener rule:** the opener connects you to the target employer first — what the organization does, what about their work connects to yours, why this is the right fit. It does not name previous employers (those belong in body paragraphs) and does not open with credentials or employment history.
+
 ### 5. Quality checks
 
 **Hard check:** the letter fails immediately if it contains an em-dash.
 
-**LLM check:** scans for banned words, fake-contrast structures, weak opener, closer that doesn't name the company. Auto-revises up to 4 times on failure.
+**LLM check:** scans for banned words, fake-contrast structures, weak opener, closer that doesn't name the company. On failure, the tool proposes a minimal fix and shows it to you:
+
+```
+[A]ccept fix  [E]dit manually (revision loop)  [S]kip (keep current):
+```
+
+The model stays as close to your source language as possible — it prefers cutting or restructuring over rewriting. If it can't fix something without inventing new language, it flags the sentence explicitly: `COULD NOT FIX: [sentence]`. Use the revision loop to resolve those manually.
 
 **Source check:** flags any body sentence where less than 72% of the words appear in your source paragraphs. These are warnings, not blockers — use them to catch drift.
 
-### 6. Letter thesis
+### 6. Letter thesis *(skipped with `--fast`)*
 
 ```
 Letter thesis: "This letter argues that [you] is the right fit because [X]..."
@@ -180,7 +224,7 @@ Is this the right argument? [Y/n/adjust]:
 
 The tool reads the letter and names the central argument it's making about you. If your profile is loaded, it also evaluates whether the role fits your stated goals and flags tensions. Confirm it, adjust it, or reject it — the thesis shapes everything downstream.
 
-### 7. Alignment report
+### 7. Alignment report *(skipped with `--fast`)*
 
 ```
 75% aligned (6 covered, 2 gap(s), 1 seniority signal gap(s))
@@ -195,30 +239,49 @@ Seniority Signal Gaps:
   1. Business impact — letter describes what was built but not what it enabled
 
 Goal fit: Partially — role offers platform scope but sits in a central DE team.
+
+Narrative frame: No through-line, pivot, reframe, or synthesis paragraph in library.
+The letter has evidence but no narrative frame. Run: uv run coverletter reflect
 ```
 
 **JD Gaps** are things the job description explicitly requires that the letter doesn't address.
 
-**Seniority Signal Gaps** track five dimensions — business impact, production ownership, system design judgment, data modeling depth, cross-functional effectiveness — and flag only the ones that are genuinely absent, not just underemphasized.
+**Seniority Signal Gaps** check the dimensions you defined in `seniority_signals` and flag only the ones that are genuinely absent from the letter — not just underemphasized. Only appears if you have seniority signals set in your profile.
 
 **Goal fit** only appears if you have a candidate profile loaded.
 
-### 8. Gap loop
+**Narrative frame** flags when your library has no perspective paragraphs — no through-line, pivot, reframe, or synthesis. The letter has evidence but no narrative argument about who you are and why your arc makes you right for this role. Fix it with `coverletter reflect`.
+
+### 8. Gap loop *(skipped with `--fast`)*
+
+All gaps are shown at once, numbered:
 
 ```
-Gap 1/2: BigQuery experience
-Address this? [Y/n/done]:
+3 gap(s):
+
+  1. BigQuery experience — critical for this team's warehouse stack
+  2. [in library] dbt modeling — paragraph exists in library (library: [4])
+  3. [Seniority] Business impact — letter describes what was built but not what it enabled
+
+  Gaps 2 already have library paragraphs — they'll be pulled in on regen.
+  Actionable: 1, 3
+
+Address which gaps? (e.g. 1,3 or 'all' or Enter to skip all):
 ```
 
-For each gap: **Y** starts a Q&A session, **n** skips it, **done** stops and moves to regeneration.
+Gaps already covered by a library paragraph are dimmed and labeled `[in library]` — they'll be included automatically on regeneration, no Q&A needed. Library coverage is detected via BM25 keyword matching against the full paragraph library — it runs in Python, not as an extra LLM call, so it catches matches the model misses.
 
-Inside a Q&A session:
+Enter individual gap numbers (`1,3`), type `all` or `a` to address every actionable gap in sequence, or press Enter to skip all and go straight to regeneration.
+
+Press **Ctrl-C** at any time during the gap loop to stop and return to the regeneration prompt. Any paragraphs saved before you stopped are kept.
+
+Inside a Q&A session for each selected gap:
 - The tool searches your library first so it doesn't ask about things you've already written
-- If you've documented this experience in `experiences.md`, the tool sees what angles are already covered and asks about the gaps specifically
+- If you've documented this experience in `experiences.md`, the tool sees what angles are already covered and asks about the gaps specifically — the matcher filters stop words and requires at least two meaningful overlapping words to match, so it won't send you to the wrong experience
 - Questions are validated internally before you see them — bad questions get regenerated
-- Hard cap of 3 questions, then the tool forces a draft
+- Hard cap of 2 exchanges, then the tool forces a draft
 - Type **"draft"** to force a draft early; **"done"** to exit without saving
-- Multi-line answers: press **Enter twice** to submit
+- Multi-line answers: press **Enter** to add a new line, **Ctrl-D** or **Alt-Enter** to submit. Paste works at any length — prompt_toolkit reads input in raw mode, bypassing the terminal's per-line length limit
 
 After Q&A, the tool drafts a paragraph:
 
@@ -319,7 +382,9 @@ Voice reference for closer synthesis. Same deal.
   - `build` — produced through a Q&A session (tier 3)
   - `build+seed` — seed extracted, then build refined (tier 3, full lifecycle)
 - `tone`: `opener` | `closer` — marks voice-reference paragraphs
-- `angle`: matches angle names in `experiences.md` for coverage tracking
+- `angle`: two uses:
+  - Evidence angles (`production-ownership`, `system-design`, `business-impact`, etc.) — matches angle names in `experiences.md` for coverage tracking
+  - Perspective angles (`through-line`, `pivot`, `reframe`, `synthesis`) — marks narrative frame paragraphs produced by `coverletter reflect`. These are pinned in prefilter (never filtered out) and labeled `[NARRATIVE FRAME]` for the assembler
 
 ---
 
@@ -345,20 +410,74 @@ qa_targets:
 
 ---
 
+## Capturing perspective paragraphs (`coverletter reflect`)
+
+Evidence paragraphs prove specific claims. Perspective paragraphs make the argument about who you are and why your arc makes you right for this role. They are the narrative frame — through-lines, pivots, reframes, syntheses. Without them, a letter has facts but no argument.
+
+```bash
+uv run coverletter reflect --about "shift from analyst to data engineer" --angle pivot
+uv run coverletter reflect --about "what runs through all my work" --angle through-line
+```
+
+The `--angle` flag sets the type:
+
+| Angle | What it captures |
+|---|---|
+| `through-line` | The consistent thread across your whole arc — what has always been true about how you work or what you care about |
+| `pivot` | A deliberate change in direction with a reason — not just "I moved from X to Y" but why, and what made it coherent |
+| `reframe` | Same experience, different lens — "when I was doing X it looked like Y, but what I was actually building was Z" |
+| `synthesis` | Two seemingly unrelated experiences that combine into something specific that neither path produces alone |
+
+The Q&A follows the same discipline as `build` — goes after decisions, moments, and specifics, not after meaning or reflection directly. Saved to `library_refined.md` with `via=reflect`.
+
+Once perspective paragraphs are in your library, the letter assembler sees them labeled `[NARRATIVE FRAME]` and uses them to shape the opener's central claim and inform which evidence paragraphs to select. They are woven through the letter, not placed in a separate block.
+
+---
+
+## Short application prompts (`coverletter blurb`)
+
+For application prompts that aren't a full cover letter:
+
+```bash
+uv run coverletter blurb
+```
+
+Two inputs: paste the job description first (used to select relevant library paragraphs), then paste the specific prompt you're answering. These are separate reads — Ctrl-D ends each one.
+
+The tool reads the prompt type and responds accordingly:
+
+| Prompt type | What the tool does |
+|---|---|
+| "Tell me about yourself" / biographical | Reads `working_style` and `values` as the argument — the thesis about who you are. Then selects library paragraphs that prove specific claims within that argument. Narrative drives; evidence substantiates. The `avoid` section informs values inference (each constraint reveals a positive value). |
+| "Describe a time when..." / behavioral | Picks the library paragraph(s) that best answer the question and tells the story with specific evidence. Does not invent a story not in the library. |
+| "Why are you interested in..." / motivation | Draws from your `goals` profile section and relevant library material. |
+| "What is your approach to..." | Answers from actual practice in the library, not philosophy. |
+
+Up to 400 words depending on prompt type. After the response, a plain-text version is printed for clean copying.
+
+**Revision loop:** type feedback and hit Enter to revise. Rejected drafts stay in conversation history — the model knows what was tried. Accept/Reject after each revision. Enter with no text to finish.
+
+**If biographical material is thin:** the tool outputs a `BIOGRAPHICAL_GAPS` section naming what's missing. You'll be offered the option to add `working_style` or `values` entries on the spot.
+
+**For biographical prompts to work well, your profile needs `working_style` and `values` entries.** Fill these in with `uv run coverletter profile` → Edit, or edit `candidate_profile.toml` directly. Write in your own voice. Not skill claims. Not project evidence. Who you are, how you work, what you believe.
+
+---
+
 ## Writing rules (enforced)
 
 The tool checks every generated letter against these rules and auto-revises on failure:
 
 - No em-dash (`—`) anywhere
 - No sentence starting with "That"
-- No banned words: `actually`, `matters`, `not just`, `not only`, `not simply`
-- No fake-contrast: "This was not about X, it was about Y"
-- No generic bridge openers: "That experience fits,", "This role aligns,"
-- No paragraph ending with a list
-- No more than one list in the entire letter
+- No banned phrases: `actually`, `not just`, `not only`, `not simply`, `this matters because`, `the hard part was not`, `what stands out`, `the clearest connection`, `this is the kind of work`, `i am strongest in`, `i combine`
+- No generic bridge openers: `that experience fits`, `this role aligns`
+- No paragraph ending with a list of 3+ items
+- No generic body paragraph opener (must lead with a concrete fact, not a topic statement like "I combine..." or "My approach to X is...")
+- No body paragraph that reads like AI-generated template prose (abstract values as assertions, no evidence)
 - Every body sentence must trace to source paragraphs
-- Opener must be role/company-specific
-- Closer must name the actual company
+- Opener connects to the target employer first — no previous employer names, no credential lead
+- Body paragraphs must not restate claims already made in the opener
+- `[CLOSER ONLY]` paragraphs (Why This Role / Closing sections) must not appear as the first or second body paragraph
 
 ---
 
@@ -428,3 +547,22 @@ Prompt caching is active on all calls. The library is cached after the first cal
 **Q&A can still ask about things you've already documented.** Voyage search reduces this but isn't perfect. If the agent asks about something already written, paste the paragraph and say "this is already documented."
 
 **Experience name matching is exact.** Coverage tracking matches experience names in `experiences.md` against section names in the library files. Keep naming consistent across both — if you call it "Event Ingestion Pipeline" in one place, use the same name in the other.
+
+---
+
+## Development
+
+```bash
+uv run pytest tests/
+```
+
+All tests run without API keys and without touching your real library or profile. The test suite uses a synthetic fixture library in `tests/fixtures/` — fake company names, fake paragraphs, no personal data.
+
+**Test isolation:** any test that needs a `Config` object should use the `test_cfg` fixture defined in `tests/conftest.py`. It points all reads at `tests/fixtures/` and all writes at pytest's `tmp_path`. Never call `load_config()` directly in tests — that resolves real environment paths and could touch your actual data directory.
+
+```python
+def test_save_output(test_cfg):
+    from coverletter.output import save_letter
+    path = save_letter("Letter text.", test_cfg.output_dir, "TestCo", test_cfg.author_name)
+    assert path.exists()
+```
