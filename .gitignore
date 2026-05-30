@@ -17,6 +17,7 @@ story_notes.md
 
 # Generated output
 output/
+jds/
 
 # Dev/build artifacts
 .venv/

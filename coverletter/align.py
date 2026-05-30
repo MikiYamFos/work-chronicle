@@ -7,6 +7,30 @@ from coverletter.costs import record, supports_temperature
 from coverletter.parser import Paragraph
 from coverletter.profile import CandidateProfile
 
+ARGUMENT_SYSTEM = """\
+You are a cover letter strategist. Be direct and specific. No filler.
+"""
+
+ARGUMENT_PROMPT = """\
+=== JOB DESCRIPTION ===
+{jd}
+{candidate_section}
+What is the single strongest argument for this candidate at this role?
+
+Complete this sentence:
+"This letter should argue that [describe the candidate's specific capability or experience type] \
+is exactly what this role needs because [what the JD is specifically seeking that this candidate \
+uniquely provides]."
+
+Rules:
+- Name the specific technical or domain capability the JD centers on — not generic credentials
+- Ground the claim in the JD's actual requirements, not resume summary language
+- The candidate clause must describe a specific kind of work, role, or constraint — not a
+  quality-adjective ("high-stakes data," "consequential systems," "critical environments").
+  Adjectives are not arguments. What did they BUILD, OWN, or DECIDE that is specific to them?
+- One sentence. Output only the sentence. No preamble.
+"""
+
 THESIS_SYSTEM = """\
 You are a cover letter strategist.
 {candidate_profile}
@@ -35,12 +59,17 @@ THESIS_PROMPT = """\
 {candidate_goals_section}{correction_section}
 Write ONE sentence — the thesis of this cover letter. Complete this template:
 "This letter argues that [candidate description] is the right fit for this role because \
-[specific claim grounded in the letter's content]{goal_fit_clause}."
+[specific claim grounded in the letter's actual content]."
 
 Rules:
 - The claim must be specific to THIS letter and THIS JD. Name the actual experience or angle
   the letter leads with — not a generic description.
-{goal_fit_rule}
+- Ground it in what the letter SAYS — specific experiences, decisions, or evidence named
+  in the body paragraphs. Do not summarize goals or values not evidenced in the letter.
+- One clause only. Do not add a second clause about why the role fits the candidate.
+  That question belongs in the alignment report, not the thesis.
+- Crisp enough that someone reading it could predict what evidence the body paragraphs contain.
+{correction_rule}
 Output only the one sentence. No preamble, no explanation.
 """
 
@@ -291,20 +320,10 @@ def generate_thesis(
     if profile and not profile.is_empty:
         system = THESIS_SYSTEM.format(candidate_profile=profile.as_full_text())
         fit_context = profile.as_fit_context()
-        candidate_goals_section = f"\n=== CANDIDATE FIT CONTEXT ===\n{fit_context}\n"
-        goal_fit_clause = ", and this role fits the candidate because [how it serves their goals and values]"
-        goal_fit_rule = (
-            "- The 'fits the candidate' clause must weigh goals AND values positively.\n"
-            "- Express mission and values alignment affirmatively — what the role IS, "
-            "not what it is the opposite of. Never frame it as escaping or avoiding something.\n"
-            "- Only flag genuine unmet goals as tensions if they materially change the fit assessment. "
-            "Do not manufacture caveats."
-        )
+        candidate_goals_section = f"\n=== CANDIDATE FIT CONTEXT (background only — do not include in thesis) ===\n{fit_context}\n"
     else:
         system = THESIS_SYSTEM_EMPTY
         candidate_goals_section = ""
-        goal_fit_clause = ""
-        goal_fit_rule = "- If there is tension between the letter's angle and the JD, name it."
 
     correction_section = (
         f"\n=== CANDIDATE CORRECTION ===\n{correction}\n"
@@ -312,13 +331,18 @@ def generate_thesis(
         if correction else ""
     )
 
+    correction_rule = (
+        "- Address the candidate's correction above."
+        if correction else
+        "- If there is genuine tension between the letter's angle and the JD, name it briefly."
+    )
+
     prompt = THESIS_PROMPT.format(
         jd=jd.strip(),
         letter=letter.strip(),
         candidate_goals_section=candidate_goals_section,
         correction_section=correction_section,
-        goal_fit_clause=goal_fit_clause,
-        goal_fit_rule=goal_fit_rule,
+        correction_rule=correction_rule,
     )
 
     client = anthropic.Anthropic(api_key=api_key)
@@ -326,6 +350,44 @@ def generate_thesis(
         model=model,
         max_tokens=300,
         system=[{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}],
+        messages=[{"role": "user", "content": prompt}],
+    )
+    if supports_temperature(model):
+        kwargs["temperature"] = 0
+    response = client.messages.create(**kwargs)
+    usage = response.usage
+    record(
+        model, usage.input_tokens, usage.output_tokens,
+        cache_creation_tokens=getattr(usage, "cache_creation_input_tokens", 0) or 0,
+        cache_read_tokens=getattr(usage, "cache_read_input_tokens", 0) or 0,
+    )
+    return response.content[0].text.strip()
+
+
+def generate_argument(
+    jd: str,
+    api_key: str,
+    model: str,
+    profile: CandidateProfile | None = None,
+) -> str:
+    """Generate a provisional argument target from the JD alone — before the letter exists.
+
+    This is the beacon: a single sentence stating what the letter SHOULD argue.
+    Used to focus sentence retrieval and anchor the model's assembly.
+    """
+    import anthropic
+
+    if profile and not profile.is_empty:
+        candidate_section = f"\n=== CANDIDATE PROFILE ===\n{profile.as_goals_text()}\n"
+    else:
+        candidate_section = ""
+
+    prompt = ARGUMENT_PROMPT.format(jd=jd.strip(), candidate_section=candidate_section)
+    client = anthropic.Anthropic(api_key=api_key)
+    kwargs: dict = dict(
+        model=model,
+        max_tokens=200,
+        system=[{"type": "text", "text": ARGUMENT_SYSTEM, "cache_control": {"type": "ephemeral"}}],
         messages=[{"role": "user", "content": prompt}],
     )
     if supports_temperature(model):
