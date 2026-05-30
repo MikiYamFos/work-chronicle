@@ -99,8 +99,18 @@ def load_experiences(path: Path) -> list[Experience]:
     return experiences
 
 
+_STOP = {
+    "and", "or", "the", "a", "an", "in", "of", "for", "to", "with", "that",
+    "this", "it", "is", "are", "not", "as", "at", "by", "be", "was", "were",
+    "its", "on", "has", "have", "had", "from", "but", "so", "if", "when",
+    "then", "than", "no", "do", "did", "does", "been", "both", "also",
+    "listed", "required", "explicitly", "mentioned", "neither", "these",
+    "lists", "addressed", "jd",
+}
+
+
 def _words(text: str) -> set[str]:
-    return set(re.findall(r"[a-z]+", text.lower()))
+    return set(re.findall(r"[a-z]+", text.lower())) - _STOP
 
 
 def find_experience(experiences: list[Experience], topic: str) -> Experience | None:
@@ -129,7 +139,7 @@ def find_experience(experiences: list[Experience], topic: str) -> Experience | N
             best_score = score
             best = exp
 
-    return best if best_score > 0 else None
+    return best if best_score >= 2 else None
 
 
 def framing_coverage(exp: Experience, paragraphs: list[Paragraph]) -> dict[str, bool]:

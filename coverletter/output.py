@@ -173,7 +173,7 @@ def _append_signoff(text: str, author_name: str) -> str:
     signoff = f"Sincerely,\n\n{author_name}" if author_name else "Sincerely,"
     stripped = text.rstrip()
     # Don't double-add if it's already there
-    if stripped.endswith(author_name) or stripped.endswith("Sincerely,"):
+    if (author_name and stripped.endswith(author_name)) or stripped.endswith("Sincerely,"):
         return text
     return stripped + "\n\n" + signoff
 
@@ -215,12 +215,12 @@ def save_pdf(letter_text: str, output_dir: Path, company: str, author_name: str 
 
     plain = _strip_markdown(_append_signoff(letter_text, author_name))
 
-    LINE_H = 6.5
+    LINE_H = 6.0
     pdf = FPDF()
-    pdf.set_margins(25.4, 25.4, 25.4)  # 1-inch margins
+    pdf.set_margins(22, 22, 22)
     pdf.add_page()
-    pdf.set_auto_page_break(auto=True, margin=25.4)
-    pdf.set_font("Helvetica", size=11)
+    pdf.set_auto_page_break(auto=True, margin=22)
+    pdf.set_font("Helvetica", size=10.5)
 
     paragraphs = plain.split("\n\n")
     for i, para in enumerate(paragraphs):
@@ -228,8 +228,8 @@ def save_pdf(letter_text: str, output_dir: Path, company: str, author_name: str 
         if not para:
             continue
         if i > 0:
-            pdf.ln(4)
-        pdf.multi_cell(0, LINE_H, para)
+            pdf.ln(3)
+        pdf.multi_cell(0, LINE_H, para, align="L")
 
     pdf.output(str(path))
     return path

@@ -1,0 +1,14 @@
+SCORE: 3 covered of 6 total
+
+COVERED
+✓ Python data pipelines — demonstrated through clinical trial ETL work
+✓ Data reliability — SLA and postmortem practice documented
+✓ Healthcare domain knowledge — HIPAA and FDA audit experience directly relevant
+
+GAPS
+✗ Streaming/real-time pipelines — JD requires Kafka experience; letter is batch-only
+✗ dbt modeling at scale — JD names dbt as primary transformation tool (library: [2])
+✗ Data contracts and schema validation — JD explicitly requires schema registry experience
+
+SENIORITY SIGNAL GAPS
+✗ System design trade-offs — letter describes what was built but not the alternatives considered and why they were rejected

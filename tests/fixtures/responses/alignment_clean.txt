@@ -1,0 +1,10 @@
+SCORE: 4 covered of 5 total
+
+COVERED
+✓ Python/SQL data pipelines — covered by the clinical trial pipeline paragraph
+✓ Data reliability and SLA ownership — covered by the readmission platform paragraph
+✓ dbt and layered modeling — covered by the data modeling paragraph
+✓ Cross-functional collaboration — covered by the biostatistician translation paragraph
+
+GAPS
+✗ Streaming or real-time pipeline experience — JD requires Kafka or Flink; letter addresses batch only
