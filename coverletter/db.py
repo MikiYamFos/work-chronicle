@@ -203,6 +203,60 @@ CREATE TABLE IF NOT EXISTS raw_responses (
     captured_at     TEXT DEFAULT (datetime('now'))
 );
 
+-- ---------------------------------------------------------------------------
+-- Claim-evidence-outline tables
+-- Claims are atomic portable assertions sourced from paragraphs but not owned
+-- by them. The same claim can appear in different paragraph assemblies for
+-- different letters. Scope (general/employer/multi-employer/project) is DERIVED
+-- at query time from claim_contexts rows — never stored as a fixed column.
+-- ---------------------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS claims (
+    id               INTEGER PRIMARY KEY,
+    text             TEXT NOT NULL,
+    source_para_hash TEXT,            -- attribution back to origin paragraph
+    embedding        BLOB,
+    extracted_at     TEXT DEFAULT (datetime('now'))
+);
+
+-- What grounds a claim. 0 rows = general. 1 employer = employer-specific.
+-- 2+ employers = spans employers. Any project row = personal project.
+CREATE TABLE IF NOT EXISTS claim_contexts (
+    id           INTEGER PRIMARY KEY,
+    claim_id     INTEGER NOT NULL REFERENCES claims(id) ON DELETE CASCADE,
+    context_type TEXT NOT NULL,       -- 'employer' | 'project'
+    context_name TEXT NOT NULL        -- 'BritBox' | 'Universe' | 'CBA Clock' etc.
+);
+
+-- Evidence for a claim. Self-referential: parent_id NULL = top-level evidence,
+-- parent_id set = sub-detail subordinate to parent (e.g. "nested event_params"
+-- is a sub-detail under "worked with GA4 BigQuery export").
+CREATE TABLE IF NOT EXISTS support_items (
+    id               INTEGER PRIMARY KEY,
+    claim_id         INTEGER NOT NULL REFERENCES claims(id) ON DELETE CASCADE,
+    parent_id        INTEGER REFERENCES support_items(id),
+    text             TEXT NOT NULL,
+    employer         TEXT,
+    position         INTEGER DEFAULT 0,
+    source_para_hash TEXT,
+    embedding        BLOB
+);
+
+-- Synthesized "so what" conclusions that close a GROUP of claims.
+-- Not all claims have conclusions. Linked many-to-many via conclusion_claims.
+CREATE TABLE IF NOT EXISTS conclusions (
+    id               INTEGER PRIMARY KEY,
+    text             TEXT NOT NULL,
+    source_para_hash TEXT,
+    embedding        BLOB
+);
+
+CREATE TABLE IF NOT EXISTS conclusion_claims (
+    conclusion_id    INTEGER NOT NULL REFERENCES conclusions(id) ON DELETE CASCADE,
+    claim_id         INTEGER NOT NULL REFERENCES claims(id) ON DELETE CASCADE,
+    PRIMARY KEY (conclusion_id, claim_id)
+);
+
 CREATE INDEX IF NOT EXISTS idx_para_hash       ON paragraphs(text_hash);
 CREATE INDEX IF NOT EXISTS idx_para_source     ON paragraphs(source_file, active);
 CREATE INDEX IF NOT EXISTS idx_para_type       ON paragraphs(type, active);
