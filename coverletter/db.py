@@ -1,18 +1,18 @@
-"""SQLite-backed paragraph index.
+"""SQLite-backed paragraph index and claim-evidence store.
 
-Markdown files are the source of truth. This module provides:
-  - sync_from_markdown()       — parse .md files → upsert paragraphs
-  - compute_embeddings()       — batch Voyage embeddings for paragraphs
+Markdown files are the source of truth for paragraphs. This module provides:
+  - sync_from_markdown()         — parse .md files → upsert paragraphs
+  - compute_embeddings()         — batch Voyage embeddings for paragraphs
   - extract_and_store_sentences() — split paragraphs into indexed sentences
   - compute_sentence_embeddings() — batch Voyage embeddings for sentences
-  - assign_angles_canonical()  — classify every paragraph against 14 canonical
-                                  angle definitions using embedding similarity;
-                                  stores multiple angles per paragraph in the
-                                  junction table, no user input required
+  - assign_angles_canonical()    — classify paragraphs against 18 canonical angles
+  - save_raw_response()          — preserve raw Q&A answers before they are drafted
+  - build_angle_evidence()       — retrieve angle-organized evidence for a JD
 
-The sentence layer enables patchwork letter assembly: instead of dumping whole
-paragraphs into the prompt, retrieval pulls the most relevant sentences across
-the library so the model synthesizes from fine-grained evidence.
+Claim-evidence tables (claims, claim_contexts, support_items, conclusions):
+  - Claims are atomic portable assertions sourced from paragraphs but not owned by them.
+  - The same claim can appear in different paragraph assemblies for different letters.
+  - Populated by `coverletter extract` (not run on every generate).
 """
 from __future__ import annotations
 

@@ -93,29 +93,31 @@ class CopyViolation:
 def verbatim_check(
     letter_text: str,
     source_paragraphs: list[Paragraph],
-    threshold: float = 0.72,
+    threshold: float = 0.50,
     synthesis_mode: bool = False,
     evidence_sentences: list[str] | None = None,
 ) -> list[VerbatimViolation]:
     """
-    Checks each letter body sentence against all source sentences.
+    Checks each letter body sentence against source sentences to detect invention.
 
-    evidence_sentences: when provided (synthesis mode), checks body sentences against
-    the exact sentences the model was given in the ARGUMENT EVIDENCE block.
-    Uses a higher threshold (0.80) since the model had verbatim sentences to work from.
-    Any body sentence that doesn't match the provided evidence is a genuine invention.
+    In the new model the letter is WRITTEN from evidence, not copied — so thresholds
+    are calibrated to catch genuine invention (claims with no grounding), not to
+    enforce verbatim copying.
 
-    synthesis_mode: legacy flag — when True with no evidence_sentences, lowers threshold
-    to 0.55. Superseded by evidence_sentences when both are provided.
+    evidence_sentences: when provided, checks body sentences against the evidence
+    block the model was given. Flags sentences with no grounding in any evidence item.
+    Threshold 0.45 — loose enough for natural prose, tight enough to catch made-up claims.
+
+    source_paragraphs: fallback when no evidence_sentences. Checks against full library.
+    Threshold 0.50 by default.
 
     Skips the salutation, opener, and closer paragraphs.
     """
     if evidence_sentences is not None:
-        # Strict check: model was given exact sentences, body should match them closely
         source_sentences = [s for s in evidence_sentences if s.strip()]
-        effective_threshold = 0.80
+        effective_threshold = 0.45  # writing from evidence, not copying it
     else:
-        effective_threshold = 0.55 if synthesis_mode else threshold
+        effective_threshold = threshold
         source_sentences = []
         for p in source_paragraphs:
             source_sentences.extend(_split_sentences(p.text))

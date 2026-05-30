@@ -707,7 +707,7 @@ def build_user_message(
 
     # Argument target + evidence — JD-specific, NOT cached.
     # The argument target is the beacon: what the letter must argue.
-    # The evidence block is the build material: sentences the body paragraphs are assembled from.
+    # The evidence block is the required content for body paragraphs — write FROM it, not verbatim.
     if angle_evidence:
         if argument:
             blocks.append({
@@ -716,11 +716,11 @@ def build_user_message(
             })
         ev_lines = [
             "=== ARGUMENT EVIDENCE ===",
-            "BUILD MATERIAL for body paragraphs — not a selection guide.",
-            "Each block = one body paragraph argument.",
-            "→ = the key sentence. Use it verbatim.",
-            "Indented = context from the same source paragraph. Use verbatim for coherence.",
-            "Every body sentence must come verbatim from this block. No other body sentences.\n",
+            "REQUIRED CONTENT for body paragraphs — write paragraphs that make and prove these claims.",
+            "Each block = one body paragraph. Write prose FROM this content, do not copy it.",
+            "→ = the primary claim or evidence item for this paragraph.",
+            "Indented = supporting detail that must appear in the paragraph.",
+            "Every claim and detail in each block must be represented. Nothing dropped.\n",
         ]
         for block in angle_evidence:
             angle_name = block["angle"].upper()
