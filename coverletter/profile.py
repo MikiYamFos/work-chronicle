@@ -14,6 +14,9 @@ class CandidateProfile:
     differentiators: list[str] = field(default_factory=list)
     focus_areas: list[str] = field(default_factory=list)
     avoid: list[str] = field(default_factory=list)
+    seniority_signals: list[str] = field(default_factory=list)
+    working_style: list[str] = field(default_factory=list)
+    values: list[str] = field(default_factory=list)
 
     @property
     def is_empty(self) -> bool:
@@ -32,6 +35,43 @@ class CandidateProfile:
         lines = ["Core differentiators:"]
         lines += [f"- {d}" for d in self.differentiators]
         return "\n".join(lines)
+
+    def as_seniority_signals_text(self) -> str:
+        if not self.seniority_signals:
+            return ""
+        lines = ["Seniority signals for this role type:"]
+        lines += [f"- {s}" for s in self.seniority_signals]
+        return "\n".join(lines)
+
+    def as_working_style_text(self) -> str:
+        if not self.working_style:
+            return ""
+        lines = ["How I work and what I value:"]
+        lines += [f"- {w}" for w in self.working_style]
+        return "\n".join(lines)
+
+    def as_avoid_text(self) -> str:
+        if not self.avoid:
+            return ""
+        lines = ["Poor-fit environments (use to recognize strong fit when a role is the opposite):"]
+        lines += [f"- {a}" for a in self.avoid]
+        return "\n".join(lines)
+
+    def as_values_text(self) -> str:
+        if not self.values:
+            return ""
+        lines = ["Core values:"]
+        lines += [f"- {v}" for v in self.values]
+        return "\n".join(lines)
+
+    def as_fit_context(self) -> str:
+        """Goals + avoid + values — everything relevant to evaluating role fit."""
+        parts = [p for p in [
+            self.as_goals_text(),
+            self.as_avoid_text(),
+            self.as_values_text(),
+        ] if p]
+        return "\n\n".join(parts)
 
     def as_full_text(self) -> str:
         parts = [p for p in [self.as_goals_text(), self.as_differentiators_text()] if p]
@@ -55,6 +95,47 @@ def write_profile(path: Path, data: dict[str, list[str]]) -> None:
         "avoid": (
             "# Roles or environments that are a poor fit.\n"
             "# Feeds honest goal-alignment assessment.\n"
+        ),
+        "seniority_signals": (
+            "# What separates senior candidates from mid-level ones in your domain and level.\n"
+            "# These reflect YOUR expertise, not the job title on any specific posting.\n"
+            "# A senior DE applying to 'AI Engineer' or 'Staff Analytics Engineer' roles uses\n"
+            "# the same signals — they travel with you across applications.\n"
+            "# Only revisit if your career direction genuinely shifts.\n"
+            "# Example (senior data engineering background):\n"
+            "#   \"Business impact: quantified outcomes, not just 'built X'\"\n"
+            "#   \"Production ownership: SLAs, incidents, reliability decisions\"\n"
+            "#   \"System design judgment: trade-offs made and why\"\n"
+            "#   \"Data modeling depth: schema decisions, SCD handling, warehouse design\"\n"
+            "#   \"Cross-functional effectiveness: translating infra needs to business context\"\n"
+        ),
+        "working_style": (
+            "# How you work, how you think, and what you value as an engineer.\n"
+            "# This is biographical material — not skill claims, not what you've built.\n"
+            "# Used when answering 'about me' and biographical application prompts.\n"
+            "# Write these as honest self-characterizations in your own voice.\n"
+            "# The library paragraphs prove the claims; these shape the framing.\n"
+            "# Example entries:\n"
+            "#   \"I'm the person people think through a problem with to figure out how to build it\"\n"
+            "#   \"I move naturally between technical and non-technical audiences — I translate, not present\"\n"
+            "#   \"I think creatively about data problems; my background gives me angles engineers without\n"
+            "#    that history don't have\"\n"
+            "#   \"I care about the craft — I want the pipeline to be right, not just running\"\n"
+        ),
+        "values": (
+            "# What you believe and care about — as a programmer, as a teammate, as a person.\n"
+            "# Not skill claims. Not goals. The things that orient how you work with others\n"
+            "# and what kind of engineer you are at a deeper level.\n"
+            "# Used in biographical responses alongside working_style.\n"
+            "# Write in your own voice, affirmatively.\n"
+            "# Example entries:\n"
+            "#   \"I believe in open-source development and contribute to the commons where I can\"\n"
+            "#   \"I care about mentorship — I have benefited from people who made time for me\n"
+            "#    and I pay that forward\"\n"
+            "#   \"I write tests not because I am told to but because I have been burned by not doing it\"\n"
+            "#   \"I am direct and honest with teammates even when it is uncomfortable — I learned early\n"
+            "#    that clarity and directness build trust and cut through wasted effort\"\n"
+            "#   \"I think the best engineering teams are ones where people can say what they see\"\n"
         ),
     }
     lines = [
@@ -97,7 +178,7 @@ You are reading someone's cover letter paragraph library. Based on the concrete 
 in these paragraphs, suggest specific, honest entries for each section of their candidate \
 profile. Do not invent anything not evidenced in the paragraphs.
 
-Return ONLY a JSON object with these keys: goals, differentiators, focus_areas, avoid.
+Return ONLY a JSON object with these keys: goals, differentiators, focus_areas, avoid, seniority_signals, values.
 Each key maps to a list of strings — 3-5 items each.
 
 Rules for each section:
@@ -105,9 +186,20 @@ Rules for each section:
   impact. Infer from what they've owned and what they've built.
 - differentiators: their real technical edge. Name specific technologies, scale, \
   ownership level. No generic claims. Every item must be evidenced by the library.
-- focus_areas: DE areas they've gone deep in and likely want to develop further.
+- focus_areas: areas they've gone deep in and likely want to develop further.
 - avoid: environments where their strengths would be wasted or their weaknesses amplified. \
   Honest, not negative.
+- seniority_signals: the 4-6 dimensions that distinguish senior candidates from mid-level \
+  ones in this person's specific role type. Infer the role type from the library. \
+  Each entry must be a short label followed by a colon and a one-line description of \
+  what evidence looks like. Example: "Production ownership: SLAs, incidents, reliability \
+  decisions — not just building greenfield." Write these for the actual role type evident \
+  in the library, not generically.
+- values: what this person cares about as a programmer and teammate — inferred from how \
+  they describe their work, what they emphasize, what they built even when not required to. \
+  Examples: open-source orientation, test discipline, mentorship, honesty on teams, \
+  care about correctness over shipping fast. Write in first person as self-characterizations. \
+  Every item must be grounded in the library evidence.
 
 PARAGRAPH LIBRARY:
 {library_text}
@@ -159,6 +251,9 @@ PARAGRAPH LIBRARY:
             "differentiators": data.get("differentiators", []),
             "focus_areas": data.get("focus_areas", []),
             "avoid": data.get("avoid", []),
+            "seniority_signals": data.get("seniority_signals", []),
+            "working_style": data.get("working_style", []),
+            "values": data.get("values", []),
         }
     except Exception as e:
         raise RuntimeError(
@@ -194,4 +289,7 @@ def load_profile(path: Path) -> CandidateProfile:
         differentiators=_get("differentiators"),
         focus_areas=_get("focus_areas"),
         avoid=_get("avoid"),
+        seniority_signals=_get("seniority_signals"),
+        working_style=_get("working_style"),
+        values=_get("values"),
     )

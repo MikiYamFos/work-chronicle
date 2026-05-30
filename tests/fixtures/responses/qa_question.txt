@@ -1,0 +1,1 @@
+When the second audit asked why that transformation rule had changed between protocol versions — what did you actually have to reconstruct, and what was missing that made it hard?

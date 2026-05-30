@@ -4,8 +4,6 @@ import json
 import re
 from dataclasses import dataclass
 
-import anthropic
-
 from coverletter.costs import record, supports_temperature
 
 COACH_SYSTEM = """\
@@ -64,6 +62,7 @@ class WeakSentence:
 
 
 def analyze_letter(letter: str, api_key: str, model: str) -> list[WeakSentence]:
+    import anthropic
     client = anthropic.Anthropic(api_key=api_key)
     prompt = COACH_PROMPT.format(letter=letter)
     kwargs: dict = dict(
@@ -92,6 +91,7 @@ def analyze_letter(letter: str, api_key: str, model: str) -> list[WeakSentence]:
 
 
 def rewrite_sentence(sentence: str, context: str, issue: str, user_input: str, api_key: str, model: str) -> str:
+    import anthropic
     direction = f"Issue: {issue}\nUser input: {user_input}\n\n{REWRITE_DIRECTION}"
     client = anthropic.Anthropic(api_key=api_key)
     prompt = REWRITE_PROMPT.format(sentence=sentence, context=context, direction=direction)

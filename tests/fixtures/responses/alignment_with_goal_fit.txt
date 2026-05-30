@@ -1,0 +1,14 @@
+SCORE: 5 covered of 6 total
+
+COVERED
+✓ Clinical data engineering — core of the letter
+✓ Data reliability and SLA ownership — postmortem practice documented
+✓ dbt and layered modeling — data model rebuild covered
+✓ Cross-functional with clinical teams — biostatistician translation paragraph
+✓ Compliance and audit trail experience — transformation registry described
+
+GAPS
+✗ Streaming pipeline experience — role requires real-time event processing
+
+GOAL ALIGNMENT
+Partially — role is clinical data infrastructure which matches the candidate's goals directly, but the streaming requirement is a genuine gap the candidate has flagged as a growth area, not a current strength.

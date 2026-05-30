@@ -8,16 +8,17 @@ from coverletter.parser import Paragraph
 from coverletter.profile import CandidateProfile
 
 THESIS_SYSTEM = """\
-You are a cover letter strategist for a senior data engineer.
+You are a cover letter strategist.
 {candidate_profile}
 When evaluating a thesis, square THREE things simultaneously:
-1. What the candidate wants from this role (goals above)
+1. What the candidate wants from this role — goals, values, and what kind of work they find meaningful
 2. What this JD is explicitly asking for
 3. What angle the letter actually leads with
 
-A thesis that ignores any of the three is wrong, even if it sounds polished.
-If there is genuine tension between the JD and the candidate's goals — name it.
-A thesis that honestly acknowledges fit limits is more useful than one that oversells.
+Mission alignment and values alignment count toward fit alongside technical goal overlap.
+Express fit positively — what the role IS and what it offers the candidate.
+Never frame fit as contrast, avoidance, or escape. Say what is true, not what it opposes.
+Only name tensions that genuinely affect fit. Do not manufacture caveats.
 Be direct and specific. No filler.
 """
 
@@ -31,7 +32,7 @@ THESIS_PROMPT = """\
 
 === COVER LETTER ===
 {letter}
-{candidate_goals_section}
+{candidate_goals_section}{correction_section}
 Write ONE sentence — the thesis of this cover letter. Complete this template:
 "This letter argues that [candidate description] is the right fit for this role because \
 [specific claim grounded in the letter's content]{goal_fit_clause}."
@@ -44,29 +45,21 @@ Output only the one sentence. No preamble, no explanation.
 """
 
 ALIGN_SYSTEM = """\
-You are a job description analyst specializing in data engineering roles.
+You are a job description analyst.
 
-In addition to explicit JD requirements, evaluate the letter against the seniority signals
-that distinguish senior data engineers from mid-level ones. These are not soft preferences —
-they are the dimensions where senior candidates are actually evaluated and disqualified.
-
-SENIOR DE SENIORITY SIGNALS:
-- Business impact: does the letter quantify outcomes? (pipeline throughput, latency, cost,
-  downstream product effects) — not just "built X" but "X enabled Y"
-- Production ownership: evidence of owning systems in production — SLAs, incident response,
-  on-call, reliability decisions — not just building greenfield
-- System design judgment: did they make architectural trade-offs and articulate why? Choosing
-  a tool or approach because it was right for the problem, not because it was available
-- Data modeling depth: schema design, modeling decisions, SCD handling, or warehouse design
-  — the dimension practitioners consistently identify as the make-or-break for senior roles
-- Cross-functional effectiveness: translating between data infrastructure and business/product
-  needs — not just collaborating with other engineers
-
-Flag missing signals as gaps only if the letter genuinely doesn't address them — not if they
-are implicit. A letter that describes owning a pipeline through production incidents covers
-"production ownership" even without using that phrase.
+When seniority signals are provided, evaluate the letter against them. Flag a signal as
+missing only if the letter genuinely doesn't address it — not if it is implicit. A letter
+that describes owning a system through production incidents covers "production ownership"
+without using that phrase.
 
 Be direct, specific, and actionable. Do not be encouraging or add filler.
+"""
+
+SENIORITY_SIGNALS_BLOCK = """\
+SENIORITY SIGNALS FOR THIS ROLE TYPE
+{signals}
+These are the dimensions that distinguish senior candidates from mid-level ones for this
+role. Flag missing ones only if genuinely absent — not if they are implicit or understated.
 """
 
 ALIGN_PROMPT = """\
@@ -78,7 +71,7 @@ ALIGN_PROMPT = """\
 
 === CURRENT LETTER ===
 {letter}
-{candidate_goals_section}
+{seniority_signals_section}{candidate_goals_section}
 Analyze how well the letter addresses the JD. Output exactly {num_sections} sections with no extra text.
 
 SCORE: [N covered] of [M total] JD requirements
@@ -91,14 +84,19 @@ GAPS
 One line per gap. Only real gaps — things the JD explicitly requires or prefers that the letter
 does not address.
 Format: ✗ [requirement] — [why it matters for this role]
+If a gap is addressed by a paragraph in the library above (even if not used in the current letter),
+append: (library: [N]) using the exact paragraph index. Only tag it if a specific paragraph
+genuinely covers that requirement — not just shares vocabulary with it.
+{seniority_gaps_section}{goal_alignment_section}
+Do not add encouragement, filler, or any sections beyond these {num_sections}.
+"""
+
+SENIORITY_GAPS_SECTION = """\
 
 SENIORITY SIGNAL GAPS
-One line per missing senior DE signal (see system prompt). Omit this section entirely if the
-letter demonstrates all five signals — write "SENIORITY SIGNAL GAPS\n(none)" in that case.
+One line per missing signal (see seniority signals above). Write "(none)" if all are covered.
 These are not JD requirements — they are what separates senior candidates from mid-level ones.
-Format: ✗ [signal] — [what's missing and why it matters for a senior role]
-{goal_alignment_section}
-Do not add encouragement, filler, or any sections beyond these {num_sections}.
+Format: ✗ [signal] — [what's missing and why it matters]
 """
 
 GOAL_ALIGNMENT_BLOCK = """\
@@ -106,6 +104,102 @@ GOAL ALIGNMENT
 One line. Does this role serve the candidate's stated goals? Be direct — yes, partially, or no,
 with one specific reason grounded in the JD and the candidate's goals.
 """
+
+
+def has_library_coverage(gap_text: str) -> bool:
+    """Return True if the gap text indicates the paragraph already exists in the library."""
+    return bool(re.search(r'\(library:', gap_text, re.IGNORECASE))
+
+
+_STOP_WORDS = {
+    "and", "or", "the", "a", "an", "in", "of", "for", "to", "with", "that",
+    "this", "it", "is", "are", "not", "as", "at", "by", "be", "but", "was",
+    "its", "on", "no", "how", "from", "has", "does", "does", "does", "also",
+    "role", "letter", "required", "explicitly", "addressed", "mentioned",
+    "named", "listed", "absent", "missing", "not", "only", "across",
+}
+
+
+def _significant_terms(text: str) -> list[str]:
+    """Extract meaningful terms from a gap description for library matching."""
+    words = re.findall(r"[a-z][a-z0-9/+#]*", text.lower())
+    return [w for w in words if len(w) > 2 and w not in _STOP_WORDS]
+
+
+def _detect_library_coverage(
+    gaps: list[str],
+    paragraphs: list["Paragraph"],
+) -> list[str]:
+    """Post-process gap list: detect library coverage the LLM missed.
+
+    For each gap not already tagged with (library: [N]), run BM25 against
+    the paragraph library. If a paragraph scores strongly against the gap,
+    append the tag. Runs in Python — not a second LLM call.
+    """
+    if not paragraphs or not gaps:
+        return gaps
+
+    try:
+        from rank_bm25 import BM25Okapi
+
+        corpus = [
+            _significant_terms(p.section + " " + p.role + " " + p.text)
+            for p in paragraphs
+        ]
+        bm25 = BM25Okapi(corpus)
+
+        result = []
+        for gap in gaps:
+            if has_library_coverage(gap):
+                result.append(gap)
+                continue
+
+            query = _significant_terms(gap)
+            if not query:
+                result.append(gap)
+                continue
+
+            scores = bm25.get_scores(query)
+            best_i = int(max(range(len(scores)), key=lambda i: scores[i]))
+            best_score = float(scores[best_i])
+
+            # Threshold calibrated so a paragraph must share several meaningful
+            # terms with the gap description — not just a single word match.
+            if best_score >= 2.0:
+                result.append(f"{gap} (library: [{paragraphs[best_i].index}])")
+            else:
+                result.append(gap)
+
+        return result
+
+    except ImportError:
+        # rank_bm25 not available — fall back to simple term overlap
+        result = []
+        for gap in gaps:
+            if has_library_coverage(gap):
+                result.append(gap)
+                continue
+
+            gap_terms = set(_significant_terms(gap))
+            if not gap_terms:
+                result.append(gap)
+                continue
+
+            best_score = 0.0
+            best_idx = None
+            for p in paragraphs:
+                p_terms = set(_significant_terms(p.section + " " + p.role + " " + p.text))
+                overlap = len(gap_terms & p_terms) / len(gap_terms)
+                if overlap > best_score:
+                    best_score = overlap
+                    best_idx = p.index
+
+            if best_score >= 0.35 and best_idx is not None:
+                result.append(f"{gap} (library: [{best_idx}])")
+            else:
+                result.append(gap)
+
+        return result
 
 
 @dataclass
@@ -116,6 +210,7 @@ class AlignmentResult:
     seniority_gaps: list[str] = field(default_factory=list)
     goal_alignment: str = ""
     score_pct: int = 0
+    perspective_note: str = ""  # set when no narrative frame paragraphs are in the library
 
     def score_line(self) -> str:
         n = len(self.covered)
@@ -189,18 +284,21 @@ def generate_thesis(
     api_key: str,
     model: str,
     profile: CandidateProfile | None = None,
+    correction: str | None = None,
 ) -> str:
     import anthropic
 
     if profile and not profile.is_empty:
         system = THESIS_SYSTEM.format(candidate_profile=profile.as_full_text())
-        candidate_goals_section = f"\n=== CANDIDATE GOALS ===\n{profile.as_goals_text()}\n"
-        goal_fit_clause = ", and this role fits the candidate because [how it serves their stated goals]"
+        fit_context = profile.as_fit_context()
+        candidate_goals_section = f"\n=== CANDIDATE FIT CONTEXT ===\n{fit_context}\n"
+        goal_fit_clause = ", and this role fits the candidate because [how it serves their goals and values]"
         goal_fit_rule = (
-            "- The 'fits the candidate' clause must be honest. If the role only partially "
-            "serves their goals, say so.\n"
-            "- If the letter's angle doesn't align well with the JD or the candidate's goals, "
-            "note the tension rather than pretending it doesn't exist."
+            "- The 'fits the candidate' clause must weigh goals AND values positively.\n"
+            "- Express mission and values alignment affirmatively — what the role IS, "
+            "not what it is the opposite of. Never frame it as escaping or avoiding something.\n"
+            "- Only flag genuine unmet goals as tensions if they materially change the fit assessment. "
+            "Do not manufacture caveats."
         )
     else:
         system = THESIS_SYSTEM_EMPTY
@@ -208,10 +306,17 @@ def generate_thesis(
         goal_fit_clause = ""
         goal_fit_rule = "- If there is tension between the letter's angle and the JD, name it."
 
+    correction_section = (
+        f"\n=== CANDIDATE CORRECTION ===\n{correction}\n"
+        "Revise the thesis to address this correction while keeping it grounded in the letter.\n"
+        if correction else ""
+    )
+
     prompt = THESIS_PROMPT.format(
         jd=jd.strip(),
         letter=letter.strip(),
         candidate_goals_section=candidate_goals_section,
+        correction_section=correction_section,
         goal_fit_clause=goal_fit_clause,
         goal_fit_rule=goal_fit_rule,
     )
@@ -253,22 +358,41 @@ def alignment_report(
     library_text = "\n".join(library_lines)
 
     has_profile = profile and not profile.is_empty
+    has_signals = profile and bool(profile.seniority_signals)
+
     if has_profile:
         candidate_goals_section = f"\n=== CANDIDATE GOALS ===\n{profile.as_goals_text()}\n"
         goal_alignment_section = GOAL_ALIGNMENT_BLOCK
-        num_sections = "four"
     else:
         candidate_goals_section = ""
         goal_alignment_section = ""
-        num_sections = "three"
+
+    if has_signals:
+        signal_lines = "\n".join(f"- {s}" for s in profile.seniority_signals)
+        seniority_signals_section = (
+            f"\n=== SENIORITY SIGNALS ===\n{signal_lines}\n"
+        )
+        seniority_gaps_section = SENIORITY_GAPS_SECTION
+    else:
+        seniority_signals_section = ""
+        seniority_gaps_section = ""
+
+    num_sections_count = 2  # COVERED + GAPS always present
+    if has_signals:
+        num_sections_count += 1
+    if has_profile:
+        num_sections_count += 1
+    num_sections = {2: "two", 3: "three", 4: "four"}.get(num_sections_count, str(num_sections_count))
 
     # Library is the stable part — cache it. JD + letter change per call.
     library_block = f"=== PARAGRAPH LIBRARY (available but may not all be in the letter) ===\n{library_text}"
     jd_block = ALIGN_PROMPT.format(
         jd=jd.strip(),
         letter=letter.strip(),
+        seniority_signals_section=seniority_signals_section,
         candidate_goals_section=candidate_goals_section,
         library="",  # library is in its own cached block above
+        seniority_gaps_section=seniority_gaps_section,
         goal_alignment_section=goal_alignment_section,
         num_sections=num_sections,
     ).replace("=== PARAGRAPH LIBRARY (available but may not all be in the letter) ===\n\n", "")
@@ -294,4 +418,21 @@ def alignment_report(
         cache_creation_tokens=getattr(usage, "cache_creation_input_tokens", 0) or 0,
         cache_read_tokens=getattr(usage, "cache_read_input_tokens", 0) or 0,
     )
-    return _parse_alignment(response.content[0].text.strip())
+    result = _parse_alignment(response.content[0].text.strip())
+
+    # Perspective frame check — Python level, no LLM call needed.
+    # If the library has no through-line, pivot, reframe, or synthesis paragraphs,
+    # the letter has evidence but no narrative frame.
+    from coverletter.prompt import PERSPECTIVE_ANGLES
+    has_perspective = any(
+        p.meta.get("angle", "").lower() in PERSPECTIVE_ANGLES
+        for p in filtered_paragraphs
+    )
+    if not has_perspective:
+        result.perspective_note = (
+            "No through-line, pivot, reframe, or synthesis paragraph in library. "
+            "The letter has evidence but no narrative frame. "
+            "Run: coverletter reflect"
+        )
+
+    return result

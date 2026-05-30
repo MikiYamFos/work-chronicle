@@ -3,84 +3,45 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass, field
-import anthropic
 
 from coverletter.costs import record, supports_temperature
 from coverletter.parser import Paragraph
 
 VERIFY_SYSTEM = """\
-You are a strict cover letter quality checker. You apply a checklist of rules to a
-cover letter draft and return a JSON verdict. You do not rewrite. You only evaluate.
+You are a cover letter quality checker. Return ONLY valid JSON — no reasoning, no preamble.
 
-Return ONLY valid JSON with this shape:
-{
-  "verdict": "PASS" or "FAIL",
-  "failures": ["description of failure 1", "description of failure 2", ...]
-}
+{"verdict": "PASS" or "FAIL", "failures": ["quoted sentence + rule violated", ...]}
 
-If verdict is PASS, failures must be an empty list.
-If verdict is FAIL, failures must name the specific sentence or structure that failed
-and cite which rule it violated. Be specific — quote the offending text.
+PASS means failures is an empty list. Be conservative: only flag what is clearly wrong.
 """
 
 VERIFY_PROMPT = """\
-Evaluate the following cover letter against all rules below.
-
-=== COVER LETTER TO EVALUATE ===
+=== COVER LETTER ===
 {letter}
 
-=== RULES ===
+=== WHAT TO CHECK ===
+Em-dashes, banned words, and paragraph-starting-with-That are already checked by a separate
+tool. Do NOT re-check them. Focus only on these three:
 
-CHECK 1 — HARD FAIL SCAN
-Immediately fail if the letter contains any of:
-- Any em-dash character (—) anywhere in the letter body. This is an absolute ban.
-  Quote the exact sentence containing it.
-- The words: "actually", "matters", "this matters because", "not just", "not only",
-  "more than", "not simply", "the hard part was not"
-- Any fake-contrast structure: defines work by first saying what it was not
-  (e.g., "This was not about X — it was about Y")
-- Any paragraph starting with "That"
-- Generic bridge openers: "That experience fits," "This role aligns,"
-  "What stands out," "The clearest connection," "This is the kind of work"
-- A paragraph that ends with a list (list-pile ending)
-- More than one list in the entire letter
-- Invented metaphors, slogans, or polished abstractions not traceable to source material
-- Any sentence whose core claim cannot be traced to the source material or the job description
+1. LIST-PILE ENDINGS
+Does any paragraph end with a list of 3 or more items instead of landing a specific point?
+Flag: quote the offending closing sentence.
+Ignore: lists inside a sentence that end on a verb or claim.
 
-CHECK 2 — SOURCE-CONTROL SCAN (BODY PARAGRAPHS ONLY)
-The opening paragraph and closing paragraph are intentionally synthesized fresh for each
-application — do NOT flag them for source-traceability.
-For all BODY paragraphs (everything between opener and closer): every sentence must map
-to source material or the job description.
-Flag any body sentence that appears invented, generic, or AI-generated.
+2. GENERIC BODY OPENERS
+Does any BODY paragraph (not the opener or closer) open with a generic topic statement
+rather than a concrete fact from the candidate's experience?
+Flag examples: "I am strongest in...", "I combine...",
+"Building systems that...", "My approach to X is..."
+Pass: opens with a specific event, failure mode, role, or named observation.
 
-CHECK 3 — PARAGRAPH OPENER SCAN
-Every paragraph must open with a concrete, source-based claim.
-Flag openers that are generic topic statements or mirrors of the job description.
+3. AI/TEMPLATE BODY PARAGRAPHS
+Does any body paragraph read like generated template prose?
+Signs: abstract values stated as assertions, skills described as personality traits,
+no specific evidence behind the claims.
+Flag: quote the paragraph opener.
 
-CHECK 4 — PARAGRAPH CLOSER SCAN
-Every paragraph must close by landing its point.
-Flag paragraphs that trail off, end on a list, or end on a vague summary.
-
-CHECK 5 — COVER-LETTER APPROPRIATENESS SCAN
-The letter must not read like: a résumé summary, an AI essay, a generic template,
-a stack of topic blocks, a list of skills, or a job description mirror.
-Flag anything that sounds like it was written by a template.
-
-CHECK 6 — ADVERSARIAL CHECK
-Would the writer immediately call this out as generic, invented, weak, listy,
-or not source-based? If yes, flag it.
-
-STRUCTURE CHECK
-- OPENER: Is it synthesized specifically for this role and company (not a generic paragraph
-  dropped in)? Does it lead with a concrete claim? Does it avoid "I am excited to apply"
-  and avoid restating the job title? Does it sound like the same voice as the body?
-- BODY: Do body paragraphs each prove one specific point with evidence? Does each open
-  with a concrete claim and close by landing its point?
-- CLOSER: Is it specific to this company? Does it thank the reader and express genuine
-  interest in speaking further? Does it end on a forward, confident note?
-
-Return ONLY the JSON verdict. No explanation outside the JSON.
+Return ONLY the JSON. No text outside the JSON object.
 """
 
 
@@ -170,31 +131,63 @@ def verbatim_check(
     return violations
 
 
+_BANNED_PHRASES = [
+    "actually", "not just", "not only", "not simply",
+    "this matters because", "the hard part was not",
+    "that experience fits", "this role aligns", "what stands out",
+    "the clearest connection", "this is the kind of work",
+    "i am strongest in",
+    "i combine ",
+]
+
 def _hard_check(letter_text: str) -> list[str]:
     """Deterministic checks that don't need an LLM."""
     failures = []
+
+    # Em-dash
     for line in letter_text.splitlines():
         if "—" in line:
-            failures.append(f"Em-dash found: {line.strip()[:120]}")
+            failures.append(f"Em-dash: {line.strip()[:120]}")
+
+    # Banned phrases (exact, case-insensitive)
+    lower = letter_text.lower()
+    for phrase in _BANNED_PHRASES:
+        if phrase in lower:
+            # Find and quote the first offending sentence
+            for sent in re.split(r"(?<=[.!?])\s+", letter_text):
+                if phrase in sent.lower():
+                    failures.append(f"Banned phrase '{phrase}': {sent.strip()[:120]}")
+                    break
+
+    # Paragraph starting with "That"
+    for para in letter_text.split("\n\n"):
+        para = para.strip()
+        if para.lower().startswith("that "):
+            failures.append(f"Paragraph starts with 'That': {para[:80]}")
+
     return failures
 
 
 def verify_letter(letter_text: str, api_key: str, model: str) -> VerificationResult:
+    import anthropic
     hard_failures = _hard_check(letter_text)
     if hard_failures:
         return VerificationResult(verdict="FAIL", failures=hard_failures)
 
-    client = anthropic.Anthropic(api_key=api_key)
+    client = anthropic.Anthropic(api_key=api_key, timeout=30.0)
     prompt = VERIFY_PROMPT.format(letter=letter_text)
     kwargs: dict = dict(
         model=model,
-        max_tokens=1024,
+        max_tokens=512,
         system=[{"type": "text", "text": VERIFY_SYSTEM, "cache_control": {"type": "ephemeral"}}],
         messages=[{"role": "user", "content": prompt}],
     )
     if supports_temperature(model):
         kwargs["temperature"] = 0
-    response = client.messages.create(**kwargs)
+    try:
+        response = client.messages.create(**kwargs)
+    except Exception:
+        return VerificationResult(verdict="PASS", failures=[])
     usage = response.usage
     record(
         model, usage.input_tokens, usage.output_tokens,

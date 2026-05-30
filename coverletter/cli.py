@@ -7,7 +7,7 @@ from rich.spinner import Spinner
 from rich.table import Table
 from rich.live import Live
 
-from coverletter.align import AlignmentResult, alignment_report, generate_thesis
+from coverletter.align import AlignmentResult, alignment_report, generate_thesis, has_library_coverage
 from coverletter.profile import CandidateProfile, load_profile
 from coverletter.costs import running_total
 from coverletter.coach import WeakSentence, analyze_letter, get_context, rewrite_sentence
@@ -15,26 +15,112 @@ from coverletter.config import load_config
 from coverletter.llm import stream_cover_letter, stream_revision
 from coverletter.output import _flush_stdin, _prompt_choice, render_letter, save_letter, save_pdf
 from coverletter.parser import Paragraph, available_roles, filter_by_role, load_paragraphs, library_stats
-from coverletter.prompt import SYSTEM_PROMPT, build_user_message, embed_prefilter, prefilter
+from coverletter.prompt import SHORT_RESPONSE_SYSTEM, SYSTEM_PROMPT, build_user_message, embed_classify, embed_prefilter, prefilter
 from coverletter.resume import load_resume
 from coverletter.verify import VerbatimViolation, verbatim_check, verify_letter
 
 console = Console()
 
 
-def read_job_description() -> str:
-    console.print(
-        "\nPaste the job description below. Press [bold]Ctrl-D[/bold] (or Ctrl-Z on Windows) when done:\n"
-    )
-    lines = []
+def _read_from_clipboard() -> str:
+    """Read text from the system clipboard. Returns empty string on failure."""
+    import platform, subprocess
     try:
-        for line in sys.stdin:
-            lines.append(line)
-    except KeyboardInterrupt:
+        if platform.system() == "Darwin":
+            result = subprocess.run(["pbpaste"], capture_output=True, text=True, timeout=5)
+            return result.stdout if result.returncode == 0 else ""
+        # Linux: try xclip then xsel
+        for cmd in [
+            ["xclip", "-selection", "clipboard", "-o"],
+            ["xsel", "--clipboard", "--output"],
+        ]:
+            try:
+                result = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
+                if result.returncode == 0:
+                    return result.stdout
+            except FileNotFoundError:
+                continue
+    except Exception:
+        pass
+    return ""
+
+
+def _display_jd(text: str) -> None:
+    from rich.panel import Panel
+    console.print(Panel(text, title="[bold]Job Description[/bold]", border_style="dim", padding=(1, 2)))
+
+
+def _save_jd(text: str, jds_dir: "Path") -> None:
+    import datetime
+    jds_dir.mkdir(parents=True, exist_ok=True)
+    default = datetime.date.today().isoformat()
+    console.print(f"\nSave JD as [dim](press Enter for {default})[/dim]: ", end="")
+    _flush_stdin()
+    try:
+        label = input().strip() or default
+    except (KeyboardInterrupt, EOFError):
+        return
+    # Sanitize to safe filename
+    safe = "".join(c if c.isalnum() or c in "-_" else "-" for c in label).strip("-")
+    if not safe:
+        safe = default
+    fname = jds_dir / f"{safe}.txt"
+    counter = 1
+    while fname.exists():
+        fname = jds_dir / f"{safe}_{counter}.txt"
+        counter += 1
+    fname.write_text(text, encoding="utf-8")
+    console.print(f"[dim]Saved → {fname}[/dim]")
+
+
+def read_job_description(
+    prompt: str | None = None,
+    jds_dir: "Path | None" = None,
+) -> str:
+    from pathlib import Path
+
+    # Non-interactive (piped) input: read stdin directly.
+    if not sys.stdin.isatty():
+        try:
+            text = sys.stdin.read().strip()
+        except KeyboardInterrupt:
+            raise SystemExit("\nCancelled.")
+        if not text:
+            raise SystemExit("\nNo input provided. Exiting.")
+        return text
+
+    # Clipboard path.
+    if prompt is not None:
+        console.print(prompt)
+    else:
+        console.print(
+            "\n[bold]Copy the full job description to your clipboard, then press Enter.[/bold]\n"
+            "[dim]The text will be displayed for confirmation.[/dim]\n"
+        )
+
+    try:
+        _flush_stdin()
+        input()
+    except (KeyboardInterrupt, EOFError):
         raise SystemExit("\nCancelled.")
-    text = "".join(lines).strip()
+
+    text = _read_from_clipboard().strip()
     if not text:
-        raise SystemExit("\nNo job description provided. Exiting.")
+        raise SystemExit("\nClipboard was empty. Copy the job description and try again.")
+
+    # Reconnect stdin so any pasted text that bled into Python's stdio buffer
+    # doesn't contaminate subsequent prompts.
+    try:
+        sys.stdin = open("/dev/tty", "r")
+    except OSError:
+        _flush_stdin()
+
+    _display_jd(text)
+    console.print(f"[dim]{len(text):,} characters read from clipboard.[/dim]")
+
+    if jds_dir is not None:
+        _save_jd(text, Path(jds_dir))
+
     return text
 
 
@@ -44,6 +130,9 @@ def select_role(all_paragraphs: list[Paragraph]) -> str | None:
 
     if not non_general:
         return None  # only General — no selection needed
+
+    if len(non_general) == 1:
+        return non_general[0]  # only one role — no point asking
 
     console.print("\n[bold]Which role are you applying for?[/bold]")
     for i, role in enumerate(non_general, 1):
@@ -86,17 +175,27 @@ def _find_template(output_dir: "Path", name: str) -> "Path | None":
 
 
 def _read_multiline(prompt: str = "> ") -> str:
-    """Read until a blank line. Single-line answers just need one extra Enter."""
-    console.print(f"[dim]{prompt}(blank line to submit)[/dim]")
+    """Read multiline input. Uses prompt_toolkit (no line-length limit, paste-safe).
+
+    Enter adds a newline. Ctrl-D or Meta-Enter submits. Ctrl-C cancels.
+    Falls back to double-Enter if prompt_toolkit is unavailable.
+    """
+    console.print(
+        f"[dim]{prompt}Press Enter for new lines. Enter twice or Ctrl-D to submit.[/dim]"
+    )
     lines: list[str] = []
     try:
         while True:
             line = input()
-            if not line and lines:
+            if line == "" and lines and lines[-1] == "":
+                lines.pop()
                 break
             lines.append(line)
     except EOFError:
         pass
+    except KeyboardInterrupt:
+        console.print("\n[dim]Cancelled.[/dim]")
+        raise
     return "\n".join(lines).strip()
 
 
@@ -118,6 +217,8 @@ def _show_alignment(report: "AlignmentResult") -> None:
             lines.append(f"  [yellow]{i}.[/yellow] {g}")
     if report.goal_alignment:
         lines.append(f"\n[bold]Goal fit:[/bold] {report.goal_alignment}")
+    if report.perspective_note:
+        lines.append(f"\n[bold yellow]Narrative frame:[/bold yellow] {report.perspective_note}")
     console.print(Panel("\n".join(lines), title="JD Alignment", border_style="yellow"))
 
 
@@ -129,31 +230,91 @@ def _gap_loop(
     job_description: str,
     seniority_gaps: "list[str] | None" = None,
 ) -> int:
-    """Walk through JD gaps then seniority signal gaps, offering Q&A for each.
-    Returns count of paragraphs saved."""
+    """Show all gaps at once, let user pick which to address. Returns count of paragraphs saved."""
+    import re
     saved = 0
     console.print()
 
     all_gaps = [(g, "JD") for g in gaps] + [(g, "Seniority") for g in (seniority_gaps or [])]
-    total = len(all_gaps)
+    if not all_gaps:
+        return 0
 
+    # Separate library-covered (already have material, just need regen) from truly missing
+    actionable: list[tuple[int, str, str]] = []
+    covered_by_library: list[int] = []
+
+    console.print(f"[bold]{len(all_gaps)} gap(s):[/bold]\n")
     for i, (gap, kind) in enumerate(all_gaps, 1):
-        if kind == "Seniority":
-            label = f"[yellow]Seniority signal gap {i}/{total}:[/yellow] {gap}"
+        if has_library_coverage(gap):
+            console.print(f"  [dim]{i}. [in library] {gap}[/dim]")
+            covered_by_library.append(i)
+        elif kind == "Seniority":
+            console.print(f"  [yellow]{i}.[/yellow] [Seniority] {gap}")
+            actionable.append((i, gap, kind))
         else:
-            label = f"[bold]JD gap {i}/{total}:[/bold] {gap}"
-        console.print(label)
-        _flush_stdin()
-        choice = input("Address this? [Y/n/done]: ").strip().lower()
-        if choice in ("done", "d"):
-            break
-        if choice in ("n", "no"):
-            console.print()
+            console.print(f"  [red]{i}.[/red] {gap}")
+            actionable.append((i, gap, kind))
+
+    if covered_by_library:
+        console.print(f"\n[dim]Gaps {', '.join(str(n) for n in covered_by_library)} already have library paragraphs — they'll be pulled in on regen.[/dim]")
+
+    if not actionable:
+        console.print("[dim]No actionable gaps — all have library coverage.[/dim]")
+        return 0
+
+    actionable_nums = ", ".join(str(i) for i, _, _ in actionable)
+    console.print(f"\n[dim]Actionable: {actionable_nums}[/dim]")
+    _flush_stdin()
+    raw = input("Address which gaps? (e.g. 1,3 or 'all' or Enter to skip all): ").strip()
+
+    if not raw:
+        return 0
+
+    if raw.lower() in ("all", "a"):
+        selected = {i for i, _, _ in actionable}
+    else:
+        try:
+            selected = {int(n.strip()) for n in raw.replace(" ", "").split(",") if n.strip().isdigit()}
+        except ValueError:
+            selected = set()
+
+    for i, gap, kind in actionable:
+        if i not in selected:
             continue
-        result = _qa_session(gap, all_paragraphs, priority_file, cfg, job_description=job_description, gap_description=gap, voyage_api_key=cfg.voyage_api_key)
+        if kind == "Seniority":
+            console.print(f"\n[yellow]Seniority gap {i}: {gap}[/yellow]")
+        else:
+            console.print(f"\n[bold]Gap {i}:[/bold] {gap}")
+
+        # Guard against duplicate saves: search the current library for this gap
+        # before starting Q&A. If we find a strong match, show it and let the user
+        # confirm it doesn't already cover the gap. This catches the common case of
+        # a session restart after interruption where the paragraph was already saved.
+        if all_paragraphs:
+            from coverletter.build import _search_library
+            match_text = _search_library(gap, all_paragraphs, voyage_api_key=cfg.voyage_api_key)
+            if match_text and match_text != "No matching paragraphs found.":
+                from rich.panel import Panel
+                console.print("\n[yellow]Library match found — may already cover this gap:[/yellow]")
+                console.print(Panel(match_text[:600] + ("…" if len(match_text) > 600 else ""), border_style="yellow"))
+                _flush_stdin()
+                confirm = input("Does this already cover the gap? [y to skip / Enter to continue]: ").strip().lower()
+                if confirm == "y":
+                    console.print("[dim]Skipped.[/dim]")
+                    continue
+
+        try:
+            result = _qa_session(
+                gap, all_paragraphs, priority_file, cfg,
+                job_description=job_description, gap_description=gap,
+                voyage_api_key=cfg.voyage_api_key,
+            )
+        except KeyboardInterrupt:
+            console.print("\n[dim]Stopped. Any paragraphs saved above are in the library.[/dim]")
+            break
         if result:
             saved += 1
-        console.print()
+
     return saved
 
 
@@ -257,46 +418,91 @@ def _run_verification(
     api_key: str,
     model: str,
 ) -> None:
-    """Verify and auto-revise until PASS or MAX_VERIFY_ATTEMPTS."""
-    for attempt in range(MAX_VERIFY_ATTEMPTS):
-        current = messages[-1]["content"]
-        with Live(Spinner("dots", text="Checking quality rules..."), refresh_per_second=10, console=console):
-            result = verify_letter(current, api_key, model)
+    """Verify and propose fixes for human review — no silent auto-revision."""
+    from rich.rule import Rule
+    current = messages[-1]["content"]
+    with Live(Spinner("dots", text="Checking quality rules..."), refresh_per_second=10, console=console):
+        result = verify_letter(current, api_key, model)
 
-        if result.passed:
-            console.print("[green]Quality check: PASS[/green]")
-            return
+    if result.passed:
+        console.print("[green]Quality check: PASS[/green]")
+        return
 
-        attempt_label = f"{attempt + 1}/{MAX_VERIFY_ATTEMPTS}"
-        n = len(result.failures)
-        console.print(f"[yellow]Quality check: fixing {n} issue(s)... ({attempt_label})[/yellow]")
+    n = len(result.failures)
+    console.print(f"\n[yellow]Quality check: {n} issue(s) found[/yellow]\n")
+    for f in result.failures:
+        console.print(f"  [yellow]• {f}[/yellow]")
 
-        if attempt == MAX_VERIFY_ATTEMPTS - 1:
-            console.print(f"[yellow]Still {n} issue(s) after {MAX_VERIFY_ATTEMPTS} attempts — continuing to revision loop.[/yellow]")
-            console.print("[dim]Issues:[/dim]")
-            for f in result.failures:
-                console.print(f"  [dim]• {f}[/dim]")
-            return
+    console.print()
+    failure_list = "\n".join(f"- {f}" for f in result.failures)
+    feedback = (
+        "QUALITY FIX REQUIRED. The following violations must be addressed.\n\n"
+        "Rules:\n"
+        "- Fix each violation using the minimal change possible\n"
+        "- Stay as close to the existing language as you can — prefer cutting or restructuring "
+        "over rewriting\n"
+        "- Do not add any claim or language not already present in the letter\n"
+        "- If you cannot fix a violation without inventing new language, leave the sentence "
+        "as-is and add a comment after the letter: 'COULD NOT FIX: [quote the sentence]'\n"
+        "- Do not introduce new violations\n\n"
+        "Violations:\n"
+        + failure_list
+    )
 
-        console.print()
-        failure_list = "\n".join(f"- {f}" for f in result.failures)
-        feedback = (
-            "QUALITY FIX REQUIRED. The following violations are hard failures. "
-            "Fixing them takes absolute priority over source material preservation — "
-            "rewrite or cut the specific violating sentence regardless of where it came from. "
-            "Do not make partial fixes. Do not introduce new violations. "
-            "Every item below must be resolved:\n\n"
-            + failure_list
-        )
-        with Live(Spinner("dots", text=f"Auto-revising..."), refresh_per_second=10, console=console):
-            parts: list[str] = []
-            for chunk in stream_revision(SYSTEM_PROMPT, messages, feedback, api_key, model):
-                parts.append(chunk)
+    with Live(Spinner("dots", text="Proposing fixes..."), refresh_per_second=10, console=console):
+        parts: list[str] = []
+        for chunk in stream_revision(SYSTEM_PROMPT, messages, feedback, api_key, model):
+            parts.append(chunk)
 
-        revised = "".join(parts)
+    proposed = "".join(parts)
+
+    # Surface any sentences the model flagged as unfixable
+    unfixable = [
+        line.replace("COULD NOT FIX:", "").strip()
+        for line in proposed.splitlines()
+        if line.strip().startswith("COULD NOT FIX:")
+    ]
+    # Strip the comments from the proposed letter before showing it
+    proposed_clean = "\n".join(
+        line for line in proposed.splitlines()
+        if not line.strip().startswith("COULD NOT FIX:")
+    ).strip()
+
+    console.print()
+    console.print(Rule("[bold]Proposed fix[/bold]", style="yellow"))
+    render_letter(proposed_clean)
+
+    if unfixable:
+        console.print("\n[yellow]Model could not fix without inventing language:[/yellow]")
+        for s in unfixable:
+            console.print(f"  [dim]• {s}[/dim]")
+        console.print("[dim]Use the revision loop to address these manually.[/dim]\n")
+
+    console.print()
+    _flush_stdin()
+    choice = _prompt_choice(
+        "[A]ccept fix  [E]dit manually (revision loop)  [S]kip (keep current): ",
+        {"a", "e", "s"},
+    )
+
+    if choice == "a":
         messages.append({"role": "user", "content": feedback})
-        messages.append({"role": "assistant", "content": revised})
-        render_letter(revised)
+        messages.append({"role": "assistant", "content": proposed_clean})
+        # Re-verify after accepting
+        with Live(Spinner("dots", text="Re-checking..."), refresh_per_second=10, console=console):
+            recheck = verify_letter(proposed_clean, api_key, model)
+        if recheck.passed:
+            console.print("[green]Quality check: PASS[/green]")
+        else:
+            console.print(f"[yellow]Still {len(recheck.failures)} issue(s) — use the revision loop to resolve.[/yellow]")
+            for f in recheck.failures:
+                console.print(f"  [dim]• {f}[/dim]")
+    elif choice == "e":
+        messages.append({"role": "user", "content": feedback})
+        messages.append({"role": "assistant", "content": proposed_clean})
+        console.print("[dim]Use the revision loop below to fix manually.[/dim]")
+    else:
+        console.print("[dim]Keeping current letter. Use the revision loop to fix manually.[/dim]")
 
 
 @click.group(invoke_without_command=True)
@@ -308,6 +514,7 @@ def _run_verification(
 @click.option("--template", "-t", default=None, help="Name (or substring) of a previous letter to use as template")
 @click.option("--resume", "-R", default=None, help="Path to resume file (.pdf, .md, or .txt)")
 @click.option("--no-save", is_flag=True, default=False, help="Skip saving to file")
+@click.option("--fast", "-f", is_flag=True, default=False, help="Skip thesis and alignment — generate, review, and revise only")
 def main(
     ctx: click.Context,
     paragraphs: str | None,
@@ -317,6 +524,7 @@ def main(
     template: str | None,
     resume: str | None,
     no_save: bool,
+    fast: bool,
 ) -> None:
     """Cover letter generator — assembles your voice from your own source paragraphs."""
     if ctx.invoked_subcommand is not None:
@@ -351,7 +559,8 @@ def main(
     if profile.is_empty:
         console.print(f"[dim]No candidate profile — fill in candidate_profile.toml for goal-aware thesis and alignment[/dim]")
     else:
-        console.print(f"Profile: [dim]{cfg.profile_file}[/dim] ([green]{len(profile.goals)} goal(s), {len(profile.differentiators)} differentiator(s)[/green])")
+        sig_note = f", {len(profile.seniority_signals)} seniority signal(s)" if profile.seniority_signals else " [yellow]— no seniority signals set[/yellow]"
+        console.print(f"Profile: [dim]{cfg.profile_file}[/dim] ([green]{len(profile.goals)} goal(s), {len(profile.differentiators)} differentiator(s){sig_note}[/green])")
 
     # Role selection
     if role is None:
@@ -372,7 +581,9 @@ def main(
         else:
             console.print(f"[yellow]No template found matching '{template}' — continuing without.[/yellow]")
 
-    job_description = read_job_description()
+    job_description = read_job_description(
+        jds_dir=cfg.paragraphs_files[0].parent / "jds",
+    )
 
     _flush_stdin()
     company = input("\nCompany name (for filename, optional): ").strip()
@@ -441,72 +652,75 @@ def main(
     else:
         console.print("[green]Verbatim check: all body sentences trace to source.[/green]")
 
-    # Letter thesis — what argument is this letter actually making?
-    console.print()
-    with Live(Spinner("dots", text="Identifying letter thesis..."), refresh_per_second=10, console=console):
-        thesis = generate_thesis(job_description, letter_text, cfg.api_key, cfg.model, profile=profile)
-    console.print(f"[dim]{running_total()}[/dim]")
-    from rich.panel import Panel
-    console.print(Panel(f"[bold]Letter thesis:[/bold] {thesis}", border_style="cyan", title="Argument"))
-    _flush_stdin()
-    thesis_ok = input("Is this the right argument? [Y/n/adjust]: ").strip().lower()
-    if thesis_ok not in ("", "y", "yes"):
-        if thesis_ok == "n":
-            console.print("[dim]Noted. The gap loop and revision loop are where you can redirect the argument.[/dim]")
-        else:
-            # They typed an adjustment
-            console.print(f"[dim]Thesis direction noted: {thesis_ok}[/dim]")
-            console.print("[dim]Use the revision loop to push the letter toward this argument.[/dim]")
-
-    # Alignment report + gap loop
-    console.print()
-    with Live(Spinner("dots", text="Analyzing JD alignment..."), refresh_per_second=10, console=console):
-        report = alignment_report(job_description, letter_text, filtered, cfg.api_key, cfg.model, profile=profile)
-    console.print(f"[dim]{running_total()}[/dim]")
-
-    from rich.panel import Panel
-    _show_alignment(report)
-
-    new_paragraphs_saved = 0
-    if report.gaps or report.seniority_gaps:
-        gap_priority_file = cfg.paragraphs_files[-1].parent / "library_refined.md"
-        new_paragraphs_saved = _gap_loop(
-            report.gaps, all_paragraphs, gap_priority_file, cfg, job_description,
-            seniority_gaps=report.seniority_gaps,
-        )
-
-    # Regenerate if new paragraphs were saved
-    if new_paragraphs_saved:
+    if not fast:
+        # Letter thesis — what argument is this letter actually making?
+        console.print()
+        with Live(Spinner("dots", text="Identifying letter thesis..."), refresh_per_second=10, console=console):
+            thesis = generate_thesis(job_description, letter_text, cfg.api_key, cfg.model, profile=profile)
+        console.print(f"[dim]{running_total()}[/dim]")
+        from rich.panel import Panel
+        console.print(Panel(f"[bold]Letter thesis:[/bold] {thesis}", border_style="cyan", title="Argument"))
         _flush_stdin()
-        regen = input(f"\nSaved {new_paragraphs_saved} new paragraph(s). Regenerate letter with new material? [Y/n]: ").strip().lower()
-        if regen in ("", "y", "yes"):
-            all_paragraphs = load_paragraphs(cfg.paragraphs_files)
-            role_paragraphs = filter_by_role(all_paragraphs, role) if role else all_paragraphs
-            if cfg.voyage_api_key:
-                filtered = embed_prefilter(role_paragraphs, job_description, cfg.top_n, cfg.voyage_api_key)
-            else:
-                filtered = prefilter(role_paragraphs, job_description, cfg.top_n)
-            corrections = load_corrections(corrections_file)
-            corrected = apply_corrections(filtered, corrections)
-            user_message = build_user_message(
-                job_description, corrected, role=role, company=company,
-                resume=resume_text or None, template=template_text, notes=notes,
+        thesis_ok = input("Accept this argument? [Y / type a correction]: ").strip()
+        while thesis_ok.lower() not in ("", "y", "yes"):
+            correction = thesis_ok
+            console.print(f"[dim]Regenerating...[/dim]")
+            with Live(Spinner("dots", text="Revising thesis..."), refresh_per_second=10, console=console):
+                thesis = generate_thesis(job_description, letter_text, cfg.api_key, cfg.model, profile=profile, correction=correction)
+            console.print(f"[dim]{running_total()}[/dim]")
+            console.print(Panel(f"[bold]Letter thesis:[/bold] {thesis}", border_style="cyan", title="Argument"))
+            _flush_stdin()
+            thesis_ok = input("Accept this argument? [Y / type another correction]: ").strip()
+
+        # Alignment report + gap loop
+        console.print()
+        with Live(Spinner("dots", text="Analyzing JD alignment..."), refresh_per_second=10, console=console):
+            report = alignment_report(job_description, letter_text, filtered, cfg.api_key, cfg.model, profile=profile)
+        console.print(f"[dim]{running_total()}[/dim]")
+
+        from rich.panel import Panel
+        _show_alignment(report)
+
+        new_paragraphs_saved = 0
+        if report.gaps or report.seniority_gaps:
+            gap_priority_file = cfg.paragraphs_files[-1].parent / "library_refined.md"
+            new_paragraphs_saved = _gap_loop(
+                report.gaps, all_paragraphs, gap_priority_file, cfg, job_description,
+                seniority_gaps=report.seniority_gaps,
             )
-            messages = [{"role": "user", "content": user_message}]
-            console.print()
-            with Live(Spinner("dots", text="Regenerating..."), refresh_per_second=10, console=console):
-                parts = []
-                for chunk in stream_cover_letter(SYSTEM_PROMPT, user_message, cfg.api_key, cfg.model):
-                    parts.append(chunk)
-            letter_text = "".join(parts)
-            messages.append({"role": "assistant", "content": letter_text})
-            render_letter(letter_text)
-            _run_verification(letter_text, messages, cfg.api_key, cfg.model)
-            letter_text = messages[-1]["content"]
-            console.print()
-            with Live(Spinner("dots", text="Re-analyzing alignment..."), refresh_per_second=10, console=console):
-                new_report = alignment_report(job_description, letter_text, filtered, cfg.api_key, cfg.model, profile=profile)
-            _show_alignment(new_report)
+
+        # Regenerate if new paragraphs were saved
+        if new_paragraphs_saved:
+            _flush_stdin()
+            regen = input(f"\nSaved {new_paragraphs_saved} new paragraph(s). Regenerate letter with new material? [Y/n]: ").strip().lower()
+            if regen in ("", "y", "yes"):
+                all_paragraphs = load_paragraphs(cfg.paragraphs_files)
+                role_paragraphs = filter_by_role(all_paragraphs, role) if role else all_paragraphs
+                if cfg.voyage_api_key:
+                    filtered = embed_prefilter(role_paragraphs, job_description, cfg.top_n, cfg.voyage_api_key)
+                else:
+                    filtered = prefilter(role_paragraphs, job_description, cfg.top_n)
+                corrections = load_corrections(corrections_file)
+                corrected = apply_corrections(filtered, corrections)
+                user_message = build_user_message(
+                    job_description, corrected, role=role, company=company,
+                    resume=resume_text or None, template=template_text, notes=notes,
+                )
+                messages = [{"role": "user", "content": user_message}]
+                console.print()
+                with Live(Spinner("dots", text="Regenerating..."), refresh_per_second=10, console=console):
+                    parts = []
+                    for chunk in stream_cover_letter(SYSTEM_PROMPT, user_message, cfg.api_key, cfg.model):
+                        parts.append(chunk)
+                letter_text = "".join(parts)
+                messages.append({"role": "assistant", "content": letter_text})
+                render_letter(letter_text)
+                _run_verification(letter_text, messages, cfg.api_key, cfg.model)
+                letter_text = messages[-1]["content"]
+                console.print()
+                with Live(Spinner("dots", text="Re-analyzing alignment..."), refresh_per_second=10, console=console):
+                    new_report = alignment_report(job_description, letter_text, filtered, cfg.api_key, cfg.model, profile=profile)
+                _show_alignment(new_report)
 
     # Optional coaching pass
     _flush_stdin()
@@ -669,7 +883,7 @@ def _qa_session(
 
     accepted: str | None = None
     exchange_count = 0
-    MAX_EXCHANGES = 3
+    MAX_EXCHANGES = 4
 
     while True:
         if pending_draft is not None:
@@ -682,14 +896,20 @@ def _qa_session(
                 break
 
             elif choice == "r":
-                _flush_stdin()
                 redirect = _read_multiline("Direction: ")
                 if not redirect:
                     continue
                 RULES_REMINDER = (
-                    "Hard rules: no sentence starts with 'That', no em-dashes, "
-                    "no 'actually'/'not just'/'not only'/'not simply', no fake contrast. "
-                    "Scan every sentence before writing."
+                    "Revise the draft per the direction above.\n\n"
+                    "CHECK EVERY RULE before writing:\n"
+                    "FIRST SENTENCE: must name what was BUILT, OWNED, or DECIDED at a specific company. "
+                    "'At Acme Corp, I owned...' is correct. 'GCP was my foundation...' is wrong."
+                    "'I have worked seriously in...' is wrong.\n"
+                    "DO NOT INVENT: every claim must trace to this conversation, not library results.\n"
+                    "USE THEIR WORDS: their language, not polished resume language.\n"
+                    "NO PADDING: cut sentences that summarize without adding evidence.\n"
+                    "BANNED: em-dashes (—), sentences starting with 'That', "
+                    "'actually'/'not just'/'not only'/'not simply', fake contrast 'not X but Y'."
                 )
                 history.append({"role": "assistant", "content": pending_draft})
                 history.append({"role": "user", "content": f"Revise the draft: {redirect}\n\n{RULES_REMINDER}"})
@@ -707,8 +927,7 @@ def _qa_session(
                     history.append({"role": "assistant", "content": question})
 
         else:
-            # Waiting for user answer
-            _flush_stdin()
+            # Waiting for user answer — do NOT flush here; user may have typed while spinner ran
             user_input = _read_multiline()
 
             if not user_input or user_input.lower() == "done":
@@ -744,7 +963,7 @@ def _qa_session(
     console.print("[dim]Press Enter to accept the default shown in brackets.[/dim]\n")
 
     _flush_stdin()
-    save_role = input("Role [Data Engineering]: ").strip() or "Data Engineering"
+    save_role = input("Role [Data Engineer]: ").strip() or "Data Engineer"
     _flush_stdin()
     save_section = input(f"Section [{short_topic}]: ").strip() or short_topic
     _flush_stdin()
@@ -804,6 +1023,783 @@ def build_library(ctx: click.Context, paragraphs: str | None, about: str | None)
         topic = input("What next? (Enter to exit): ").strip()
         if not topic:
             break
+
+
+@main.command("reflect")
+@click.option("--paragraphs", "-p", default=None, help="Path to paragraphs file")
+@click.option("--about", "-a", default=None, help="What shift, through-line, or pivot to explore")
+@click.option(
+    "--angle",
+    default=None,
+    type=click.Choice(["through-line", "pivot", "reframe", "synthesis"], case_sensitive=False),
+    help="Angle type (through-line, pivot, reframe, synthesis)",
+)
+@click.pass_context
+def reflect(
+    ctx: click.Context,
+    paragraphs: str | None,
+    about: str | None,
+    angle: str | None,
+) -> None:
+    """Capture a career through-line, pivot, reframe, or synthesis through Q&A.
+
+    These are perspective paragraphs — your voice connecting your arc together.
+    They are the narrative frame the letter's argument depends on.
+
+    Examples:
+      coverletter reflect --about "shift from analyst to data engineer" --angle pivot
+      coverletter reflect --about "through-line across all roles"
+    """
+    from coverletter.build import PERSPECTIVE_SYSTEM, qa_turn, force_draft, append_to_library
+    from rich.panel import Panel
+    from rich.rule import Rule
+
+    paragraphs = paragraphs or (ctx.obj or {}).get("paragraphs")
+    cfg = load_config(paragraphs)
+    all_paragraphs = load_paragraphs(cfg.paragraphs_files)
+    priority_file = cfg.paragraphs_files[-1].parent / "library_refined.md"
+
+    console.print(f"\n[bold blue]Reflect[/bold blue]  [dim]→ {priority_file.name}[/dim]\n")
+    console.print(
+        "[dim]Capture the through-line, pivot, or synthesis that connects your experience.\n"
+        "These paragraphs establish the argument. Evidence paragraphs substantiate it.[/dim]\n"
+    )
+
+    topic = about
+    if not topic:
+        _flush_stdin()
+        topic = input(
+            "What shift, through-line, or pivot do you want to capture?\n"
+            "(e.g. 'analyst to engineer transition', 'what runs through all my work'): "
+        ).strip()
+    if not topic:
+        console.print("[yellow]Nothing to explore — exiting.[/yellow]")
+        return
+
+    # Angle-specific context — what the agent is trying to surface differs per angle type
+    _angle_context = {
+        "through-line": (
+            "I want to write a through-line paragraph — the thread that runs consistently "
+            "across my whole career, regardless of what the job was called or what industry I was in. "
+            "This is NOT a story about one job. It is what has been true about how I work and what "
+            "I get called on to do across all of them."
+        ),
+        "pivot": (
+            "I want to write a pivot paragraph — a specific career transition, what drove it, "
+            "and what was happening right before I made the move."
+        ),
+        "reframe": (
+            "I want to write a reframe paragraph — taking an experience that looked one way "
+            "from the outside and showing what I was actually building or developing inside it."
+        ),
+        "synthesis": (
+            "I want to write a synthesis paragraph — two paths from my background that combine "
+            "into a specific capability that neither path would have produced on its own."
+        ),
+    }
+    angle_description = _angle_context.get(angle or "", f"Angle type: {angle}." if angle else "")
+    context = (
+        f"Angle type: {angle or 'perspective'}\n\n"
+        f"{angle_description}\n\n"
+        f"Topic: {topic}"
+    )
+    history: list[dict] = [{"role": "user", "content": context}]
+
+    console.print(f"[bold blue]Exploring:[/bold blue] {topic}")
+    console.print("[dim]Answer the questions. 'draft' to draft now. 'done' to exit without saving.[/dim]\n")
+
+    with Live(Spinner("dots", text="Thinking..."), refresh_per_second=10, console=console):
+        pending_draft, question = qa_turn(
+            history, cfg.api_key, cfg.model, all_paragraphs,
+            voyage_api_key=cfg.voyage_api_key, system=PERSPECTIVE_SYSTEM,
+        )
+    console.print(f"[dim]{running_total()}[/dim]")
+
+    if question:
+        console.print(f"[cyan]{question}[/cyan]\n")
+        history.append({"role": "assistant", "content": question})
+
+    accepted: str | None = None
+    exchange_count = 0
+
+    while True:
+        if pending_draft is not None:
+            console.print(Panel(pending_draft, border_style="green", title="Draft"))
+            choice = _prompt_choice("[A]ccept  [R]edirect  [K]eep talking: ", {"a", "r", "k"})
+
+            if choice == "a":
+                accepted = pending_draft
+                break
+            elif choice == "r":
+                redirect = _read_multiline("Direction: ")
+                if not redirect:
+                    continue
+                RULES_REMINDER = (
+                    "Revise the draft per the direction above.\n\n"
+                    "CHECK EVERY RULE before writing:\n"
+                    "FIRST SENTENCE: must name what was BUILT, OWNED, or DECIDED at a specific company. "
+                    "'At Acme Corp, I owned...' is correct. 'GCP was my foundation...' is wrong."
+                    "'I have worked seriously in...' is wrong.\n"
+                    "DO NOT INVENT: every claim must trace to this conversation, not library results.\n"
+                    "USE THEIR WORDS: their language, not polished resume language.\n"
+                    "NO PADDING: cut sentences that summarize without adding evidence.\n"
+                    "BANNED: em-dashes (—), sentences starting with 'That', "
+                    "'actually'/'not just'/'not only'/'not simply', fake contrast 'not X but Y'."
+                )
+                history.append({"role": "assistant", "content": pending_draft})
+                history.append({"role": "user", "content": f"Revise the draft: {redirect}\n\n{RULES_REMINDER}"})
+                with Live(Spinner("dots", text="Revising..."), refresh_per_second=10, console=console):
+                    pending_draft = force_draft(
+                        history, cfg.api_key, cfg.model, all_paragraphs,
+                        voyage_api_key=cfg.voyage_api_key, system=PERSPECTIVE_SYSTEM,
+                    )
+            elif choice == "k":
+                history.append({"role": "assistant", "content": pending_draft})
+                history.append({"role": "user", "content": "Keep going — what else do you need to know?"})
+                pending_draft = None
+                with Live(Spinner("dots", text="Continuing..."), refresh_per_second=10, console=console):
+                    _, question = qa_turn(
+                        history, cfg.api_key, cfg.model, all_paragraphs,
+                        voyage_api_key=cfg.voyage_api_key, system=PERSPECTIVE_SYSTEM,
+                    )
+                if question:
+                    console.print(f"\n[cyan]{question}[/cyan]\n")
+                    history.append({"role": "assistant", "content": question})
+        else:
+            # Waiting for user answer — do NOT flush here; user may have typed while spinner ran
+            user_input = _read_multiline()
+
+            if not user_input or user_input.lower() == "done":
+                break
+
+            if user_input.lower() == "draft":
+                with Live(Spinner("dots", text="Drafting..."), refresh_per_second=10, console=console):
+                    pending_draft = force_draft(
+                        history, cfg.api_key, cfg.model, all_paragraphs,
+                        voyage_api_key=cfg.voyage_api_key, system=PERSPECTIVE_SYSTEM,
+                    )
+            else:
+                history.append({"role": "user", "content": user_input})
+                exchange_count += 1
+                with Live(Spinner("dots", text="Thinking..."), refresh_per_second=10, console=console):
+                    pending_draft, question = qa_turn(
+                        history, cfg.api_key, cfg.model, all_paragraphs,
+                        voyage_api_key=cfg.voyage_api_key, system=PERSPECTIVE_SYSTEM,
+                    )
+                if question and pending_draft is None:
+                    console.print(f"\n[cyan]{question}[/cyan]\n")
+                    history.append({"role": "assistant", "content": question})
+
+    if not accepted:
+        console.print("[dim]Nothing saved.[/dim]")
+        return
+
+    # Save — ask for role/section/angle
+    console.print()
+    console.print(Rule("[bold]Where should this go?[/bold]", style="cyan"))
+    console.print("[dim]Press Enter to accept the default shown in brackets.[/dim]\n")
+
+    _flush_stdin()
+    save_role = input("Role [General]: ").strip() or "General"
+    short_topic = topic.split(" — ")[0].split(" - ")[0].strip()
+    if len(short_topic) > 40:
+        short_topic = short_topic[:40].rsplit(" ", 1)[0]
+    _flush_stdin()
+    save_section = input(f"Section [{short_topic}]: ").strip() or short_topic
+
+    # Angle — default to what was passed in, or prompt
+    angle_choices = ["through-line", "pivot", "reframe", "synthesis"]
+    if not angle:
+        console.print(f"Angle type: {', '.join(angle_choices)}")
+        _flush_stdin()
+        angle_input = input("Angle [pivot]: ").strip().lower() or "pivot"
+        angle = angle_input if angle_input in angle_choices else "pivot"
+
+    meta: dict[str, str] = {"angle": angle, "via": "reflect"}
+    append_to_library(priority_file, save_role, save_section, accepted, meta)
+    console.print(f"\n[green]Saved to {priority_file.name}[/green] under {save_role} / {save_section}  [dim][angle={angle}][/dim]\n")
+
+
+@main.command("intake")
+@click.option("--paragraphs", "-p", default=None, help="Path to paragraphs file")
+@click.option("--mission", "mode", flag_value="mission", help="Capture a mission alignment paragraph")
+@click.option("--evidence", "mode", flag_value="evidence", help="Capture a career evidence paragraph")
+@click.pass_context
+def intake(
+    ctx: click.Context,
+    paragraphs: str | None,
+    mode: str | None,
+) -> None:
+    """Build your paragraph library through guided Q&A.
+
+    Two modes:
+
+    --mission   Capture why a specific company's purpose or product resonates
+                with you. Produces a reusable mission-alignment paragraph.
+
+    --evidence  Capture what you built or owned at a specific role.
+                Produces an evidence paragraph for the cover letter body.
+
+    Without a flag, you will be prompted to choose.
+
+    Examples:
+      coverletter intake --mission
+      coverletter intake --evidence
+    """
+    from coverletter.build import MISSION_SYSTEM, BUILD_SYSTEM, qa_turn, force_draft, append_to_library
+    from rich.panel import Panel
+    from rich.rule import Rule
+
+    paragraphs = paragraphs or (ctx.obj or {}).get("paragraphs")
+    cfg = load_config(paragraphs)
+    all_paragraphs = load_paragraphs(cfg.paragraphs_files)
+    priority_file = cfg.paragraphs_files[-1].parent / "library_refined.md"
+
+    console.print(f"\n[bold blue]Intake[/bold blue]  [dim]→ {priority_file.name}[/dim]\n")
+
+    if not mode:
+        console.print("What are you capturing?\n")
+        console.print("  [bold]1.[/bold] Mission frame  [dim]— why a company's purpose or product resonates with you[/dim]")
+        console.print("  [bold]2.[/bold] Evidence       [dim]— what you built or owned at a specific role[/dim]")
+        _flush_stdin()
+        choice = input("\nEnter 1 or 2: ").strip()
+        mode = "mission" if choice == "1" else "evidence"
+
+    if mode == "mission":
+        _intake_mission(cfg, all_paragraphs, priority_file)
+    else:
+        _intake_evidence(cfg, all_paragraphs, priority_file)
+
+
+def _pick_location(
+    new_text: str,
+    all_paragraphs: list["Paragraph"],
+    voyage_api_key: str,
+    *,
+    type_filter: str | None,
+    default_role: str,
+    default_section: str,
+    paragraphs_files: "list[Path] | None" = None,
+) -> tuple[str, str]:
+    """Use embeddings to suggest where a new paragraph belongs in the library.
+
+    Prefers cached DB embeddings (fast). Falls back to re-embedding on the fly.
+    Shows up to 3 closest (role, section) pairs. User picks a number or 'n' for manual.
+    """
+    from rich.rule import Rule
+
+    console.print()
+    console.print(Rule("[bold]Where should this go?[/bold]", style="cyan"))
+
+    suggestions: list[tuple[str, str, float]] = []
+
+    # Try DB first (cached embeddings — much faster)
+    if paragraphs_files and voyage_api_key:
+        try:
+            from coverletter.db import open_db, db_path, query_similar
+            db = db_path(paragraphs_files)
+            if db.exists():
+                conn = open_db(db)
+                suggestions = query_similar(conn, new_text, voyage_api_key, top_n=3, type_filter=type_filter)
+        except Exception:
+            pass
+
+    # Fall back to re-embedding the full library
+    if not suggestions:
+        suggestions = embed_classify(
+            new_text, all_paragraphs, voyage_api_key, top_n=3, type_filter=type_filter
+        )
+
+    if suggestions:
+        console.print("[dim]Closest existing locations by semantic similarity:[/dim]\n")
+        for i, (role, section, score) in enumerate(suggestions, 1):
+            console.print(f"  [bold]{i}[/bold]  {role} / {section}  [dim]({score:.2f})[/dim]")
+        console.print(f"  [bold]n[/bold]  Enter new location manually")
+        console.print()
+        _flush_stdin()
+        choice = input("Pick [1/2/3/n]: ").strip().lower()
+        if choice in ("1", "2", "3"):
+            idx = int(choice) - 1
+            if idx < len(suggestions):
+                return suggestions[idx][0], suggestions[idx][1]
+    else:
+        console.print("[dim]No similar paragraphs found — enter location manually.[/dim]\n")
+
+    _flush_stdin()
+    save_role = input(f"Role [{default_role}]: ").strip() or default_role
+    _flush_stdin()
+    save_section = input(f"Section [{default_section}]: ").strip() or default_section
+    return save_role, save_section
+
+
+def _intake_mission(cfg: "Config", all_paragraphs: list["Paragraph"], priority_file: "Path") -> None:
+    """Q&A session to capture a mission alignment paragraph."""
+    from coverletter.build import MISSION_SYSTEM, qa_turn, force_draft, append_to_library
+    from rich.panel import Panel
+
+    console.print("[bold]Mission frame[/bold]  [dim]— why a specific purpose or product resonates with you[/dim]\n")
+    console.print(
+        "[dim]Name the company or describe the purpose. Answer the questions.\n"
+        "'draft' to draft now. 'done' to exit without saving.[/dim]\n"
+    )
+
+    _flush_stdin()
+    company = input("What company or purpose prompted this? (e.g. 'Alt', 'NYT', 'a civic data org'): ").strip()
+    if not company:
+        console.print("[yellow]Nothing to capture — exiting.[/yellow]")
+        return
+    _flush_stdin()
+    what_resonates = input("What specifically resonates? (your words, as much detail as you want): ").strip()
+
+    topic = company
+    theme = company
+
+    context = (
+        f"I want to write a mission alignment paragraph. The company that prompted this is: {company}\n\n"
+        + (f"What resonates about it: {what_resonates}\n\n" if what_resonates else "")
+        + "This paragraph should capture why this KIND of purpose genuinely resonates with me personally — "
+        f"written broadly enough to apply to similar organizations, not tied to {company} specifically "
+        f"unless I explicitly say I want it company-specific. "
+        "Search the library first to understand what I have already said about my values and what I care about."
+    )
+    history: list[dict] = [{"role": "user", "content": context}]
+
+    console.print(f"\n[bold blue]Capturing:[/bold blue] {theme}")
+    console.print("[dim]Answer the questions. 'draft' to draft now. 'done' to exit without saving.[/dim]\n")
+
+    with Live(Spinner("dots", text="Thinking..."), refresh_per_second=10, console=console):
+        pending_draft, question = qa_turn(
+            history, cfg.api_key, cfg.model, all_paragraphs,
+            voyage_api_key=cfg.voyage_api_key, system=MISSION_SYSTEM,
+        )
+    console.print(f"[dim]{running_total()}[/dim]")
+
+    if question:
+        console.print(f"[cyan]{question}[/cyan]\n")
+        history.append({"role": "assistant", "content": question})
+
+    accepted: str | None = None
+
+    while True:
+        if pending_draft is not None:
+            console.print(Panel(pending_draft, border_style="green", title="Draft"))
+            choice = _prompt_choice("[A]ccept  [R]edirect  [K]eep talking: ", {"a", "r", "k"})
+            if choice == "a":
+                accepted = pending_draft
+                break
+            elif choice == "r":
+                redirect = _read_multiline("Direction: ")
+                if not redirect:
+                    continue
+                history.append({"role": "assistant", "content": pending_draft})
+                history.append({"role": "user", "content": f"Revise the draft: {redirect}"})
+                with Live(Spinner("dots", text="Revising..."), refresh_per_second=10, console=console):
+                    pending_draft = force_draft(
+                        history, cfg.api_key, cfg.model, all_paragraphs,
+                        voyage_api_key=cfg.voyage_api_key, system=MISSION_SYSTEM,
+                    )
+            elif choice == "k":
+                history.append({"role": "assistant", "content": pending_draft})
+                history.append({"role": "user", "content": "Keep going — what else do you need to know?"})
+                pending_draft = None
+                with Live(Spinner("dots", text="Continuing..."), refresh_per_second=10, console=console):
+                    _, question = qa_turn(
+                        history, cfg.api_key, cfg.model, all_paragraphs,
+                        voyage_api_key=cfg.voyage_api_key, system=MISSION_SYSTEM,
+                    )
+                if question:
+                    console.print(f"\n[cyan]{question}[/cyan]\n")
+                    history.append({"role": "assistant", "content": question})
+        else:
+            user_input = _read_multiline()
+            if not user_input or user_input.lower() == "done":
+                break
+            if user_input.lower() == "draft":
+                with Live(Spinner("dots", text="Drafting..."), refresh_per_second=10, console=console):
+                    pending_draft = force_draft(
+                        history, cfg.api_key, cfg.model, all_paragraphs,
+                        voyage_api_key=cfg.voyage_api_key, system=MISSION_SYSTEM,
+                    )
+            else:
+                history.append({"role": "user", "content": user_input})
+                with Live(Spinner("dots", text="Thinking..."), refresh_per_second=10, console=console):
+                    pending_draft, question = qa_turn(
+                        history, cfg.api_key, cfg.model, all_paragraphs,
+                        voyage_api_key=cfg.voyage_api_key, system=MISSION_SYSTEM,
+                    )
+                if question and pending_draft is None:
+                    console.print(f"\n[cyan]{question}[/cyan]\n")
+                    history.append({"role": "assistant", "content": question})
+
+    if not accepted:
+        console.print("[dim]Nothing saved.[/dim]")
+        return
+
+    save_role, save_section = _pick_location(
+        accepted, all_paragraphs, cfg.voyage_api_key,
+        type_filter="frame", default_role="General", default_section=company,
+        paragraphs_files=cfg.paragraphs_files,
+    )
+
+    meta: dict[str, str] = {"type": "frame", "frame": "mission", "strength": "high"}
+    append_to_library(priority_file, save_role, save_section, accepted, meta)
+    console.print(f"\n[green]Saved to {priority_file.name}[/green] under {save_role} / {save_section}  [dim][type=frame, frame=mission][/dim]\n")
+
+
+def _intake_evidence(cfg: "Config", all_paragraphs: list["Paragraph"], priority_file: "Path") -> None:
+    """Q&A session to capture an evidence paragraph."""
+    from coverletter.build import BUILD_SYSTEM, qa_turn, force_draft, append_to_library
+    from rich.panel import Panel
+
+    console.print("[bold]Evidence[/bold]  [dim]— what you built or owned at a specific role[/dim]\n")
+    console.print(
+        "[dim]Name the project, role, or topic. Answer the questions.\n"
+        "'draft' to draft now. 'done' to exit without saving.[/dim]\n"
+    )
+
+    _flush_stdin()
+    topic = input("What to capture (e.g. 'subscriber reporting pipeline', 'voter file ingestion'): ").strip()
+    if not topic:
+        console.print("[yellow]Nothing to capture — exiting.[/yellow]")
+        return
+
+    context = (
+        f"Topic to explore: {topic}\n\n"
+        "Use the search_library tool now to check what is already written about this topic before asking any questions."
+    )
+    history: list[dict] = [{"role": "user", "content": context}]
+
+    console.print(f"\n[bold blue]Capturing:[/bold blue] {topic}")
+    console.print("[dim]Answer the questions. 'draft' to draft now. 'done' to exit without saving.[/dim]\n")
+
+    with Live(Spinner("dots", text="Thinking..."), refresh_per_second=10, console=console):
+        pending_draft, question = qa_turn(
+            history, cfg.api_key, cfg.model, all_paragraphs,
+            voyage_api_key=cfg.voyage_api_key, system=BUILD_SYSTEM,
+        )
+    console.print(f"[dim]{running_total()}[/dim]")
+
+    if question:
+        console.print(f"[cyan]{question}[/cyan]\n")
+        history.append({"role": "assistant", "content": question})
+
+    accepted: str | None = None
+
+    while True:
+        if pending_draft is not None:
+            console.print(Panel(pending_draft, border_style="green", title="Draft"))
+            choice = _prompt_choice("[A]ccept  [R]edirect  [K]eep talking: ", {"a", "r", "k"})
+            if choice == "a":
+                accepted = pending_draft
+                break
+            elif choice == "r":
+                redirect = _read_multiline("Direction: ")
+                if not redirect:
+                    continue
+                RULES_REMINDER = (
+                    "Revise the draft per the direction above.\n\n"
+                    "FIRST SENTENCE: must name what was BUILT, OWNED, or DECIDED at a specific company.\n"
+                    "DO NOT INVENT: every claim must trace to this conversation.\n"
+                    "USE THEIR WORDS. NO PADDING. BANNED: em-dashes, 'That' sentence starters, "
+                    "'actually'/'not just'/'not only', fake contrast."
+                )
+                history.append({"role": "assistant", "content": pending_draft})
+                history.append({"role": "user", "content": f"Revise the draft: {redirect}\n\n{RULES_REMINDER}"})
+                with Live(Spinner("dots", text="Revising..."), refresh_per_second=10, console=console):
+                    pending_draft = force_draft(
+                        history, cfg.api_key, cfg.model, all_paragraphs,
+                        voyage_api_key=cfg.voyage_api_key, system=BUILD_SYSTEM,
+                    )
+            elif choice == "k":
+                history.append({"role": "assistant", "content": pending_draft})
+                history.append({"role": "user", "content": "Keep going — what else do you need to know?"})
+                pending_draft = None
+                with Live(Spinner("dots", text="Continuing..."), refresh_per_second=10, console=console):
+                    _, question = qa_turn(
+                        history, cfg.api_key, cfg.model, all_paragraphs,
+                        voyage_api_key=cfg.voyage_api_key, system=BUILD_SYSTEM,
+                    )
+                if question:
+                    console.print(f"\n[cyan]{question}[/cyan]\n")
+                    history.append({"role": "assistant", "content": question})
+        else:
+            user_input = _read_multiline()
+            if not user_input or user_input.lower() == "done":
+                break
+            if user_input.lower() == "draft":
+                with Live(Spinner("dots", text="Drafting..."), refresh_per_second=10, console=console):
+                    pending_draft = force_draft(
+                        history, cfg.api_key, cfg.model, all_paragraphs,
+                        voyage_api_key=cfg.voyage_api_key, system=BUILD_SYSTEM,
+                    )
+            else:
+                history.append({"role": "user", "content": user_input})
+                with Live(Spinner("dots", text="Thinking..."), refresh_per_second=10, console=console):
+                    pending_draft, question = qa_turn(
+                        history, cfg.api_key, cfg.model, all_paragraphs,
+                        voyage_api_key=cfg.voyage_api_key, system=BUILD_SYSTEM,
+                    )
+                if question and pending_draft is None:
+                    console.print(f"\n[cyan]{question}[/cyan]\n")
+                    history.append({"role": "assistant", "content": question})
+
+    if not accepted:
+        console.print("[dim]Nothing saved.[/dim]")
+        return
+
+    default_section = topic.split("—")[0].strip()[:40]
+    save_role, save_section = _pick_location(
+        accepted, all_paragraphs, cfg.voyage_api_key,
+        type_filter="evidence", default_role="General", default_section=default_section,
+        paragraphs_files=cfg.paragraphs_files,
+    )
+
+    meta: dict[str, str] = {"type": "evidence", "strength": "high"}
+    append_to_library(priority_file, save_role, save_section, accepted, meta)
+    console.print(f"\n[green]Saved to {priority_file.name}[/green] under {save_role} / {save_section}  [dim][type=evidence][/dim]\n")
+
+
+@main.command("blurb")
+@click.option("--paragraphs", "-p", default=None, help="Path to paragraphs file")
+@click.option("--output", "-o", default=None, help="Directory to save output")
+@click.option("--model", "-m", default=None, help="Claude model to use")
+@click.option("--role", "-r", default=None, help="Role to filter paragraphs by (skip prompt)")
+@click.option("--resume", "-R", default=None, help="Path to resume file (.pdf, .md, or .txt)")
+@click.option("--no-save", is_flag=True, default=False, help="Skip saving to file")
+@click.pass_context
+def blurb(
+    ctx: click.Context,
+    paragraphs: str | None,
+    output: str | None,
+    model: str | None,
+    role: str | None,
+    resume: str | None,
+    no_save: bool,
+) -> None:
+    """Answer a short application prompt using your paragraph library.
+
+    Handles any short-form application question: biographical "about me" sections,
+    behavioral questions ("describe a time when..."), motivation questions
+    ("why this role"), approach questions ("how do you think about..."), etc.
+
+    The JD provides context for which paragraphs to select. The application
+    prompt determines the response format and length.
+
+    Example:
+      coverletter blurb
+      coverletter blurb --role "Data Engineering" --no-save
+    """
+    from rich.panel import Panel
+    from rich.markdown import Markdown
+
+    paragraphs = paragraphs or (ctx.obj or {}).get("paragraphs")
+    cfg = load_config(paragraphs, output, model, resume)
+    profile = load_profile(cfg.profile_file)
+
+    console.print(f"\n[bold blue]Short Response Generator[/bold blue]")
+
+    all_paragraphs = load_paragraphs(cfg.paragraphs_files)
+    total = sum(sum(s.values()) for s in library_stats(all_paragraphs).values())
+    console.print(
+        f"Using: [dim]{' + '.join(f.name for f in cfg.paragraphs_files)}[/dim] "
+        f"([green]{total} paragraphs[/green])"
+    )
+
+    resume_text = load_resume(cfg.resume_file)
+
+    if role is None:
+        role = select_role(all_paragraphs)
+
+    role_paragraphs = filter_by_role(all_paragraphs, role) if role else all_paragraphs
+    if role:
+        console.print(f"Role: [bold]{role}[/bold] + General → {len(role_paragraphs)} paragraphs available")
+
+    # JD — used for paragraph prefiltering; clipboard avoids PTY buffer truncation.
+    job_description = read_job_description(
+        prompt=(
+            "\n[bold]Copy the job description to your clipboard, then press Enter[/bold] "
+            "[dim](used to select relevant paragraphs)[/dim]\n"
+        ),
+        jds_dir=cfg.paragraphs_files[0].parent / "jds",
+    )
+
+    # Application prompt — copy the question from the application form to clipboard, press Enter.
+    console.print(
+        "\n[bold]Copy the application question to your clipboard, then press Enter.[/bold]\n"
+        "[dim]The question will be displayed for confirmation.[/dim]\n"
+    )
+    try:
+        _flush_stdin()
+        input()
+    except (KeyboardInterrupt, EOFError):
+        raise SystemExit("\nCancelled.")
+    application_prompt = _read_from_clipboard().strip()
+    try:
+        sys.stdin = open("/dev/tty", "r")
+    except OSError:
+        _flush_stdin()
+    if not application_prompt:
+        raise SystemExit("\nClipboard was empty. Copy the application question and try again.")
+    from rich.panel import Panel as _Panel
+    console.print(_Panel(application_prompt, title="[bold]Application Question[/bold]", border_style="dim", padding=(1, 2)))
+    console.print(f"[dim]{len(application_prompt):,} characters read from clipboard.[/dim]")
+
+    _flush_stdin()
+    company = input("\nCompany name (for filename, optional): ").strip()
+
+    if cfg.voyage_api_key:
+        filtered = embed_prefilter(role_paragraphs, job_description, cfg.top_n, cfg.voyage_api_key)
+    else:
+        filtered = prefilter(role_paragraphs, job_description, cfg.top_n)
+
+    from coverletter.corrections import apply_corrections, load_corrections
+    corrections_file = cfg.paragraphs_files[0].parent / "corrections.md"
+    corrections = load_corrections(corrections_file)
+    corrected = apply_corrections(filtered, corrections)
+
+    # Biographical framing from profile.
+    working_style = profile.working_style if profile and profile.working_style else None
+    values = profile.values if profile and profile.values else None
+    goals = profile.goals if profile and profile.goals else None
+    avoid = profile.avoid if profile and profile.avoid else None
+    bio_count = len(working_style or []) + len(values or []) + len(avoid or [])
+    if bio_count:
+        console.print(f"[dim]Biographical context: {bio_count} entries (working_style + values + avoid)[/dim]")
+
+    # Application prompt is appended to the JD block — it's the last thing the model
+    # reads before writing. The JD drove paragraph prefiltering; the application
+    # prompt drives what the model actually writes. Keeping it here (not in the
+    # library/notes block) ensures recency: bio block comes right before it,
+    # application prompt comes after the JD.
+    combined_jd = f"{job_description.strip()}\n\n=== APPLICATION PROMPT ===\n{application_prompt.strip()}"
+
+    user_message = build_user_message(
+        combined_jd, corrected, role=role, company=company or None,
+        resume=resume_text or None,
+        working_style=working_style,
+        values=values,
+        goals=goals,
+        avoid=avoid,
+    )
+
+    console.print()
+    with Live(Spinner("dots", text="Generating..."), refresh_per_second=10, console=console):
+        parts: list[str] = []
+        for chunk in stream_cover_letter(SHORT_RESPONSE_SYSTEM, user_message, cfg.api_key, cfg.model):
+            parts.append(chunk)
+
+    response_text = "".join(parts)
+    console.print(f"[dim]{running_total()}[/dim]")
+
+    # Split off any BIOGRAPHICAL_GAPS section before displaying
+    bio_gaps: str | None = None
+    if "BIOGRAPHICAL_GAPS:" in response_text:
+        parts_split = response_text.split("BIOGRAPHICAL_GAPS:", 1)
+        response_text = parts_split[0].strip()
+        bio_gaps = parts_split[1].strip()
+
+    console.print(Panel(Markdown(response_text), title="Response", border_style="cyan", padding=(1, 2)))
+    word_count = len(response_text.split())
+    color = "green" if word_count <= 350 else "yellow"
+    console.print(f"[{color}]{word_count} words[/{color}]")
+    console.print("[dim]── plain text ──[/dim]")
+    print(response_text)
+    console.print("[dim]────────────────[/dim]")
+
+    # Surface biographical gaps and offer to add working_style entries
+    if bio_gaps:
+        from rich.rule import Rule
+        console.print()
+        console.print(Rule("[yellow]Biographical material gaps[/yellow]"))
+        console.print(f"[yellow]{bio_gaps}[/yellow]")
+        console.print()
+        console.print("[dim]Your biographical profile is thin for this prompt type.[/dim]")
+        console.print("[dim]You can add to: [bold]working_style[/bold] (how you think/work) or [bold]values[/bold] (what you believe — open-source, mentorship, how you show up on a team)[/dim]")
+        _flush_stdin()
+        add_bio = input("Add biographical entries now? [y/N]: ").strip().lower()
+        if add_bio in ("y", "yes"):
+            console.print("\nWhich section?")
+            console.print("  [cyan]1[/cyan]. working_style — how you think, how you work, what shaped you")
+            console.print("  [cyan]2[/cyan]. values — what you believe as a programmer and teammate")
+            _flush_stdin()
+            section_choice = input("Section [1]: ").strip() or "1"
+            section_map = {"1": "working_style", "2": "values"}
+            target_section = section_map.get(section_choice, "working_style")
+            console.print(
+                f"\nWrite {target_section} entries — one per line. Blank line when done.\n"
+            )
+            new_entries: list[str] = []
+            while True:
+                _flush_stdin()
+                entry = input("> ").strip()
+                if not entry:
+                    break
+                new_entries.append(entry)
+            if new_entries:
+                getattr(profile, target_section).extend(new_entries)
+                from coverletter.profile import write_profile
+                write_profile(
+                    cfg.profile_file,
+                    {k: getattr(profile, k) for k in [
+                        "goals", "differentiators", "focus_areas",
+                        "avoid", "seniority_signals", "working_style", "values"
+                    ]},
+                )
+                console.print(f"[green]Added {len(new_entries)} entries to {target_section} in {cfg.profile_file.name}[/green]")
+
+    # Revision loop
+    messages: list[dict] = [
+        {"role": "user", "content": user_message},
+        {"role": "assistant", "content": response_text},
+    ]
+
+    while True:
+        console.print()
+        _flush_stdin()
+        feedback = input("Revise (free text), or Enter to finish: ").strip()
+        if not feedback:
+            break
+
+        wrapped = (
+            "REVISE THE RESPONSE using the following feedback. "
+            "Output only the revised response — no preamble, no commentary.\n\n"
+            + feedback
+        )
+        with Live(Spinner("dots", text="Revising..."), refresh_per_second=10, console=console):
+            parts = []
+            for chunk in stream_revision(SHORT_RESPONSE_SYSTEM, messages, wrapped, cfg.api_key, cfg.model):
+                parts.append(chunk)
+
+        revised = "".join(parts)
+        console.print(Panel(Markdown(revised), title="Revised", border_style="cyan", padding=(1, 2)))
+        word_count = len(revised.split())
+        color = "green" if word_count <= 350 else "yellow"
+        console.print(f"[{color}]{word_count} words[/{color}]")
+        console.print("[dim]── plain text ──[/dim]")
+        print(revised)
+        console.print("[dim]────────────────[/dim]")
+        console.print(f"[{color}]{word_count} words[/{color}]")
+
+        _flush_stdin()
+        accept = input("[A]ccept / [R]eject: ").strip().lower()
+        # Always append to history so the model retains context of what was tried.
+        messages.append({"role": "user", "content": wrapped})
+        messages.append({"role": "assistant", "content": revised})
+        if accept in ("", "a", "accept", "y", "yes"):
+            response_text = revised
+
+    from coverletter.costs import session_summary
+    summary = session_summary()
+    if summary:
+        console.print(f"[dim]Session cost: {summary}[/dim]\n")
+
+    if not no_save:
+        _flush_stdin()
+        save_it = input(f"Save to {cfg.output_dir}? [Y/n]: ").strip().lower()
+        if save_it in ("", "y", "yes"):
+            label = (company or role or "response") + "-response"
+            saved_md = save_letter(response_text, cfg.output_dir, label, cfg.author_name)
+            console.print(f"[green]Saved:[/green] {saved_md}\n")
 
 
 @main.command("init")
@@ -1018,7 +2014,7 @@ def build_profile(ctx: click.Context, paragraphs: str | None, model: str | None)
         choice = input("Type your own answers [T] or generate suggestions from library first [G]? ").strip().lower()
 
     # Generate LLM suggestions from the paragraph library
-    suggestions: dict[str, list[str]] = {"goals": [], "differentiators": [], "focus_areas": [], "avoid": []}
+    suggestions: dict[str, list[str]] = {"goals": [], "differentiators": [], "focus_areas": [], "avoid": [], "seniority_signals": [], "working_style": [], "values": []}
     if choice in ("g", "generate"):
         all_paragraphs = load_paragraphs(cfg.paragraphs_files)
         console.print()
@@ -1027,7 +2023,7 @@ def build_profile(ctx: click.Context, paragraphs: str | None, model: str | None)
                 suggestions = suggest_from_library(all_paragraphs, cfg.api_key, cfg.model)
             except RuntimeError as e:
                 console.print(f"\n[red]Failed to parse suggestions:[/red]\n{e}\n")
-                suggestions = {"goals": [], "differentiators": [], "focus_areas": [], "avoid": []}
+                suggestions = {"goals": [], "differentiators": [], "focus_areas": [], "avoid": [], "seniority_signals": [], "working_style": [], "values": []}
         console.print(f"[dim]{running_total()}[/dim]\n")
         console.print("[bold]Suggestions based on your paragraph library:[/bold]\n")
         for section, items in suggestions.items():
@@ -1045,6 +2041,9 @@ def build_profile(ctx: click.Context, paragraphs: str | None, model: str | None)
             "differentiators": list(current.differentiators),
             "focus_areas": list(current.focus_areas),
             "avoid": list(current.avoid),
+            "seniority_signals": list(current.seniority_signals),
+            "working_style": list(current.working_style),
+            "values": list(current.values),
         }
     else:
         start = suggestions
@@ -1057,31 +2056,54 @@ def build_profile(ctx: click.Context, paragraphs: str | None, model: str | None)
     ) -> list[str]:
         console.print(Rule(f"[bold]{heading}[/bold]", style="cyan"))
         console.print(f"[dim]{guidance}[/dim]\n")
-        if current_items:
-            console.print("[bold]Entries:[/bold]")
-            for i, item in enumerate(current_items, 1):
+
+        items = list(current_items)
+
+        if items:
+            console.print("[bold]Current entries:[/bold]")
+            for i, item in enumerate(items, 1):
                 console.print(f"  [cyan]{i}.[/cyan] {item}")
             console.print()
-            console.print("[dim]→ Press Enter to accept these as-is.[/dim]")
-            console.print("[dim]→ Or type replacements line by line (your input replaces the whole list). Blank line when done.[/dim]\n")
-        else:
-            console.print("[dim]No entries yet. Type one item per line. Blank line when done.[/dim]\n")
 
+        # Add new entries
+        console.print("[dim]Add entries — one per line, blank line when done (or Enter to skip):[/dim]")
         _flush_stdin()
-        lines: list[str] = []
         try:
             while True:
-                line = input("> ").strip()
+                line = input("  + ").strip()
                 if not line:
                     break
-                lines.append(line)
+                items.append(line)
+                console.print(f"  [green]✓[/green] {line}")
         except EOFError:
             pass
 
-        if not lines and current_items:
-            console.print("[dim]→ Keeping current entries.[/dim]\n")
-            return current_items
-        return lines
+        # Remove entries if any exist
+        if items:
+            console.print()
+            console.print("[dim]Remove any? Enter numbers to delete (e.g. 1,3) or Enter to skip:[/dim]")
+            if len(items) != len(current_items):  # re-show if list changed
+                for i, item in enumerate(items, 1):
+                    console.print(f"  [cyan]{i}.[/cyan] {item}")
+            _flush_stdin()
+            try:
+                raw = input("  - ").strip()
+            except EOFError:
+                raw = ""
+            if raw:
+                to_delete = set()
+                for part in raw.split(","):
+                    part = part.strip()
+                    if part.isdigit():
+                        idx = int(part) - 1
+                        if 0 <= idx < len(items):
+                            to_delete.add(idx)
+                items = [item for i, item in enumerate(items) if i not in to_delete]
+                if to_delete:
+                    console.print(f"[dim]Removed {len(to_delete)} entry/entries.[/dim]")
+
+        console.print()
+        return items
 
     # Walk through each section
     console.print()
@@ -1119,9 +2141,56 @@ def build_profile(ctx: click.Context, paragraphs: str | None, model: str | None)
         start.get("avoid", []),
     )
 
+    seniority_signals = _edit_section(
+        "seniority_signals",
+        "Seniority signals for your role type",
+        "These describe YOUR expertise level and domain — not the job title on any specific posting.\n"
+        "A senior DE applying to roles called 'AI Engineer' or 'Staff Analytics Engineer' uses the\n"
+        "same signals. They reflect what you actually do at your level, not what a JD calls itself.\n"
+        "Only revisit if your career direction genuinely shifts.\n"
+        "Each entry: short label + what evidence looks like.\n"
+        "Example (senior data engineering background):\n"
+        "  'Business impact: quantified outcomes, not just \"built X\" — what did it enable?'\n"
+        "  'Production ownership: SLAs, incidents, reliability decisions — not greenfield only'\n"
+        "  'System design judgment: trade-offs made and articulated, not just tool choices'\n"
+        "  'Data modeling depth: schema decisions, SCD handling, warehouse design'\n"
+        "  'Cross-functional effectiveness: translating infra to business context'",
+        start.get("seniority_signals", []),
+    )
+
+    working_style = _edit_section(
+        "working_style",
+        "Working style",
+        "How you work, how you think, what shaped you as an engineer.\n"
+        "Not skill claims. Not what you've built. How you operate day-to-day.\n"
+        "Write in your own voice. Used to frame biographical 'about me' responses.\n"
+        "Example entries:\n"
+        "  'I'm the person people think through a problem with to figure out how to build it'\n"
+        "  'I move naturally between technical and non-technical audiences — I translate, not present'\n"
+        "  'I think creatively about data problems; my background gives me angles that pure\n"
+        "   backend engineers don't have'",
+        start.get("working_style", []),
+    )
+
+    values = _edit_section(
+        "values",
+        "Values",
+        "What you believe and care about as a programmer, teammate, and person.\n"
+        "Open-source, mentorship, test-forward development, how you show up on a team.\n"
+        "What kind of engineer are you at a deeper level? How do you orient with others?\n"
+        "Write affirmatively in your own voice.\n"
+        "Example entries:\n"
+        "  'I believe in open-source development and contribute to the commons where I can'\n"
+        "  'I care about mentorship — I have benefited from people who made time for me\n"
+        "   and I pay that forward'\n"
+        "  'I write tests not because I am told to but because I have been burned by not doing it'\n"
+        "  'I am direct and honest with teammates even when it is uncomfortable'",
+        start.get("values", []),
+    )
+
     # Preview
     console.print(Rule("[bold]Preview[/bold]", style="green"))
-    final = {"goals": goals, "differentiators": differentiators, "focus_areas": focus_areas, "avoid": avoid}
+    final = {"goals": goals, "differentiators": differentiators, "focus_areas": focus_areas, "avoid": avoid, "seniority_signals": seniority_signals, "working_style": working_style, "values": values}
     for section, items in final.items():
         if items:
             console.print(f"\n[cyan]{section}:[/cyan]")
@@ -1132,6 +2201,129 @@ def build_profile(ctx: click.Context, paragraphs: str | None, model: str | None)
     _flush_stdin()
     confirm = input(f"Save to {cfg.profile_file}? [Y/n]: ").strip().lower()
     if confirm not in ("n", "no"):
+        # If an existing profile is being replaced, offer to capture the shift
+        if cfg.profile_file.exists() and not current.is_empty:
+            old_goals = set(current.goals)
+            new_goals = set(final.get("goals", []))
+            if old_goals != new_goals:
+                console.print()
+                console.print("[bold yellow]Your goals have changed from the previous profile.[/bold yellow]")
+                if current.goals:
+                    console.print("[dim]Previous goals:[/dim]")
+                    for g in current.goals:
+                        console.print(f"  [dim]• {g}[/dim]")
+                console.print()
+                _flush_stdin()
+                capture = input("Capture this shift through a Q&A session before saving? [Y/n]: ").strip().lower()
+                if capture not in ("n", "no"):
+                    from coverletter.build import PERSPECTIVE_SYSTEM, qa_turn, force_draft, append_to_library
+                    all_paragraphs = load_paragraphs(cfg.paragraphs_files)
+                    priority_file = cfg.paragraphs_files[-1].parent / "library_refined.md"
+                    voyage_api_key = cfg.voyage_api_key if hasattr(cfg, "voyage_api_key") else ""
+
+                    old_goals_text = "\n".join(f"- {g}" for g in current.goals)
+                    new_goals_text = "\n".join(f"- {g}" for g in final.get("goals", []))
+                    context = (
+                        f"I'm capturing a shift in career direction.\n\n"
+                        f"Previous goals:\n{old_goals_text}\n\n"
+                        f"New goals:\n{new_goals_text}\n\n"
+                        f"Help me articulate what drove this shift — what the decision was and what informed it."
+                    )
+                    history: list[dict] = [{"role": "user", "content": context}]
+
+                    console.print()
+                    console.print("[bold blue]Shift capture — Q&A[/bold blue]")
+                    console.print("[dim]Answer the questions. 'draft' to draft now. 'done' to exit without saving.[/dim]\n")
+
+                    with Live(Spinner("dots", text="Thinking..."), refresh_per_second=10, console=console):
+                        pending_draft, question = qa_turn(
+                            history, cfg.api_key, cfg.model, all_paragraphs,
+                            voyage_api_key=voyage_api_key, system=PERSPECTIVE_SYSTEM,
+                        )
+
+                    if question:
+                        console.print(f"[cyan]{question}[/cyan]\n")
+                        history.append({"role": "assistant", "content": question})
+
+                    accepted_shift: str | None = None
+                    exchange_count = 0
+                    MAX_EXCHANGES = 4
+
+                    while True:
+                        if pending_draft is not None:
+                            console.print(Panel(pending_draft, border_style="green", title="Draft"))
+                            choice = _prompt_choice("[A]ccept  [R]edirect  [K]eep talking: ", {"a", "r", "k"})
+                            if choice == "a":
+                                accepted_shift = pending_draft
+                                break
+                            elif choice == "r":
+                                redirect = _read_multiline("Direction: ")
+                                if redirect:
+                                    history.append({"role": "assistant", "content": pending_draft})
+                                    history.append({"role": "user", "content": f"Revise: {redirect}"})
+                                    with Live(Spinner("dots", text="Revising..."), refresh_per_second=10, console=console):
+                                        pending_draft = force_draft(
+                                            history, cfg.api_key, cfg.model, all_paragraphs,
+                                            voyage_api_key=voyage_api_key, system=PERSPECTIVE_SYSTEM,
+                                        )
+                            elif choice == "k":
+                                history.append({"role": "assistant", "content": pending_draft})
+                                history.append({"role": "user", "content": "Let's keep going."})
+                                pending_draft = None
+                                with Live(Spinner("dots", text="Continuing..."), refresh_per_second=10, console=console):
+                                    _, question = qa_turn(
+                                        history, cfg.api_key, cfg.model, all_paragraphs,
+                                        voyage_api_key=voyage_api_key, system=PERSPECTIVE_SYSTEM,
+                                    )
+                                if question:
+                                    console.print(f"\n[cyan]{question}[/cyan]\n")
+                                    history.append({"role": "assistant", "content": question})
+                        else:
+                            user_input = _read_multiline()
+                            if not user_input or user_input.lower() == "done":
+                                break
+                            if user_input.lower() == "draft":
+                                with Live(Spinner("dots", text="Drafting..."), refresh_per_second=10, console=console):
+                                    pending_draft = force_draft(
+                                        history, cfg.api_key, cfg.model, all_paragraphs,
+                                        voyage_api_key=voyage_api_key, system=PERSPECTIVE_SYSTEM,
+                                    )
+                            else:
+                                history.append({"role": "user", "content": user_input})
+                                exchange_count += 1
+                                if exchange_count >= MAX_EXCHANGES:
+                                    with Live(Spinner("dots", text="Drafting..."), refresh_per_second=10, console=console):
+                                        pending_draft = force_draft(
+                                            history, cfg.api_key, cfg.model, all_paragraphs,
+                                            voyage_api_key=voyage_api_key, system=PERSPECTIVE_SYSTEM,
+                                        )
+                                else:
+                                    with Live(Spinner("dots", text="Thinking..."), refresh_per_second=10, console=console):
+                                        pending_draft, question = qa_turn(
+                                            history, cfg.api_key, cfg.model, all_paragraphs,
+                                            voyage_api_key=voyage_api_key, system=PERSPECTIVE_SYSTEM,
+                                        )
+                                    if question:
+                                        console.print(f"\n[cyan]{question}[/cyan]\n")
+                                        history.append({"role": "assistant", "content": question})
+
+                    if accepted_shift:
+                        _flush_stdin()
+                        save_role = input("Role for this paragraph [General]: ").strip() or "General"
+                        save_section = input("Section name [Career shift]: ").strip() or "Career shift"
+                        append_to_library(
+                            priority_file, save_role, save_section, accepted_shift,
+                            {"strength": "high", "via": "build", "angle": "pivot"},
+                        )
+                        console.print(f"\n[green]Shift paragraph saved to {priority_file.name}[/green]\n")
+
+        from datetime import date
+        if cfg.profile_file.exists():
+            archive_name = cfg.profile_file.with_name(
+                f"{cfg.profile_file.stem}_{date.today().isoformat()}.toml"
+            )
+            cfg.profile_file.rename(archive_name)
+            console.print(f"[dim]Previous profile archived to {archive_name.name}[/dim]")
         write_profile(cfg.profile_file, final)
         console.print(f"\n[green]Saved:[/green] {cfg.profile_file}\n")
         console.print("[dim]Run `coverletter` to generate a letter — the thesis and alignment report will now use your profile.[/dim]\n")
@@ -1201,15 +2393,17 @@ def seed_library(ctx: click.Context, input_file: str | None, paragraphs: str | N
             material = path.read_text(encoding="utf-8")
         console.print(f"[dim]Read {len(material):,} chars from {path.name}[/dim]\n")
     else:
-        console.print("[dim]Paste your material below. Press Ctrl-D when done.[/dim]\n")
+        console.print("[dim]Copy your material to your clipboard, then press Enter.[/dim]\n")
         _flush_stdin()
-        lines = []
         try:
-            while True:
-                lines.append(input())
-        except EOFError:
-            pass
-        material = "\n".join(lines).strip()
+            input()
+        except (KeyboardInterrupt, EOFError):
+            return
+        material = _read_from_clipboard().strip()
+        try:
+            sys.stdin = open("/dev/tty", "r")
+        except OSError:
+            _flush_stdin()
 
     if not material:
         console.print("[red]No material provided.[/red]")
@@ -1377,15 +2571,128 @@ def seed_library(ctx: click.Context, input_file: str | None, paragraphs: str | N
             console.print(f"[dim]Run [bold]uv run coverletter profile[/bold] to review and save.[/dim]\n")
 
 
+@main.command("sync")
+@click.option("--paragraphs", "-p", default=None, help="Path to paragraphs MD file")
+@click.option("--embed/--no-embed", default=True, show_default=True, help="Compute missing embeddings via Voyage")
+@click.option("--angles/--no-angles", default=True, show_default=True, help="Auto-assign missing angles via embedding centroids")
+@click.pass_context
+def sync_library(ctx: click.Context, paragraphs: str | None, embed: bool, angles: bool) -> None:
+    """Sync markdown library to SQLite database.
+
+    Markdown is the source of truth. This command reads all library .md files,
+    upserts paragraphs into the DB, computes missing Voyage embeddings, and
+    auto-assigns angle tags to paragraphs that lack one using centroid matching.
+
+    Run after editing any library .md file.
+
+    Example:
+      coverletter sync
+      coverletter sync --no-embed
+    """
+    from coverletter.db import (
+        open_db, db_path, sync_from_markdown, compute_embeddings,
+        extract_and_store_sentences, compute_sentence_embeddings,
+        assign_angles_canonical, stats,
+    )
+    from rich.table import Table
+
+    cfg = load_config(paragraphs)
+    all_paragraphs = load_paragraphs(cfg.paragraphs_files)
+
+    path = db_path(cfg.paragraphs_files)
+    conn = open_db(path)
+
+    with Live(Spinner("dots", text="Syncing paragraphs..."), refresh_per_second=10, console=console):
+        counts = sync_from_markdown(conn, all_paragraphs, cfg.paragraphs_files)
+    console.print(
+        f"Paragraphs: [green]{counts['inserted']} inserted[/green]  "
+        f"[yellow]{counts['updated']} updated[/yellow]  "
+        f"[red]{counts['retired']} retired[/red]  "
+        f"[dim]{counts['unchanged']} unchanged[/dim]"
+    )
+
+    if embed and cfg.voyage_api_key:
+        with Live(Spinner("dots", text="Embedding paragraphs..."), refresh_per_second=10, console=console):
+            n_embedded = compute_embeddings(conn, cfg.voyage_api_key)
+        console.print(f"Paragraph embeddings: [green]{n_embedded} computed[/green]")
+
+        with Live(Spinner("dots", text="Extracting sentences..."), refresh_per_second=10, console=console):
+            n_sentences = extract_and_store_sentences(conn)
+        console.print(f"Sentences extracted: [green]{n_sentences}[/green]")
+
+        with Live(Spinner("dots", text="Embedding sentences..."), refresh_per_second=10, console=console):
+            n_sent_embedded = compute_sentence_embeddings(conn, cfg.voyage_api_key)
+        console.print(f"Sentence embeddings: [green]{n_sent_embedded} computed[/green]")
+    elif embed and not cfg.voyage_api_key:
+        console.print("[dim]Skipping embeddings — VOYAGE_API_KEY not set.[/dim]")
+
+    if angles and cfg.voyage_api_key:
+        with Live(Spinner("dots", text="Classifying angles..."), refresh_per_second=10, console=console):
+            assigned = assign_angles_canonical(conn, cfg.voyage_api_key)
+        if assigned:
+            console.print(f"Angles assigned: [green]{sum(assigned.values())} primary[/green]")
+            for angle, count in sorted(assigned.items(), key=lambda x: -x[1]):
+                console.print(f"  [dim]{angle}[/dim]: {count}")
+        else:
+            console.print("[dim]Angles: nothing new to assign.[/dim]")
+    elif angles and not cfg.voyage_api_key:
+        console.print("[dim]Skipping angle assignment — VOYAGE_API_KEY not set.[/dim]")
+
+    s = stats(conn)
+    console.print()
+    table = Table.grid(padding=(0, 2))
+    table.add_row("[dim]Paragraphs[/dim]",        str(s["total"]))
+    table.add_row("[dim]Embedded[/dim]",           str(s["embedded"]))
+    table.add_row("[dim]Sentences[/dim]",          f"{s['sentences']}  ({s['sentences_embedded']} embedded)")
+    table.add_row("[dim]With angles[/dim]",        f"{s['paragraphs_with_angle']}  ({s['angle_assignments']} total assignments)")
+    table.add_row("[dim]Missing angle[/dim]",      str(s["missing_angle"]))
+    table.add_row("[dim]DB[/dim]",                 str(path))
+    console.print(table)
+
+
+@main.command("pdf")
+@click.argument("letter_file", type=click.Path(exists=True, path_type=Path))
+@click.option("--output", "-o", default=None, help="Output directory (default: same as letter)")
+@click.option("--company", "-c", default=None, help="Company name for filename (inferred from filename if omitted)")
+@click.option("--paragraphs", "-p", default=None)
+@click.pass_context
+def render_pdf(
+    ctx: click.Context,
+    letter_file: "Path",
+    output: str | None,
+    company: str | None,
+    paragraphs: str | None,
+) -> None:
+    """Render a letter markdown file to PDF.
+
+    Useful after editing a saved letter .md file — regenerates the PDF without
+    re-running the full generation pipeline.
+
+    Example:
+      coverletter pdf ~/cover-letters/output/2026-05-29_Acme.md
+      coverletter pdf letter.md --output ~/Desktop --company "Acme Corp"
+    """
+    cfg = load_config(paragraphs)
+    text = letter_file.read_text(encoding="utf-8")
+
+    if not company:
+        stem = letter_file.stem
+        parts = stem.split("_", 1)
+        company = parts[1].replace("_", " ") if len(parts) > 1 else stem
+
+    output_dir = Path(output) if output else letter_file.parent
+    out_path = save_pdf(text, output_dir, company, cfg.author_name)
+    console.print(f"[green]PDF saved:[/green] {out_path}")
+
+
 @main.command("show-library")
 @click.option("--paragraphs", "-p", default=None, help="Path to paragraphs MD file")
 @click.pass_context
 def show_library(ctx: click.Context, paragraphs: str | None) -> None:
-    """Show a summary of your paragraph library by role."""
+    """Show your paragraph library organized by type."""
     paragraphs = paragraphs or (ctx.obj or {}).get("paragraphs")
     cfg = load_config(paragraphs)
     all_paragraphs = load_paragraphs(cfg.paragraphs_files)
-    stats = library_stats(all_paragraphs)
 
     console.print(f"\n[bold blue]Paragraph Library[/bold blue]")
     for i, f in enumerate(cfg.paragraphs_files):
@@ -1393,22 +2700,83 @@ def show_library(ctx: click.Context, paragraphs: str | None) -> None:
         console.print(f"[dim]{f}[/dim] {label}")
     console.print()
 
-    total = 0
-    for role, sections in stats.items():
-        role_total = sum(sections.values())
-        total += role_total
-        console.print(f"[bold]{role}[/bold] — {role_total} paragraph(s)")
-        table = Table(show_header=False, box=None, padding=(0, 2))
-        table.add_column("Section")
-        table.add_column("Count", justify="right")
-        for section, count in sections.items():
-            table.add_row(f"[dim]{section}[/dim]", str(count))
-        console.print(table)
-        console.print()
+    def _preview(text: str, width: int = 90) -> str:
+        flat = text.replace("\n", " ").strip()
+        return flat[:width] + "…" if len(flat) > width else flat
 
-    console.print(f"[bold]Total:[/bold] {total} paragraphs\n")
+    # --- FRAMES ---
+    person_frames = [p for p in all_paragraphs if
+        p.meta.get("type") == "frame" and p.meta.get("frame") == "person"
+        or (p.meta.get("type") != "frame" and p.meta.get("angle", "").lower() in ("through-line", "pivot", "reframe", "synthesis"))]
+    mission_frames = [p for p in all_paragraphs if
+        p.meta.get("type") == "frame" and p.meta.get("frame") == "mission"]
 
-    # Framing inventory — show per-experience angle coverage if experiences.md exists
+    console.print("[bold cyan]FRAMES — PERSON[/bold cyan]  [dim]who you are, how you work, your arc[/dim]")
+    if person_frames:
+        for p in person_frames:
+            angle = p.meta.get("angle", "")
+            strength = "[yellow]high[/yellow]" if p.meta.get("strength") == "high" else ""
+            console.print(f"  [{p.index}] {strength} [dim]{p.role} / {p.section}[/dim]" + (f" [dim]angle={angle}[/dim]" if angle else ""))
+            console.print(f"      [dim]{_preview(p.text, 80)}[/dim]")
+    else:
+        console.print("  [dim](none)[/dim]")
+    console.print()
+
+    console.print("[bold cyan]FRAMES — MISSION[/bold cyan]  [dim]why a specific purpose or kind of org resonates[/dim]")
+    if mission_frames:
+        for p in mission_frames:
+            strength = "[yellow]high[/yellow]" if p.meta.get("strength") == "high" else ""
+            console.print(f"  [{p.index}] {strength} [dim]{p.role} / {p.section}[/dim]")
+            console.print(f"      [dim]{_preview(p.text, 80)}[/dim]")
+    else:
+        console.print("  [dim](none — use: coverletter intake --mission)[/dim]")
+    console.print()
+
+    # --- BRIDGE ---
+    bridge = [p for p in all_paragraphs if
+        p.meta.get("type") == "bridge"
+        or p.meta.get("angle", "").lower() in ("interpreter", "domain-synthesis")]
+    console.print("[bold cyan]BRIDGE[/bold cyan]  [dim]connects technical work to business value[/dim]")
+    if bridge:
+        for p in bridge:
+            strength = "[yellow]high[/yellow]" if p.meta.get("strength") == "high" else ""
+            console.print(f"  [{p.index}] {strength} [dim]{p.role} / {p.section}[/dim]")
+            console.print(f"      [dim]{_preview(p.text, 80)}[/dim]")
+    else:
+        console.print("  [dim](none)[/dim]")
+    console.print()
+
+    # --- EVIDENCE ---
+    evidence_angles = {"through-line", "pivot", "reframe", "synthesis", "interpreter", "domain-synthesis"}
+    evidence = [p for p in all_paragraphs if
+        p.meta.get("type") == "evidence"
+        or (p.meta.get("type") not in ("frame", "bridge")
+            and p.meta.get("tone") not in ("opener", "closer")
+            and p.meta.get("angle", "").lower() not in evidence_angles
+            and p.meta.get("frame") not in ("person", "mission"))]
+
+    by_role: dict[str, list] = {}
+    for p in evidence:
+        by_role.setdefault(p.role, []).append(p)
+
+    console.print("[bold cyan]EVIDENCE[/bold cyan]  [dim]what you built and owned[/dim]")
+    for role, paras in by_role.items():
+        console.print(f"  [bold]{role}[/bold] — {len(paras)} paragraph(s)")
+        by_section: dict[str, list] = {}
+        for p in paras:
+            by_section.setdefault(p.section, []).append(p)
+        for section, sps in by_section.items():
+            console.print(f"    [dim]{section}[/dim] ({len(sps)})")
+            for p in sps:
+                angle = p.meta.get("angle", "")
+                console.print(f"      [{p.index}] [dim]{angle or '—'}[/dim]  {_preview(p.text, 60)}")
+    if not by_role:
+        console.print("  [dim](none)[/dim]")
+    console.print()
+
+    console.print(f"[dim]Total: {len(all_paragraphs)} paragraphs[/dim]\n")
+
+    # Framing inventory
     from coverletter.experiences import load_experiences, inventory_lines
     experiences = load_experiences(cfg.experiences_file)
     if experiences:

@@ -1,0 +1,8 @@
+DRAFT
+At Veridian Bio I owned the ETL pipeline for our Phase II and Phase III clinical trial data — lab
+results, adverse event reports, dosing records from 14 investigational sites. This was data going
+directly into regulatory submissions, so when the second audit asked why a specific transformation
+rule had changed between protocol versions, I had to reconstruct the answer from Git history and
+Slack threads because the original spec no longer existed in any findable form. I built a
+transformation registry after that: every rule change logged with the date, the reason, and the
+protocol version it corresponded to. The third audit took half the time of the second.

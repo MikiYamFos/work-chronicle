@@ -5,7 +5,7 @@ from pathlib import Path
 
 @dataclass
 class Paragraph:
-    role: str             # H2 — e.g. "General", "Data Engineering", "Google Global Affairs"
+    role: str             # H2 — e.g. "General", "Data Engineering", "Acme Corp"
     section: str          # H3 — e.g. "Opening", "Technical", "Why This Role"
     text: str
     meta: dict[str, str] = field(default_factory=dict)
