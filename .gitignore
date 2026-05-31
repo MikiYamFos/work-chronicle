@@ -14,6 +14,14 @@ candidate_profile_*.toml
 resume_bullets.md
 corrections.md
 story_notes.md
+coverletter/evals/gold_standard_claims.json
+coverletter/evals/align_judge_results.csv
+coverletter/evals/eval_results.json
+coverletter/evals/eval_results.csv
+extractions_review.json
+extractions_review.md
+library_rebuilt.md
+library_salvaged.md
 
 # Generated output
 output/

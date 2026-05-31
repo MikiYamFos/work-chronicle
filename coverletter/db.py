@@ -257,13 +257,96 @@ CREATE TABLE IF NOT EXISTS conclusion_claims (
     PRIMARY KEY (conclusion_id, claim_id)
 );
 
-CREATE INDEX IF NOT EXISTS idx_para_hash       ON paragraphs(text_hash);
-CREATE INDEX IF NOT EXISTS idx_para_source     ON paragraphs(source_file, active);
-CREATE INDEX IF NOT EXISTS idx_para_type       ON paragraphs(type, active);
-CREATE INDEX IF NOT EXISTS idx_para_angle      ON paragraphs(angle, active);
-CREATE INDEX IF NOT EXISTS idx_para_angles_ang ON paragraph_angles(angle);
-CREATE INDEX IF NOT EXISTS idx_sent_para       ON sentences(paragraph_id);
-CREATE INDEX IF NOT EXISTS idx_raw_para_hash   ON raw_responses(para_text_hash);
+-- ---------------------------------------------------------------------------
+-- Application analytics tables
+-- Capture what happened at each application: JD, claim matching, gaps.
+-- Traceability links library development back to market signals.
+-- ---------------------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS applications (
+    id          INTEGER PRIMARY KEY,
+    company     TEXT NOT NULL,
+    role        TEXT,
+    jd_text     TEXT NOT NULL,
+    jd_hash     TEXT NOT NULL,
+    jd_embedding BLOB,                  -- stored so JDs can be compared without re-embedding
+    applied_at  TEXT DEFAULT (datetime('now')),
+    outcome     TEXT,                   -- NULL until known: 'applied'|'response'|'interview'|'offer'|'rejected'|'withdrew'
+    notes       TEXT
+);
+
+-- Which argument categories were relevant for this JD and how strongly
+CREATE TABLE IF NOT EXISTS application_category_scores (
+    id              INTEGER PRIMARY KEY,
+    application_id  INTEGER NOT NULL REFERENCES applications(id) ON DELETE CASCADE,
+    argument_category TEXT NOT NULL,
+    relevance_score REAL NOT NULL
+);
+
+-- Which claims were scored for this JD — whether they made the outline and letter
+CREATE TABLE IF NOT EXISTS application_claim_scores (
+    id              INTEGER PRIMARY KEY,
+    application_id  INTEGER NOT NULL REFERENCES applications(id) ON DELETE CASCADE,
+    claim_id        INTEGER NOT NULL REFERENCES claims(id) ON DELETE CASCADE,
+    argument_category TEXT,
+    similarity_score REAL NOT NULL,
+    in_outline      INTEGER DEFAULT 0,  -- 1 = appeared in generated outline
+    in_letter       INTEGER DEFAULT 0   -- 1 = appeared in sent letter
+);
+
+-- JD requirements with no claim coverage at time of application
+CREATE TABLE IF NOT EXISTS application_gaps (
+    id                  INTEGER PRIMARY KEY,
+    application_id      INTEGER NOT NULL REFERENCES applications(id) ON DELETE CASCADE,
+    requirement_text    TEXT NOT NULL,
+    inferred_category   TEXT,           -- which argument category this maps to
+    had_db_coverage     INTEGER DEFAULT 0,  -- 1 = DB had claims but none scored well enough
+    addressed_in_letter INTEGER DEFAULT 0,  -- 1 = letter addressed this despite no strong claim
+    notes               TEXT            -- your interpretation: adjacent experience, genuine gap, etc.
+);
+
+-- Traceability: library actions taken in response to observed gaps
+-- Populated by inference: topic match between build session and recent gap, not by prompting
+CREATE TABLE IF NOT EXISTS gap_library_actions (
+    id              INTEGER PRIMARY KEY,
+    gap_id          INTEGER NOT NULL REFERENCES application_gaps(id) ON DELETE CASCADE,
+    action_type     TEXT NOT NULL,      -- 'build'|'reflect'|'seed'
+    paragraph_id    INTEGER REFERENCES paragraphs(id),
+    session_topic   TEXT,
+    actioned_at     TEXT DEFAULT (datetime('now'))
+);
+
+-- Provenance: how each paragraph came to exist
+-- source_type inferred after the fact by matching session topic against recent gaps
+CREATE TABLE IF NOT EXISTS paragraph_provenance (
+    paragraph_id    INTEGER PRIMARY KEY REFERENCES paragraphs(id) ON DELETE CASCADE,
+    source_type     TEXT NOT NULL,      -- 'organic'|'gap_driven'|'gap_adjacent'
+    application_id  INTEGER REFERENCES applications(id),  -- application that prompted it
+    gap_id          INTEGER REFERENCES application_gaps(id),
+    inferred_at     TEXT DEFAULT (datetime('now'))
+);
+
+-- Precomputed category description embeddings — stable, recomputed only when categories change
+CREATE TABLE IF NOT EXISTS category_embeddings (
+    category_name   TEXT PRIMARY KEY,
+    embedding       BLOB NOT NULL,
+    computed_at     TEXT DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_para_hash          ON paragraphs(text_hash);
+CREATE INDEX IF NOT EXISTS idx_para_source        ON paragraphs(source_file, active);
+CREATE INDEX IF NOT EXISTS idx_para_type          ON paragraphs(type, active);
+CREATE INDEX IF NOT EXISTS idx_para_angle         ON paragraphs(angle, active);
+CREATE INDEX IF NOT EXISTS idx_para_angles_ang    ON paragraph_angles(angle);
+CREATE INDEX IF NOT EXISTS idx_sent_para          ON sentences(paragraph_id);
+CREATE INDEX IF NOT EXISTS idx_raw_para_hash      ON raw_responses(para_text_hash);
+CREATE INDEX IF NOT EXISTS idx_app_company        ON applications(company);
+CREATE INDEX IF NOT EXISTS idx_app_jd_hash        ON applications(jd_hash);
+CREATE INDEX IF NOT EXISTS idx_app_cat_scores     ON application_category_scores(application_id, argument_category);
+CREATE INDEX IF NOT EXISTS idx_app_claim_scores   ON application_claim_scores(application_id, claim_id);
+CREATE INDEX IF NOT EXISTS idx_app_gaps           ON application_gaps(application_id);
+CREATE INDEX IF NOT EXISTS idx_gap_actions        ON gap_library_actions(gap_id);
+CREATE INDEX IF NOT EXISTS idx_para_provenance    ON paragraph_provenance(source_type);
 """
 
 
@@ -287,11 +370,47 @@ def _cosine(a: list[float], b: list[float]) -> float:
 # DB lifecycle
 # ---------------------------------------------------------------------------
 
+_CATEGORIES_PATH = Path(__file__).parent / "evals" / "argument_categories.json"
+
+
+def load_argument_categories() -> list[dict]:
+    """Load argument categories from the data file.
+
+    Returns list of category dicts with keys: name, description, anchor_signals.
+    Adding a new category to argument_categories.json is all that's needed —
+    both the extraction and judge prompts read from this at runtime.
+    """
+    if not _CATEGORIES_PATH.exists():
+        return []
+    return json.loads(_CATEGORIES_PATH.read_text(encoding="utf-8")).get("categories", [])
+
+
+_MIGRATIONS = [
+    # Add argument_categories to claims — comma-separated list of category names.
+    # NULL on existing rows; populated on next extraction run.
+    "ALTER TABLE claims ADD COLUMN argument_categories TEXT",
+    # Add is_anchor to support_items — 1 = load-bearing language that must reach generation.
+    # 0 on existing rows.
+    "ALTER TABLE support_items ADD COLUMN is_anchor INTEGER DEFAULT 0",
+]
+
+
+def _run_migrations(conn: sqlite3.Connection) -> None:
+    """Apply schema migrations that can't be expressed in CREATE TABLE IF NOT EXISTS."""
+    for sql in _MIGRATIONS:
+        try:
+            conn.execute(sql)
+        except Exception:
+            pass  # column already exists — normal on subsequent opens
+    conn.commit()
+
+
 def open_db(path: Path) -> sqlite3.Connection:
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(path))
     conn.row_factory = sqlite3.Row
     conn.executescript(_SCHEMA)
+    _run_migrations(conn)
     conn.commit()
     return conn
 
@@ -990,3 +1109,390 @@ def stats(conn: sqlite3.Connection) -> dict:
         "missing_angle": total - paragraphs_with_angle,
         "missing_embedding": total - embedded,
     }
+
+
+# ---------------------------------------------------------------------------
+# Category embeddings — precomputed, stored in DB, recomputed only on change
+# ---------------------------------------------------------------------------
+
+def ensure_category_embeddings(conn: sqlite3.Connection, voyage_api_key: str) -> int:
+    """Compute and store category description embeddings if missing or stale.
+
+    Compares stored category names against current categories file. Recomputes
+    only categories that are new or whose description has changed.
+    Returns number of categories (re)computed.
+    """
+    if not voyage_api_key:
+        return 0
+
+    categories = load_argument_categories()
+    if not categories:
+        return 0
+
+    existing = {
+        row["category_name"]: row["embedding"]
+        for row in conn.execute("SELECT category_name, embedding FROM category_embeddings").fetchall()
+    }
+
+    to_compute = [c for c in categories if c["name"] not in existing]
+    if not to_compute:
+        return 0
+
+    try:
+        import voyageai  # type: ignore
+        client = voyageai.Client(api_key=voyage_api_key)
+        descriptions = [c["description"] for c in to_compute]
+        result = client.embed(descriptions, model="voyage-3-lite", input_type="document")
+        for cat, vec in zip(to_compute, result.embeddings):
+            blob = json.dumps(vec).encode()
+            conn.execute(
+                "INSERT OR REPLACE INTO category_embeddings (category_name, embedding, computed_at) "
+                "VALUES (?, ?, datetime('now'))",
+                (cat["name"], blob),
+            )
+        conn.commit()
+        return len(to_compute)
+    except Exception:
+        return 0
+
+
+def get_category_embeddings(conn: sqlite3.Connection) -> dict[str, list[float]]:
+    """Return {category_name: embedding_vector} for all stored categories."""
+    result = {}
+    for row in conn.execute("SELECT category_name, embedding FROM category_embeddings").fetchall():
+        try:
+            result[row["category_name"]] = json.loads(row["embedding"])
+        except Exception:
+            pass
+    return result
+
+
+def score_jd_against_categories(
+    jd_embedding: list[float],
+    category_embeddings: dict[str, list[float]],
+) -> list[tuple[str, float]]:
+    """Rank argument categories by relevance to a JD embedding.
+
+    Returns [(category_name, score)] sorted descending.
+    """
+    scores = []
+    for name, vec in category_embeddings.items():
+        score = _cosine(jd_embedding, vec)
+        scores.append((name, score))
+    scores.sort(key=lambda x: -x[1])
+    return scores
+
+
+# ---------------------------------------------------------------------------
+# Application capture
+# ---------------------------------------------------------------------------
+
+def record_application(
+    conn: sqlite3.Connection,
+    company: str,
+    role: str,
+    jd_text: str,
+    jd_embedding: list[float] | None = None,
+) -> int:
+    """Create an application record. Returns application id."""
+    jd_hash = _hash(jd_text)
+    jd_blob = json.dumps(jd_embedding).encode() if jd_embedding else None
+    cur = conn.execute(
+        "INSERT INTO applications (company, role, jd_text, jd_hash, jd_embedding) "
+        "VALUES (?, ?, ?, ?, ?)",
+        (company, role or "", jd_text, jd_hash, jd_blob),
+    )
+    conn.commit()
+    return cur.lastrowid
+
+
+def record_category_scores(
+    conn: sqlite3.Connection,
+    application_id: int,
+    scores: list[tuple[str, float]],
+) -> None:
+    """Store category relevance scores for an application."""
+    conn.executemany(
+        "INSERT INTO application_category_scores (application_id, argument_category, relevance_score) "
+        "VALUES (?, ?, ?)",
+        [(application_id, cat, score) for cat, score in scores],
+    )
+    conn.commit()
+
+
+def record_claim_scores(
+    conn: sqlite3.Connection,
+    application_id: int,
+    scored_claims: list[dict],
+) -> None:
+    """Store claim similarity scores for an application.
+
+    scored_claims: list of {claim_id, argument_category, similarity_score,
+                             in_outline, in_letter}
+    """
+    conn.executemany(
+        "INSERT INTO application_claim_scores "
+        "(application_id, claim_id, argument_category, similarity_score, in_outline, in_letter) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        [
+            (
+                application_id,
+                c["claim_id"],
+                c.get("argument_category"),
+                c["similarity_score"],
+                1 if c.get("in_outline") else 0,
+                1 if c.get("in_letter") else 0,
+            )
+            for c in scored_claims
+        ],
+    )
+    conn.commit()
+
+
+def record_gaps(
+    conn: sqlite3.Connection,
+    application_id: int,
+    gaps: list[dict],
+) -> list[int]:
+    """Store JD requirement gaps for an application. Returns gap ids."""
+    ids = []
+    for gap in gaps:
+        cur = conn.execute(
+            "INSERT INTO application_gaps "
+            "(application_id, requirement_text, inferred_category, had_db_coverage, addressed_in_letter) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (
+                application_id,
+                gap["requirement_text"],
+                gap.get("inferred_category"),
+                1 if gap.get("had_db_coverage") else 0,
+                1 if gap.get("addressed_in_letter") else 0,
+            ),
+        )
+        ids.append(cur.lastrowid)
+    conn.commit()
+    return ids
+
+
+def update_application_outcome(
+    conn: sqlite3.Connection,
+    application_id: int,
+    outcome: str,
+    notes: str | None = None,
+) -> None:
+    """Update outcome after the fact: applied|response|interview|offer|rejected|withdrew"""
+    conn.execute(
+        "UPDATE applications SET outcome = ?, notes = COALESCE(?, notes) WHERE id = ?",
+        (outcome, notes, application_id),
+    )
+    conn.commit()
+
+
+def mark_claims_in_letter(
+    conn: sqlite3.Connection,
+    application_id: int,
+    claim_ids: list[int],
+) -> None:
+    """Mark which claims actually appeared in the sent letter."""
+    if not claim_ids:
+        return
+    placeholders = ",".join("?" * len(claim_ids))
+    conn.execute(
+        f"UPDATE application_claim_scores SET in_letter = 1 "
+        f"WHERE application_id = ? AND claim_id IN ({placeholders})",
+        [application_id] + claim_ids,
+    )
+    conn.commit()
+
+
+# ---------------------------------------------------------------------------
+# Provenance inference
+# ---------------------------------------------------------------------------
+
+def infer_paragraph_provenance(conn: sqlite3.Connection, days_window: int = 14) -> int:
+    """Infer paragraph provenance by matching build sessions against recent gaps.
+
+    For each paragraph without provenance:
+    - Find the raw_response that produced it (via para_text_hash)
+    - Check if any gap exists in applications within days_window before the paragraph
+    - If session_topic semantically overlaps with a gap's requirement_text, mark gap_driven
+    - Otherwise mark organic
+
+    Uses simple keyword overlap — no embedding call needed here.
+    Returns number of paragraphs tagged.
+    """
+    # Find paragraphs without provenance
+    untagged = conn.execute(
+        """SELECT p.id, p.text_hash, p.created_at
+           FROM paragraphs p
+           LEFT JOIN paragraph_provenance pp ON p.id = pp.paragraph_id
+           WHERE pp.paragraph_id IS NULL AND p.active = 1"""
+    ).fetchall()
+
+    if not untagged:
+        return 0
+
+    tagged = 0
+    for para in untagged:
+        para_id = para["id"]
+        created_at = para["created_at"]
+
+        # Find the raw_response session that produced this paragraph
+        raw = conn.execute(
+            "SELECT session_topic FROM raw_responses WHERE para_text_hash = ? LIMIT 1",
+            (para["text_hash"],),
+        ).fetchone()
+        session_topic = raw["session_topic"] if raw else None
+
+        # Look for gaps in applications within the window before this paragraph was created
+        nearby_gaps = conn.execute(
+            """SELECT g.id, g.requirement_text, a.id as app_id
+               FROM application_gaps g
+               JOIN applications a ON g.application_id = a.id
+               WHERE a.applied_at <= ? AND a.applied_at >= datetime(?, '-{} days')""".format(days_window),
+            (created_at, created_at),
+        ).fetchall()
+
+        matched_gap = None
+        if session_topic and nearby_gaps:
+            topic_words = set(re.findall(r"[a-z]{4,}", session_topic.lower()))
+            best_overlap = 0
+            for gap in nearby_gaps:
+                gap_words = set(re.findall(r"[a-z]{4,}", gap["requirement_text"].lower()))
+                overlap = len(topic_words & gap_words)
+                if overlap >= 2 and overlap > best_overlap:
+                    best_overlap = overlap
+                    matched_gap = gap
+
+        if matched_gap:
+            source_type = "gap_driven"
+            app_id = matched_gap["app_id"]
+            gap_id = matched_gap["id"]
+        else:
+            source_type = "organic"
+            app_id = None
+            gap_id = None
+
+        conn.execute(
+            "INSERT OR IGNORE INTO paragraph_provenance "
+            "(paragraph_id, source_type, application_id, gap_id) VALUES (?, ?, ?, ?)",
+            (para_id, source_type, app_id, gap_id),
+        )
+        tagged += 1
+
+    conn.commit()
+    return tagged
+
+
+# ---------------------------------------------------------------------------
+# Cross-application analytics
+# ---------------------------------------------------------------------------
+
+def recurring_gaps(conn: sqlite3.Connection, min_count: int = 2) -> list[dict]:
+    """Return gap requirement patterns that appear across multiple applications.
+
+    Groups by requirement text similarity (exact match for now — fuzzy grouping
+    is a future enhancement). Returns gaps ordered by frequency.
+    """
+    rows = conn.execute(
+        """SELECT g.requirement_text, g.inferred_category,
+                  COUNT(DISTINCT g.application_id) as app_count,
+                  SUM(g.addressed_in_letter) as addressed_count,
+                  GROUP_CONCAT(a.company, ', ') as companies
+           FROM application_gaps g
+           JOIN applications a ON g.application_id = a.id
+           GROUP BY g.requirement_text
+           HAVING app_count >= ?
+           ORDER BY app_count DESC""",
+        (min_count,),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def claim_usage_stats(conn: sqlite3.Connection) -> list[dict]:
+    """Return claims ranked by usage across applications.
+
+    Shows which claims are doing work vs. sitting in the DB unused.
+    """
+    rows = conn.execute(
+        """SELECT c.text, c.argument_categories,
+                  COUNT(DISTINCT acs.application_id) as times_scored,
+                  SUM(acs.in_outline) as times_in_outline,
+                  SUM(acs.in_letter) as times_in_letter,
+                  AVG(acs.similarity_score) as avg_score
+           FROM claims c
+           LEFT JOIN application_claim_scores acs ON c.id = acs.claim_id
+           GROUP BY c.id
+           ORDER BY times_in_letter DESC, times_in_outline DESC""",
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def category_coverage_trend(conn: sqlite3.Connection) -> list[dict]:
+    """Return argument category coverage rates across applications over time."""
+    rows = conn.execute(
+        """SELECT acs.argument_category,
+                  COUNT(DISTINCT acs.application_id) as apps_scored,
+                  SUM(acs.in_outline) as times_in_outline,
+                  SUM(acs.in_letter) as times_in_letter,
+                  AVG(acs.similarity_score) as avg_score
+           FROM application_claim_scores acs
+           WHERE acs.argument_category IS NOT NULL
+           GROUP BY acs.argument_category
+           ORDER BY avg_score DESC""",
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def application_summary(conn: sqlite3.Connection) -> list[dict]:
+    """Return per-application summary for cross-application comparison."""
+    rows = conn.execute(
+        """SELECT a.id, a.company, a.role, a.applied_at, a.outcome,
+                  COUNT(DISTINCT acs.claim_id) as claims_scored,
+                  SUM(acs.in_outline) as claims_in_outline,
+                  SUM(acs.in_letter) as claims_in_letter,
+                  COUNT(DISTINCT g.id) as gap_count,
+                  SUM(g.addressed_in_letter) as gaps_addressed
+           FROM applications a
+           LEFT JOIN application_claim_scores acs ON a.id = acs.application_id
+           LEFT JOIN application_gaps g ON a.id = g.application_id
+           GROUP BY a.id
+           ORDER BY a.applied_at DESC""",
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def jd_similarity_matrix(conn: sqlite3.Connection) -> list[dict]:
+    """Return pairwise JD similarity for all applications with stored embeddings.
+
+    Useful for understanding whether you're applying to similar roles
+    or genuinely different ones.
+    """
+    apps = conn.execute(
+        "SELECT id, company, role, jd_embedding FROM applications WHERE jd_embedding IS NOT NULL"
+    ).fetchall()
+
+    if len(apps) < 2:
+        return []
+
+    pairs = []
+    app_list = list(apps)
+    for i in range(len(app_list)):
+        for j in range(i + 1, len(app_list)):
+            a, b = app_list[i], app_list[j]
+            try:
+                vec_a = json.loads(a["jd_embedding"])
+                vec_b = json.loads(b["jd_embedding"])
+                score = _cosine(vec_a, vec_b)
+                pairs.append({
+                    "company_a": a["company"],
+                    "role_a": a["role"],
+                    "company_b": b["company"],
+                    "role_b": b["role"],
+                    "similarity": round(score, 3),
+                })
+            except Exception:
+                pass
+
+    pairs.sort(key=lambda x: -x["similarity"])
+    return pairs

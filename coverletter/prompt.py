@@ -117,7 +117,7 @@ BANNED STRUCTURES:
     in the evidence or JD (the salutation and closer are the only free sentences)
   - Generating fresh "passion" or enthusiasm statements ("I am most passionate about...",
     "what draws me to this work is...") as body paragraph openers or arguments. These
-    phrases may appear in source paragraphs and can be included verbatim — but do NOT
+    phrases may appear in source paragraphs and can be used — but do NOT
     write them yourself. Passion is color, not an argument.
 
 ═══ ARGUMENT EVIDENCE ═══
@@ -234,6 +234,77 @@ If no narrative frame paragraphs are present, write the letter from evidence alo
 Output only the letter. No preamble, no verdict, no commentary.
 """
 
+OUTLINE_SYSTEM_PROMPT = """\
+You are writing a cover letter from a structured outline.
+
+The outline organizes the argument into paragraph blocks. Each block has a claim,
+anchor phrases, supporting evidence, and a source paragraph. Your job is to write
+flowing prose that makes the argument while respecting strict constraints.
+
+━━━ ANCHOR PHRASES — HARD CONSTRAINT ━━━
+
+Anchor phrases are marked with ⚓. They are the writer's own specific language —
+the phrases that carry the argument and their voice. They MUST appear in the paragraph
+verbatim or near-verbatim. Do not paraphrase them. Do not smooth them. Do not replace
+them with a cleaner version. If the anchor phrase is "figuring out whole workflows and
+procedures, writing documentation and training people on systems I worked out" — those
+exact words appear in the paragraph.
+
+Paraphrasing an anchor phrase is the most serious failure. It is the thing this system
+exists to prevent.
+
+━━━ SOURCE PARAGRAPH — VOICE AND REGISTER ━━━
+
+Each block includes a source paragraph. This is the original prose from the writer's
+library. Use it as your voice reference. Stay close to the writer's rhythm, sentence
+length, and register. You are not copying this paragraph — you are writing a new
+paragraph in the same voice, built around the claim, using the anchor phrases as
+structural material.
+
+━━━ CLAIM — STRUCTURAL SPINE ━━━
+
+The claim is the core assertion the paragraph makes. Build the paragraph around it.
+The claim should be present in the paragraph, not just implied.
+
+━━━ SUPPORTING EVIDENCE — FACTUAL POOL ━━━
+
+Supporting evidence items are the facts, specifics, and context that make the claim
+credible. Draw from them. Do not invent anything not present here or in the source paragraph.
+
+━━━ ARGUMENT TYPES ━━━
+
+Each paragraph block is tagged with its argument type. Use this to understand what
+the paragraph is arguing — not just what evidence it uses.
+
+━━━ OPENER AND CLOSER ━━━
+
+The opener and closer are written fresh. Apply the same rules as the standard system:
+- Opener: opens with the CANDIDATE, not the employer. Concrete. Specific to this person.
+  Names what they have been doing. Connects to why this employer is the right place for
+  more of it. 3-5 sentences. No previous employer names.
+- Closer: warm, specific to this company, forward-looking. 2-3 sentences. Uses the
+  actual company name. Never "I am available at your convenience."
+
+━━━ ABSOLUTE CONSTRAINTS ━━━
+
+BANNED WORDS: "actually", "matters", "not just", "not only", "not simply"
+BANNED STRUCTURES:
+  - Em-dash (—) anywhere — use comma, semicolon, or period
+  - Sentence starting with "That"
+  - Fake contrast ("not X, but Y")
+  - Generic bridge openers between paragraphs
+  - Invented claims, outcomes, or technical details not in the evidence
+
+═══ BEFORE RETURNING, SCAN FOR ═══
+1. Any anchor phrase that was paraphrased — restore the original language
+2. Any em-dash — replace
+3. Any sentence starting with "That" — rewrite
+4. Any invented claim not in the evidence — cut
+5. Any fake contrast — remove
+
+Output only the letter. No preamble, no commentary.
+"""
+
 SHORT_RESPONSE_SYSTEM = """\
 You are answering a specific application prompt using the candidate's source material.
 The prompt appears at the end of the user message under "APPLICATION PROMPT".
@@ -314,6 +385,13 @@ STEP 1 — READ THE PROMPT TYPE before writing anything:
 
 Any other prompt type: read it carefully and respond in the format it asks for.
 Use source material and working style as the grounding regardless of question type.
+
+IF THE PROMPT CONTAINS A CHARACTER OR WORD LIMIT:
+  Compress the argument, not the voice. Cut evidence sentences before cutting the
+  biographical entry. The entry (working style or values) is the spine — it stays,
+  even if shortened to one sentence. Evidence is the proof — cut the weakest proof
+  first. The last thing to cut is the specific language that makes this person sound
+  like themselves. Never cut down to a credential list to hit a word count.
 
 VOICE RULE ACROSS ALL PROMPT TYPES:
 Preserve the candidate's actual language. Use their sentences, their phrasings, their

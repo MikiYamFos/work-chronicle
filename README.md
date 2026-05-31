@@ -4,9 +4,11 @@ Engineers ship constantly. Projects stack up. Two years later you remember you b
 
 The gap between "what I actually did" and "what I can articulate I did to an outsider" is enormous for most engineers. That gap costs you in interviews, in cover letters, in performance reviews, in any moment where you need someone who wasn't there to understand the value of your work.
 
-I built this tool because I was writing a lot of cover letters and kept losing the pivotal details of my own work. Generic LLM is almost perfectly wrong for the task of writing cover letters — it flattens your story, over-polishes your voice, loses the facts, and produces something that sounds like a cover letter while destroying the evidence that would actually make it compelling. This tool does the opposite because your letters are rooted in your words and your experience.
+I built this tool because I was writing a lot of cover letters and kept losing the pivotal details of my own work. Generic LLM is almost perfectly wrong for the task of writing cover letters — it flattens your story, over-polishes your voice, loses the facts, and produces something that sounds like a cover letter while destroying the evidence that would actually make it compelling.
 
-**Letters are assembled from your own paragraphs, not generated from scratch.** The model writes a fresh opener and closer per application. Every body sentence traces back to your source library. Library quality drives letter quality.
+This tool does the opposite. Your paragraph library contains your specific experiences in your own words — the ownership claims, the technical decisions, the evidence that makes those claims credible. The letter is assembled from that material. The model writes sentences grounded in your library rather than inventing generic ones. Library quality directly determines letter quality — a thin library produces a thin letter, a specific library produces a specific letter.
+
+**Letters are argument-driven, not assembled from paragraphs.** The tool extracts atomic claims from your library — what you owned, how you work, who you are as an engineer — and groups them into a logical argument against what the JD actually requires. Every claim in the letter has evidence behind it from your own writing.
 
 This tool works for anyone — not just engineers. If you're working through a career transition or have a non-standard work history, I'd especially love to hear how it works for you!
 
@@ -35,7 +37,7 @@ Creates a `.env` file and an empty `library.md`. Open `.env` and add your `ANTHR
 
 ### 2. Build your paragraph library
 
-Your paragraph library is where your career lives. Every letter is assembled from paragraphs you've written and approved. The library grows over time — each application makes it stronger.
+Your paragraph library is where your career documentation lives. Every letter is assembled from paragraphs you've written and approved. The library grows over time — each application makes it stronger.
 
 **If you have existing material** (a cover letter, resume, LinkedIn bio, raw notes):
 
@@ -51,10 +53,10 @@ It also generates targeted follow-up questions for each paragraph ("What broke w
 **If you're starting from scratch** and want to write a paragraph for a specific experience:
 
 ```bash
-uv run coverletter build --about "the time I rebuilt our deployment pipeline from scratch"
+uv run coverletter build
 ```
 
-`--about` is a short plain-English description of the experience you want to capture. The tool asks you 2–3 targeted questions to surface the concrete evidence, then drafts a paragraph from your answers.
+The tool asks what you want to write about, searches your library to see what's already there, and runs a focused conversation to draw out the specific details — what you owned, what you decided, what made it hard, who depended on it. It drafts a paragraph from your answers when the material is there. The draft uses your actual words and phrasing from the conversation, not polished rewrites of them.
 
 ### 3. Build your candidate profile
 
@@ -102,7 +104,35 @@ Review and edit each section before saving. Without a profile the thesis is gene
 
 Re-run when your goals or direction shift. When you save a new profile, the previous one is automatically archived with a date stamp in the same directory — your goal history is preserved, not overwritten.
 
-### 4. Generate a letter
+### 4. Build your claim-evidence library
+
+Before generating argument-driven letters, extract claims from your library. Claims are atomic ownership and decision assertions — "At BritBox, I owned the VideoViewEvents pipeline end-to-end" — that map to JD requirements and are supported by hierarchical evidence from your paragraphs.
+
+```bash
+uv run coverletter onboard          # shows your setup checklist and next step
+coverletter extract --dry-run       # extract claims, write review file
+uv run streamlit run coverletter/label_evals.py  # review claims, build your gold standard
+coverletter extract                 # insert approved claims into DB
+```
+
+**First run:** `coverletter onboard` checks your readiness and tells you exactly what to do next. During the Streamlit labeling session, check "Save as gold standard example" on clear cases — this builds the personal baseline used to validate the judge that filters bad claims before they enter your library. You need at least 5 approved and 5 rejected examples before full extraction runs.
+
+**The labeling app** shows the source paragraph, extracted claim, judge verdict, and full evidence hierarchy for each claim. Approve it (inserts to DB immediately), reject it with a failure category, or mark it as a gold standard reference example.
+
+### 5. Generate a letter
+
+**Argument-driven flow (recommended once claims are extracted):**
+
+```bash
+uv run coverletter outline <jd_file> --company Acme     # build editable outline
+# edit the outline — reorder paragraphs, drop irrelevant claims, add notes
+```
+
+`coverletter outline` pulls claims from your DB that are relevant to the JD, groups them into argument-driven paragraph blocks, attaches their evidence hierarchy, and writes an editable markdown file.
+
+> **Note:** `generate --from-outline` is not yet implemented. The outline command is the current endpoint of the argument-driven flow — generation from an outline is the next piece to build.
+
+**Classic flow (still works):**
 
 ```bash
 uv run coverletter
@@ -114,68 +144,97 @@ Paste the job description, enter the company name, and the tool runs the full fl
 
 ## Command reference
 
+### Setup and library building
+
 | Command | What it does |
 |---|---|
-| `uv run coverletter` | Generate a cover letter — the main flow |
-| `uv run coverletter seed` | Extract paragraphs from existing material (cover letters, resume, notes) |
-| `uv run coverletter build` | Write a paragraph for a specific experience through Q&A |
-| `uv run coverletter reflect` | Capture a through-line, pivot, reframe, or synthesis through Q&A |
-| `uv run coverletter blurb` | Answer a short application prompt — "about me", behavioral, motivation |
+| `uv run coverletter init` | First-time setup — creates `.env` and empty `library.md` |
+| `uv run coverletter onboard` | Setup checklist — shows readiness status and next command at each step |
+| `uv run coverletter seed` | Use this to extract paragraphs from existing material you've written already (cover letters, resume, notes) |
+| `uv run coverletter build` | Focused conversation to draw out and document a specific experience — drafts a paragraph from what you say |
+| `uv run coverletter reflect` | Capture perspective material — through-lines, pivots, reframes, syntheses — through conversation |
+| `uv run coverletter sync` | Sync library markdown to SQLite DB, compute embeddings |
 | `uv run coverletter profile` | Build or update your candidate profile |
+
+### Claim-evidence pipeline
+
+| Command | What it does |
+|---|---|
+| `uv run coverletter extract --dry-run` | Extract claims from library, write review files — always runs, even without gold standard |
+| `uv run coverletter extract` | Extract, judge, and insert claims into DB (requires gold standard) |
+| `uv run streamlit run coverletter/label_evals.py` | Review extracted claims — approve/reject, build gold standard, insert to DB |
+| `uv run coverletter outline <jd>` | Build editable claim-evidence outline from DB for a given JD |
+
+### Letter generation
+
+| Command | What it does |
+|---|---|
+| `uv run coverletter` | Generate a cover letter — classic paragraph-assembly flow |
+| `uv run coverletter blurb` | Answer a short application prompt — "about me", behavioral, motivation |
 | `uv run coverletter show-library` | Show library stats and experience coverage |
 | `uv run coverletter resume` | Generate a tailored resume PDF alongside a letter |
-| `uv run coverletter init` | First-time setup |
+
+### Evaluation (development tools)
+
+| Command | What it does |
+|---|---|
+| `uv run python coverletter/evals/align_judge.py` | Check judge accuracy against gold standard — run after changing judge prompt |
+| `uv run python coverletter/evals/run_evals.py` | Measure pipeline quality as % of claims approved — run to compare prompt changes |
+
+Most commands work without flags — they'll ask you what they need. Flags are shortcuts for when you already know the answer and want to skip the prompt.
 
 ```bash
-# Model flag works on all commands
+# Model override — works on any command when you want to change cost/quality
 uv run coverletter --model haiku             # cheaper, faster
-uv run coverletter --model sonnet            # default
 uv run coverletter profile --model opus      # worth it for one-time profile generation
 
 # --fast / -f skips thesis and alignment — generate, review, and revise only
 uv run coverletter --fast
-uv run coverletter -f
 
-# Useful shortcuts
-uv run coverletter --role "Senior Data Engineer"                    # skip role selection
-uv run coverletter build --about "rebuilt the deployment pipeline"  # skip the about prompt
-uv run coverletter reflect --about "shift from analyst to engineer" --angle pivot
-uv run coverletter seed --file resume.txt                          # read from file
-uv run coverletter resume --company Google                         # skip company prompt
+# Shortcuts that skip a prompt you already know the answer to
+uv run coverletter --role "Senior Data Engineer"   # skip role selection
+uv run coverletter seed --file resume.txt          # read from file instead of paste
+uv run coverletter resume --company Google         # skip company prompt
 ```
 
 Model aliases: `haiku` → `claude-haiku-4-5-20251001`, `sonnet` → `claude-sonnet-4-6`, `opus` → `claude-opus-4-7`.
 
 ---
 
+## How the claim-evidence architecture works
+
+The classic generation flow assembles letter paragraphs from your library paragraphs. It works, but it has a ceiling: claims inside one paragraph can't be combined with evidence from other paragraphs, and the model can't explicitly map your experience to specific JD requirements.
+
+The claim-evidence layer solves this. It extracts **claims** from your paragraphs — atomic, portable ownership assertions — and stores them with hierarchical evidence. When you run `coverletter outline`, the tool matches claims to JD requirements, groups related claims into argument-driven paragraph blocks, and gives you an editable outline to review before the letter is written.
+
+**Claims** are ownership or decision assertions at the right level of specificity: "At Acme, I owned the VideoViewEvents pipeline end-to-end." Matchable to a JD requirement. Provable by the evidence beneath it.
+
+**Support items** are the specific facts that prove a claim: "processed play/pause/seek/heartbeat events into coherent viewing sessions." Sub-details preserve technical specifics verbatim — the how, the why, the edge cases.
+
+**Conclusions** are synthesized insights that emerge from a group of claims: "This is data where instrumentation is imperfect — getting to trustworthy output requires understanding what the source is actually recording before you model anything."
+
+**The judge** validates every extracted claim before it enters your DB. It asks one question: can this claim be proven by specific evidence? Pure capability statements ("I have experience with X") are rejected. Broad substantiatable claims ("I built production Python while staying deeply thoughtful about non-technical users") are valid — they describe a way of working that evidence can prove.
+
+**The gold standard** is built by you during your first labeling session. As you approve and reject claims in the Streamlit app, you mark clear examples as gold standard reference cases. Once you have 5 approved and 5 rejected, the judge is validated against your personal baseline before any extraction runs.
+
+---
+
 ## How the library works
 
-Every paragraph in your library has a **tier** based on what process produced it. Tier affects which file it lives in and how much the tool trusts it at letter-generation time.
+The library is split across several markdown files with distinct roles. You do not need to manage which file is active — the tool reads all configured files and merges them, with higher-priority files winning when the same experience is covered in multiple places.
 
-```
-TIER 1 — Raw source                         goes into library.md
-  Your own notes, bullets, stream-of-consciousness narrative.
-  Dense with facts. Not polished prose. Not ready for a letter on its own.
-  Valuable because it captures everything you know about an experience.
+| File | What goes here | Priority |
+|---|---|---|
+| `library.md` | Your raw paragraphs — written directly, Q&A answers, anything you typed. Source of truth. Never rewritten by the tool. | Base |
+| `library_refined.md` | Paragraphs that have been through a refinement process and approved. Takes priority over `library.md` for the same section. | High |
+| `library_salvaged.md` | Paragraphs corrected via the diff tool — reviewed against raw source and approved. | High |
+| `library_rebuilt.md` | Paragraphs built through the correct workflow from scratch — raw → coaching → your edits → approved. | High |
+| `story_notes.md` | Raw material from conversations that hasn't been turned into paragraphs yet. Surfaced in the diff tool but not used in generation. | — |
 
-TIER 2 — Semi-raw                           goes into library.md
-  Extracted verbatim from existing written material — cover letters,
-  LinkedIn bios, resume bullets. Has your voice but may have filler,
-  buried leads, or weak argument structure.
+**Write path for new paragraphs:**
+Write raw text → `library.md`. Run the diff tool to draft, coach, and approve → `library_salvaged.md` or `library_rebuilt.md`.
 
-TIER 3 — Refined                            goes into library_refined.md
-  Produced through a Q&A session (build or gap loop). Concrete claims,
-  specific evidence, tight structure. Still your words — but drawn out
-  and tested through targeted questions. This is what letters are built from.
-```
-
-**Two files, two tiers:**
-- `library.md` — everything `seed` produces (tiers 1 and 2). Your raw material.
-- `library_refined.md` — everything `build` produces (tier 3). Takes priority at generation time.
-
-When both files have a paragraph covering the same experience, `library_refined.md` wins. The raw library is the foundation; the refined library is the layer that gets used.
-
-The library compounds. Each gap session during a letter run produces a new tier 3 paragraph. Each tier 3 paragraph makes the next letter stronger.
+**The library compounds.** Each gap session during a letter run produces a new paragraph. Each new paragraph makes the next letter stronger. The more specific your paragraphs, the more specific your letters.
 
 ---
 
@@ -328,8 +387,11 @@ Saves `YYYY-MM-DD_CompanyName.md` and `YYYY-MM-DD_CompanyName.pdf` to your outpu
 
 | File | Purpose |
 |---|---|
-| `library.md` | Base paragraph library — tiers 1 and 2, produced by `seed` |
-| `library_refined.md` | Priority layer — tier 3, produced by `build` and gap sessions |
+| `library.md` | Raw paragraphs — your words, never rewritten by the tool |
+| `library_refined.md` | Refined paragraphs — high priority at generation time |
+| `library_salvaged.md` | Paragraphs corrected via the diff tool and approved |
+| `library_rebuilt.md` | Paragraphs built through the clean workflow from scratch |
+| `story_notes.md` | Raw conversation material not yet turned into paragraphs |
 | `experiences.md` | Experience register — raw facts, angle inventory, Q&A targets per experience |
 | `candidate_profile.toml` | Your goals and differentiators — drives thesis and alignment report |
 | `.env` | API keys, author name, and path overrides |
@@ -337,7 +399,7 @@ Saves `YYYY-MM-DD_CompanyName.md` and `YYYY-MM-DD_CompanyName.pdf` to your outpu
 | `resume_bullets.md` | Alternative resume bullets for the `resume` command |
 | `corrections.md` | Sentence-level fixes applied automatically before generation |
 
-`library_refined.md` takes priority over `library.md` — the tool merges them automatically. You don't need to manage this manually.
+The tool reads all configured library files and merges them. Higher-priority files win when the same section exists in multiple places. You don't manage this manually.
 
 All file paths are configurable in `.env` — see the [.env reference](#env-reference) below.
 
@@ -415,11 +477,12 @@ qa_targets:
 Evidence paragraphs prove specific claims. Perspective paragraphs make the argument about who you are and why your arc makes you right for this role. They are the narrative frame — through-lines, pivots, reframes, syntheses. Without them, a letter has facts but no argument.
 
 ```bash
-uv run coverletter reflect --about "shift from analyst to data engineer" --angle pivot
-uv run coverletter reflect --about "what runs through all my work" --angle through-line
+uv run coverletter reflect
 ```
 
-The `--angle` flag sets the type:
+The tool asks what you want to capture and what angle fits. You can also describe it directly when it asks — it will read what you say and pick the angle with you. The conversation goes after specific moments and decisions, not after meaning or reflection directly. Meaning emerges from the specifics.
+
+The angle types:
 
 | Angle | What it captures |
 |---|---|

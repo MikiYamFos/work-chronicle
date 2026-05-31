@@ -610,18 +610,44 @@ def qa_turn(
 _DRAFT_RULES_REMINDER = """\
 Draft the paragraph now from what was said in this conversation.
 
-This is a CAPTURE draft — the goal is preserving everything said, not polishing it.
+This is a CAPTURE draft. The goal is preserving the person's actual words and meaning \
+exactly — not producing polished prose.
 
-1. DO NOT INVENT: every factual claim must trace to something said in this conversation. \
-Do not use phrases or details from library search results.
-2. USE THEIR WORDS: use the person's actual language and level of abstraction. Do not \
-translate it into polished resume speak.
-3. INCLUDE ALL DETAIL: every specific technical detail, fact, explanation, and nuance \
-the person provided must appear. If they explained something in depth, include it in full. \
-Do not compress, summarize, or cut any of it. Length is fine — completeness matters more \
-than concision at this stage.
-4. DO NOT EDITORIALIZE: do not add framing, conclusions, or structure the person did not \
-explicitly provide.
+WHAT THIS MEANS IN PRACTICE:
+
+If they said "I was the card check queen and ran a fuck ton of checkoffs" — that register,
+that specificity, that pride is in the draft. Do not convert it to "managed extensive card
+check operations."
+
+If they said "I had to wake up before 7 in the morning 6 days a week and compile a 40
+something step excel report" — those exact details are in the draft. Do not round them off
+or call it "daily reporting."
+
+If they explained something in a particular sequence — preserve that sequence. Do not
+reorganize for flow. Flow is their problem to solve in editing, not yours to impose.
+
+HARD RULES:
+
+1. LIFT THEIR SENTENCES DIRECTLY where possible. The closer the draft is to their actual
+   words, the better it is. Paraphrasing is a failure mode, not a feature.
+
+2. DO NOT ADD FRAMING they did not provide. No "this demonstrates", no "this experience
+   shows", no opening sentence that summarizes what the paragraph is about.
+
+3. DO NOT SMOOTH THE REGISTER. If they were direct, blunt, or used informal language —
+   keep it. That is their voice. Polishing it out is the thing that makes drafts bad.
+
+4. DO NOT COMPRESS. If they gave detail, keep the detail. A long accurate draft is better
+   than a short inaccurate one.
+
+5. ZERO INVENTION. If something was not said in this conversation, it is not in the draft.
+   Not even plausible inferences. Not even things that are almost certainly true.
+
+6. NO GENERATED OPENERS OR CLOSERS. If the source material does not contain an opening
+   sentence, the draft does not have one — start with whatever the first real claim or
+   fact is. If the source does not contain a closing sentence, the draft ends on the last
+   real piece of content. Do not generate throat-clearing openers or summary closers.
+   These are consistently bad and must not appear.
 
 Write DRAFT on its own line, then the paragraph immediately after.\
 """
