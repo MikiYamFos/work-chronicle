@@ -4,7 +4,6 @@ import json
 import re
 from pathlib import Path
 
-from coverletter.costs import record, supports_temperature
 
 SEED_SYSTEM = """\
 You are organizing cover letter paragraphs from the writer's existing material.
@@ -137,41 +136,17 @@ def extract_from_material(
     model: str,
 ) -> list[dict]:
     """Send raw career material to the LLM editor. Returns list of paragraph dicts."""
-    import anthropic
+    from coverletter.provider import get_provider
 
-    client = anthropic.Anthropic(api_key=api_key)
-    kwargs: dict = dict(
-        model=model,
-        max_tokens=4096,
-        system=[{"type": "text", "text": SEED_SYSTEM, "cache_control": {"type": "ephemeral"}}],
-        messages=[{"role": "user", "content": (
-            f"SOURCE MATERIAL:\n\n{material.strip()}\n\n"
-            f"---\n"
-            f"Return paragraphs built from the sentences above. "
-            f"Quote the writer's sentences exactly as written. "
-            f"Do not write any new sentences. Do not paraphrase. "
-            f"Every word in 'text' must appear verbatim in the source above."
-        )}],
+    user_content = (
+        f"SOURCE MATERIAL:\n\n{material.strip()}\n\n"
+        f"---\n"
+        f"Return paragraphs built from the sentences above. "
+        f"Quote the writer's sentences exactly as written. "
+        f"Do not write any new sentences. Do not paraphrase. "
+        f"Every word in 'text' must appear verbatim in the source above."
     )
-    if supports_temperature(model):
-        kwargs["temperature"] = 0.2
-
-    response = client.messages.create(**kwargs)
-
-    if response.stop_reason == "max_tokens":
-        raise RuntimeError(
-            f"Model hit max_tokens limit. Response truncated — JSON will be invalid. "
-            f"Try splitting your material into smaller chunks."
-        )
-
-    usage = response.usage
-    record(
-        model, usage.input_tokens, usage.output_tokens,
-        cache_creation_tokens=getattr(usage, "cache_creation_input_tokens", 0) or 0,
-        cache_read_tokens=getattr(usage, "cache_read_input_tokens", 0) or 0,
-    )
-
-    raw = response.content[0].text.strip()
+    raw = get_provider(model, api_key).complete(SEED_SYSTEM, user_content, max_tokens=4096, temperature=0.2)
     candidate = _extract_json_array(raw)
     if candidate is None:
         raise RuntimeError(

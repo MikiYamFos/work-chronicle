@@ -124,13 +124,14 @@ coverletter extract                 # insert approved claims into DB
 **Argument-driven flow (recommended once claims are extracted):**
 
 ```bash
-uv run coverletter outline <jd_file> --company Acme     # build editable outline
+uv run coverletter outline <jd_file> --company Acme         # build editable outline
 # edit the outline — reorder paragraphs, drop irrelevant claims, add notes
+uv run coverletter generate --from-outline acme_outline.md <jd_file>
 ```
 
-`coverletter outline` pulls claims from your DB that are relevant to the JD, groups them into argument-driven paragraph blocks, attaches their evidence hierarchy, and writes an editable markdown file.
+`coverletter outline` uses two-stage retrieval: it scores argument categories against the JD first, then ranks claims within relevant categories by embedding similarity. After thesis generation, you can edit the thesis before grouping runs to steer the argument. The outline shows uncovered JD requirements (gaps) immediately after writing.
 
-> **Note:** `generate --from-outline` is not yet implemented. The outline command is the current endpoint of the argument-driven flow — generation from an outline is the next piece to build.
+`coverletter generate --from-outline` reads the edited outline, generates a letter grounded in the claim/evidence structure, then shows an alignment report of which outline blocks made it into the letter. Records the application in the analytics DB automatically.
 
 **Classic flow (still works):**
 
@@ -163,7 +164,9 @@ Paste the job description, enter the company name, and the tool runs the full fl
 | `uv run coverletter extract --dry-run` | Extract claims from library, write review files — always runs, even without gold standard |
 | `uv run coverletter extract` | Extract, judge, and insert claims into DB (requires gold standard) |
 | `uv run streamlit run coverletter/label_evals.py` | Review extracted claims — approve/reject, build gold standard, insert to DB |
-| `uv run coverletter outline <jd>` | Build editable claim-evidence outline from DB for a given JD |
+| `uv run coverletter claims` | Show claim count, anchor count, and argument categories per paragraph — zero cost |
+| `uv run coverletter outline <jd>` | Build editable outline from DB — two-stage category retrieval, thesis editable before grouping, gaps shown immediately |
+| `uv run coverletter generate --from-outline <outline> <jd>` | Generate letter from edited outline — alignment report shown after generation |
 
 ### Letter generation
 
@@ -174,11 +177,18 @@ Paste the job description, enter the company name, and the tool runs the full fl
 | `uv run coverletter show-library` | Show library stats and experience coverage |
 | `uv run coverletter resume` | Generate a tailored resume PDF alongside a letter |
 
+### Analytics and tracking
+
+| Command | What it does |
+|---|---|
+| `uv run coverletter outcome <company> <result>` | Record application result after the fact (interview / rejected / offer / ghosted) |
+| `uv run coverletter analytics` | Cross-application patterns — coverage rates, recurring gaps, claim usage, JD similarity |
+
 ### Evaluation (development tools)
 
 | Command | What it does |
 |---|---|
-| `uv run python coverletter/evals/align_judge.py` | Check judge accuracy against gold standard — run after changing judge prompt |
+| `uv run python coverletter/evals/align_judge.py` | Check judge accuracy against gold standard — offers to draft a prompt patch if misaligned |
 | `uv run python coverletter/evals/run_evals.py` | Measure pipeline quality as % of claims approved — run to compare prompt changes |
 
 Most commands work without flags — they'll ask you what they need. Flags are shortcuts for when you already know the answer and want to skip the prompt.
@@ -205,7 +215,7 @@ Model aliases: `haiku` → `claude-haiku-4-5-20251001`, `sonnet` → `claude-son
 
 The classic generation flow assembles letter paragraphs from your library paragraphs. It works, but it has a ceiling: claims inside one paragraph can't be combined with evidence from other paragraphs, and the model can't explicitly map your experience to specific JD requirements.
 
-The claim-evidence layer solves this. It extracts **claims** from your paragraphs — atomic, portable ownership assertions — and stores them with hierarchical evidence. When you run `coverletter outline`, the tool matches claims to JD requirements, groups related claims into argument-driven paragraph blocks, and gives you an editable outline to review before the letter is written.
+The claim-evidence layer solves this. It extracts **claims** from your paragraphs — atomic, portable ownership assertions — and stores them with hierarchical evidence. When you run `coverletter outline`, the tool scores argument categories against the JD, retrieves the most relevant claims within each category, groups them into argument-driven paragraph blocks, and writes an editable outline. Uncovered JD requirements are flagged immediately. You edit the outline — reorder blocks, drop weak claims, adjust notes — then run `coverletter generate --from-outline` to produce the letter. Every application is recorded in the analytics DB automatically.
 
 **Claims** are ownership or decision assertions at the right level of specificity: "At Acme, I owned the VideoViewEvents pipeline end-to-end." Matchable to a JD requirement. Provable by the evidence beneath it.
 
@@ -303,7 +313,7 @@ Narrative frame: No through-line, pivot, reframe, or synthesis paragraph in libr
 The letter has evidence but no narrative frame. Run: uv run coverletter reflect
 ```
 
-**JD Gaps** are things the job description explicitly requires that the letter doesn't address.
+**JD Gaps** are things the job description explicitly requires that the letter doesn't address. Keep in mind the letter is a supplment to your resume so it really has to cover the extra mile between what your resume says and what *you* want to highlight.
 
 **Seniority Signal Gaps** check the dimensions you defined in `seniority_signals` and flag only the ones that are genuinely absent from the letter — not just underemphasized. Only appears if you have seniority signals set in your profile.
 
@@ -561,8 +571,13 @@ Requires `typst`: `brew install typst`
 ## .env reference
 
 ```bash
-ANTHROPIC_API_KEY=sk-ant-...
-VOYAGE_API_KEY=pa-...                 # optional — strongly recommended
+# Provider keys — set the one matching your chosen model
+ANTHROPIC_API_KEY=sk-ant-...         # required for Anthropic models (default)
+MISTRAL_API_KEY=...                  # required for Mistral models
+OPENAI_API_KEY=sk-...                # required for OpenAI models
+
+VOYAGE_API_KEY=pa-...                # optional — strongly recommended for embedding-based filtering
+
 AUTHOR_NAME=Your Name
 RESUME_FILE=/path/to/resume.pdf
 RESUME_TYP_FILE=/path/to/resume.typ
@@ -572,7 +587,19 @@ CANDIDATE_PROFILE_FILE=/path/to/candidate_profile.toml
 OUTPUT_DIR=/path/to/output
 LIBRARY_FILE=/path/to/library.md
 LIBRARY_REFINED_FILE=/path/to/library_refined.md
-COVERLETTER_MODEL=claude-sonnet-4-6
+
+# Model selection — bare names default to Anthropic; prefix with provider for others
+COVERLETTER_MODEL=claude-sonnet-4-6         # Anthropic (default)
+# COVERLETTER_MODEL=mistral/mistral-large-latest  # Mistral Large (EU sovereign, green energy)
+# COVERLETTER_MODEL=mistral/mistral-small-latest  # Mistral Small (cheaper)
+# COVERLETTER_MODEL=openai/gpt-4o                 # OpenAI GPT-4o
+# COVERLETTER_MODEL=openai/gpt-4o-mini            # OpenAI GPT-4o Mini (cheaper)
+
+# For OpenAI-compatible providers (Regolo.ai, Hugging Face Inference, etc.)
+# Set OPENAI_BASE_URL to the provider's endpoint and OPENAI_API_KEY to your token there.
+# OPENAI_BASE_URL=https://api.regolo.ai/v1       # Regolo.ai (Italian, green, zero retention)
+# OPENAI_BASE_URL=https://router.huggingface.co  # Hugging Face Inference (open-source models)
+
 COVERLETTER_TOP_N=100               # paragraphs passed to the model per generation
 ```
 
@@ -587,7 +614,9 @@ COVERLETTER_TOP_N=100               # paragraphs passed to the model per generat
 | `profile` (G option) | ~$0.01 | ~$0.05 | ~$0.10–0.25 |
 | `build` (Q&A session) | ~$0.01 | ~$0.03–0.05 | — |
 
-Prompt caching is active on all calls. The library is cached after the first call in a session — subsequent generation, revision, and alignment calls read from cache at ~10% of input cost.
+Prompt caching is active on all Anthropic calls. The library is cached after the first call in a session — subsequent generation, revision, and alignment calls read from cache at ~10% of input cost. Mistral does not currently have explicit prefix caching via the API; full context is sent on each call.
+
+### Anthropic
 
 | Model | Input /1M | Output /1M | Cache read /1M |
 |---|---|---|---|
@@ -595,11 +624,44 @@ Prompt caching is active on all calls. The library is cached after the first cal
 | Sonnet | $3.00 | $15.00 | $0.30 |
 | Opus | $15.00 | $75.00 | $1.50 |
 
+### Mistral (EU sovereign — recommended for GDPR/ethics-first users)
+
+French company, data centers in the EU, €1.2B green energy facility in Sweden. **One `MISTRAL_API_KEY` covers generation + embeddings + caching** — no Voyage key needed.
+
+| Model alias | Full name | Input /1M | Output /1M | Cached input /1M |
+|---|---|---|---|---|
+| `mistral-large` | `mistral-large-latest` | $2.00 | $6.00 | $0.20 |
+| `mistral-medium` | `mistral-medium-latest` | $0.40 | $2.00 | $0.04 |
+| `mistral-small` | `mistral-small-latest` | $0.10 | $0.30 | $0.01 |
+| embeddings | `mistral-embed` | $0.10 | — | — |
+
+Caching: 90% discount via `cache_key`. Session economics comparable to Anthropic.
+
+### OpenAI
+
+**One `OPENAI_API_KEY` covers generation + embeddings.** Caching is automatic (50% discount, no configuration).
+
+| Model alias | Full name | Input /1M | Output /1M | Cached input /1M |
+|---|---|---|---|---|
+| `gpt-4o` | `gpt-4o` | $2.50 | $10.00 | $1.25 |
+| `gpt-4o-mini` | `gpt-4o-mini` | $0.15 | $0.60 | $0.075 |
+| embeddings | `text-embedding-3-small` | $0.02 | — | — |
+
+### OpenAI-compatible providers (via `OPENAI_BASE_URL`)
+
+Any OpenAI-compatible host works without code changes. Two worth knowing:
+
+**[Regolo.ai](https://regolo.ai)** — Italian, 100% green energy, zero data retention, GDPR by design, open-source models only, transparent token pricing. Set `OPENAI_BASE_URL=https://api.regolo.ai/v1`.
+
+**[Hugging Face Inference](https://huggingface.co/inference)** — Open-source community, free tier, runs open weights models. Set `OPENAI_BASE_URL=https://router.huggingface.co`.
+
 ---
 
 ## Provider support
 
-**Currently Anthropic-only.** All API calls use the Anthropic SDK directly. This is a known limitation and the top roadmap priority — see [`ROADMAP.md`](ROADMAP.md) for the planned approach and target providers (Mistral, Cohere, Ollama).
+**Anthropic, Mistral, and OpenAI are supported.** Any OpenAI-compatible provider works via `OPENAI_BASE_URL`. See [`ROADMAP.md`](ROADMAP.md) for planned additions (Cohere, Ollama).
+
+**On embeddings**: Mistral and OpenAI users do not need a Voyage key — provider-native embeddings are used automatically for the claim/outline pipeline. Anthropic users still need Voyage (or can switch to Mistral/OpenAI for a single-key setup). Track 1 paragraph filtering still uses Voyage regardless of provider — this is a known gap documented in the roadmap.
 
 ---
 

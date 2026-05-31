@@ -315,7 +315,6 @@ def generate_thesis(
     profile: CandidateProfile | None = None,
     correction: str | None = None,
 ) -> str:
-    import anthropic
 
     if profile and not profile.is_empty:
         system = THESIS_SYSTEM.format(candidate_profile=profile.as_full_text())
@@ -345,23 +344,8 @@ def generate_thesis(
         correction_rule=correction_rule,
     )
 
-    client = anthropic.Anthropic(api_key=api_key)
-    kwargs: dict = dict(
-        model=model,
-        max_tokens=300,
-        system=[{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}],
-        messages=[{"role": "user", "content": prompt}],
-    )
-    if supports_temperature(model):
-        kwargs["temperature"] = 0
-    response = client.messages.create(**kwargs)
-    usage = response.usage
-    record(
-        model, usage.input_tokens, usage.output_tokens,
-        cache_creation_tokens=getattr(usage, "cache_creation_input_tokens", 0) or 0,
-        cache_read_tokens=getattr(usage, "cache_read_input_tokens", 0) or 0,
-    )
-    return response.content[0].text.strip()
+    from coverletter.provider import get_provider
+    return get_provider(model, api_key).complete(system, prompt, max_tokens=300)
 
 
 def generate_argument(
@@ -375,7 +359,6 @@ def generate_argument(
     This is the beacon: a single sentence stating what the letter SHOULD argue.
     Used to focus sentence retrieval and anchor the model's assembly.
     """
-    import anthropic
 
     if profile and not profile.is_empty:
         candidate_section = f"\n=== CANDIDATE PROFILE ===\n{profile.as_goals_text()}\n"
@@ -383,23 +366,8 @@ def generate_argument(
         candidate_section = ""
 
     prompt = ARGUMENT_PROMPT.format(jd=jd.strip(), candidate_section=candidate_section)
-    client = anthropic.Anthropic(api_key=api_key)
-    kwargs: dict = dict(
-        model=model,
-        max_tokens=200,
-        system=[{"type": "text", "text": ARGUMENT_SYSTEM, "cache_control": {"type": "ephemeral"}}],
-        messages=[{"role": "user", "content": prompt}],
-    )
-    if supports_temperature(model):
-        kwargs["temperature"] = 0
-    response = client.messages.create(**kwargs)
-    usage = response.usage
-    record(
-        model, usage.input_tokens, usage.output_tokens,
-        cache_creation_tokens=getattr(usage, "cache_creation_input_tokens", 0) or 0,
-        cache_read_tokens=getattr(usage, "cache_read_input_tokens", 0) or 0,
-    )
-    return response.content[0].text.strip()
+    from coverletter.provider import get_provider
+    return get_provider(model, api_key).complete(ARGUMENT_SYSTEM, prompt, max_tokens=200)
 
 
 def alignment_report(
@@ -410,7 +378,6 @@ def alignment_report(
     model: str,
     profile: CandidateProfile | None = None,
 ) -> AlignmentResult:
-    import anthropic
 
     library_lines = []
     for p in filtered_paragraphs:
@@ -464,23 +431,10 @@ def alignment_report(
         {"type": "text", "text": jd_block},
     ]
 
-    client = anthropic.Anthropic(api_key=api_key)
-    kwargs: dict = dict(
-        model=model,
-        max_tokens=1200,
-        system=[{"type": "text", "text": ALIGN_SYSTEM, "cache_control": {"type": "ephemeral"}}],
-        messages=[{"role": "user", "content": user_content}],
+    from coverletter.provider import get_provider
+    result = _parse_alignment(
+        get_provider(model, api_key).complete(ALIGN_SYSTEM, user_content, max_tokens=1200)
     )
-    if supports_temperature(model):
-        kwargs["temperature"] = 0
-    response = client.messages.create(**kwargs)
-    usage = response.usage
-    record(
-        model, usage.input_tokens, usage.output_tokens,
-        cache_creation_tokens=getattr(usage, "cache_creation_input_tokens", 0) or 0,
-        cache_read_tokens=getattr(usage, "cache_read_input_tokens", 0) or 0,
-    )
-    result = _parse_alignment(response.content[0].text.strip())
 
     # Perspective frame check — Python level, no LLM call needed.
     # If the library has no through-line, pivot, reframe, or synthesis paragraphs,

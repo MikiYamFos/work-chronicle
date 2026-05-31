@@ -413,6 +413,39 @@ def _is_question_response(text: str) -> bool:
 MAX_VERIFY_ATTEMPTS = 4
 
 
+def _outline_alignment_report(outline: dict, letter_text: str) -> None:
+    """Print which outline blocks made it into the letter vs. were dropped."""
+    letter_lower = letter_text.lower()
+    covered: list[str] = []
+    dropped: list[str] = []
+
+    for para in outline.get("paragraphs", []):
+        label = para.get("label", "unlabeled")
+        claims = para.get("claims", [])
+        # A block is considered present if at least one anchor phrase appears in the letter
+        anchors = [a for c in claims for a in c.get("anchors", [])]
+        if anchors:
+            hit = any(a.lower() in letter_lower for a in anchors)
+        else:
+            # No anchors — fall back to checking claim text fragments
+            hit = any(
+                len(c.get("text", "")) > 20 and c["text"][:30].lower() in letter_lower
+                for c in claims
+            )
+        (covered if hit else dropped).append(label)
+
+    if covered:
+        console.print("[bold]Outline coverage:[/bold]")
+        for label in covered:
+            console.print(f"  [green]✓[/green] {label}")
+    if dropped:
+        for label in dropped:
+            console.print(f"  [yellow]–[/yellow] {label} [dim](not detected in letter)[/dim]")
+    if not covered and not dropped:
+        console.print("[dim]No outline blocks to check.[/dim]")
+    console.print()
+
+
 def _run_verification(
     letter_text: str,
     messages: list[dict[str, str]],
@@ -1050,7 +1083,9 @@ def _qa_session(
         if missing:
             console.print(f"[dim]Missing angles: {', '.join(missing)}[/dim]")
 
-    context = _build_initial_context(topic, job_description, gap_description, framing_context=framing_ctx)
+    from coverletter.provider import parse_model
+    _use_tools = parse_model(cfg.model)[0] == "anthropic"
+    context = _build_initial_context(topic, job_description, gap_description, framing_context=framing_ctx, use_tools=_use_tools)
     history: list[dict] = [{"role": "user", "content": context}]
 
     console.print(f"\n[bold blue]Building:[/bold blue] {topic}")
@@ -3139,10 +3174,15 @@ def build_outline_command(
     with Live(Spinner("dots", text="Generating thesis..."), refresh_per_second=10, console=console):
         thesis = generate_argument(jd, cfg.api_key, use_model, profile)
 
-    console.print(f"[dim]Thesis:[/dim] {thesis}\n")
+    console.print(f"[dim]Thesis:[/dim] {thesis}")
+    _flush_stdin()
+    thesis_edit = input("Edit thesis (Enter to keep): ").strip()
+    if thesis_edit:
+        thesis = thesis_edit
+    console.print()
 
     with Live(Spinner("dots", text="Assembling outline..."), refresh_per_second=10, console=console):
-        outline_md = build_outline(
+        outline_md, relevant_claims, category_scores, gaps = build_outline(
             conn, jd, thesis,
             api_key=cfg.api_key,
             model=use_model,
@@ -3161,24 +3201,35 @@ def build_outline_command(
     out_path.write_text(outline_md, encoding="utf-8")
 
     # Record application and capture category/claim scores for analytics
-    from coverletter.db import (
-        record_application, record_category_scores, record_claim_scores,
-        ensure_category_embeddings, get_category_embeddings, score_jd_against_categories,
-    )
-    ensure_category_embeddings(conn, cfg.voyage_api_key or "")
+    from coverletter.db import record_application, record_category_scores, record_claim_scores, record_gaps
     application_id = record_application(conn, company_name, "", jd)
-
-    if cfg.voyage_api_key:
-        from coverletter.outline import _embed_query
-        jd_emb = _embed_query(jd, cfg.voyage_api_key)
-        if jd_emb:
-            cat_embs = get_category_embeddings(conn)
-            if cat_embs:
-                cat_scores = score_jd_against_categories(jd_emb, cat_embs)
-                record_category_scores(conn, application_id, cat_scores)
+    if category_scores:
+        record_category_scores(conn, application_id, category_scores)
+    if relevant_claims:
+        scored_claims = [
+            {
+                "claim_id": c["id"],
+                "argument_category": (c.get("argument_categories") or ["unknown"])[0],
+                "similarity_score": c.get("_similarity_score", 0.0),
+                "in_outline": True,
+                "in_letter": False,
+            }
+            for c in relevant_claims
+        ]
+        record_claim_scores(conn, application_id, scored_claims)
+    if gaps:
+        record_gaps(conn, application_id, gaps)
 
     console.print(f"[green]Outline written:[/green] {out_path}")
     console.print(f"[dim]Application recorded (id={application_id}) — update outcome later with `coverletter outcome`[/dim]")
+
+    if gaps:
+        console.print(f"\n[yellow]JD gaps ({len(gaps)} uncovered requirements):[/yellow]")
+        for g in gaps:
+            cat = g.get("inferred_category", "")
+            console.print(f"  [dim]·[/dim] {g['requirement_text']}" + (f" [dim][{cat}][/dim]" if cat else ""))
+        console.print("[dim]These will appear in `coverletter analytics` after multiple applications.[/dim]")
+
     console.print(f"\nEdit the outline, then:")
     console.print(f"  [cyan]coverletter generate --from-outline {out_path} {jd_file}[/cyan]")
 
@@ -3253,8 +3304,8 @@ def generate_from_outline_command(
     else:
         conn = open_db(db)
         from coverletter.db import record_application, ensure_category_embeddings
-        # Ensure category embeddings are stored (no-op if already computed)
-        ensure_category_embeddings(conn, cfg.voyage_api_key or "")
+        from coverletter.provider import get_provider as _get_provider
+        ensure_category_embeddings(conn, cfg.voyage_api_key or "", _get_provider(cfg.model, cfg.api_key))
         # Record this application
         application_id = record_application(conn, company, "", jd)
         console.print(f"[dim]Application recorded (id={application_id})[/dim]")
@@ -3304,6 +3355,9 @@ def generate_from_outline_command(
     # Verification
     console.print()
     _run_verification(letter_text, messages, cfg.api_key, use_model)
+
+    # Alignment report
+    _outline_alignment_report(outline, letter_text)
 
     # Revision loop
     while True:
@@ -3447,6 +3501,56 @@ def record_outcome(ctx: click.Context, company: str, result: str, notes: str | N
     update_application_outcome(conn, row["id"], result, notes)
     conn.close()
     console.print(f"[green]Updated:[/green] {row['company']} ({row['applied_at'][:10]}) → {result}")
+
+
+@main.command("claims")
+@click.pass_context
+def show_claims(ctx: click.Context) -> None:
+    """Show extraction status per paragraph — how many claims and anchors each has."""
+    from coverletter.db import open_db, db_path
+    conn = open_db(db_path(ctx.obj["paragraphs"]))
+
+    rows = conn.execute(
+        """
+        SELECT
+            p.hash,
+            p.role,
+            p.angle,
+            COUNT(DISTINCT c.id) AS claim_count,
+            COUNT(DISTINCT CASE WHEN si.is_anchor = 1 THEN si.id END) AS anchor_count,
+            GROUP_CONCAT(c.argument_categories, ', ') AS categories
+        FROM paragraphs p
+        LEFT JOIN claims c ON c.source_para_hash = p.hash
+        LEFT JOIN support_items si ON si.claim_id = c.id AND si.parent_id IS NULL
+        GROUP BY p.hash
+        ORDER BY p.role, p.angle
+        """
+    ).fetchall()
+    conn.close()
+
+    from rich.table import Table
+    table = Table(show_header=True, header_style="bold")
+    table.add_column("Role", style="cyan")
+    table.add_column("Angle")
+    table.add_column("Claims", justify="right")
+    table.add_column("Anchors", justify="right")
+    table.add_column("Categories")
+
+    for r in rows:
+        claim_style = "green" if r["claim_count"] > 0 else "dim"
+        table.add_row(
+            r["role"] or "",
+            r["angle"] or "",
+            f"[{claim_style}]{r['claim_count']}[/{claim_style}]",
+            str(r["anchor_count"]),
+            r["categories"] or "—",
+        )
+
+    console.print(table)
+    total_claims = sum(r["claim_count"] for r in rows)
+    total_anchors = sum(r["anchor_count"] for r in rows)
+    no_claims = sum(1 for r in rows if r["claim_count"] == 0)
+    console.print(f"\n[dim]{total_claims} claims · {total_anchors} anchors · {no_claims} paragraphs with no claims[/dim]")
 
 
 @main.command("analytics")

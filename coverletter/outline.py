@@ -200,16 +200,31 @@ def _load_conclusion_for_claims(conn: sqlite3.Connection, claim_ids: list[int]) 
 # Embedding + similarity
 # ---------------------------------------------------------------------------
 
-def _embed_query(text: str, voyage_api_key: str) -> list[float] | None:
-    if not voyage_api_key:
-        return None
-    try:
-        import voyageai  # type: ignore
-        client = voyageai.Client(api_key=voyage_api_key)
-        result = client.embed([text], model="voyage-3-lite", input_type="query")
-        return result.embeddings[0]
-    except Exception:
-        return None
+def _embed_query(
+    text: str,
+    voyage_api_key: str,
+    provider: "object | None" = None,
+) -> list[float] | None:
+    """Embed a query string. Tries provider-native embeddings first, then Voyage, then None."""
+    # Provider-native embeddings (Mistral, OpenAI)
+    if provider is not None:
+        from coverletter.provider import Provider as ProviderBase
+        if isinstance(provider, ProviderBase) and provider.supports_embed():
+            result = provider.embed([text], input_type="query")
+            if result:
+                return result[0]
+
+    # Voyage fallback
+    if voyage_api_key:
+        try:
+            import voyageai  # type: ignore
+            client = voyageai.Client(api_key=voyage_api_key)
+            result = client.embed([text], model="voyage-3-lite", input_type="query")
+            return result.embeddings[0]
+        except Exception:
+            pass
+
+    return None
 
 
 def _cosine(a: list[float], b: list[float]) -> float:
@@ -285,6 +300,7 @@ def _category_aware_retrieval(
         cats = set(claim.get("argument_categories", []))
 
         if cats & _STANDALONE_CATEGORIES:
+            claim = dict(claim, _similarity_score=1.0)
             standalone_claims.append(claim)
             continue
 
@@ -305,7 +321,7 @@ def _category_aware_retrieval(
             (c for c in claim.get("argument_categories", []) if c in _EVIDENCE_CATEGORIES),
             "uncategorized"
         )
-        evidence_by_category.setdefault(primary_cat, []).append((score, claim))
+        evidence_by_category.setdefault(primary_cat, []).append((score, dict(claim, _similarity_score=score)))
 
     # Take top claims_per_category per evidence category
     selected_evidence: list[dict] = []
@@ -315,8 +331,7 @@ def _category_aware_retrieval(
 
     result = standalone_claims + selected_evidence
     if not result:
-        # Nothing passed threshold — return everything unfiltered
-        result = claims
+        result = [dict(c, _similarity_score=0.0) for c in claims]
 
     return result, category_scores
 
@@ -333,7 +348,6 @@ def _group_claims(
     model: str,
 ) -> dict:
     """Ask the LLM to group claims into paragraph blocks."""
-    import anthropic
 
     def _label(c: dict) -> str:
         cats = c.get("argument_categories", [])
@@ -366,26 +380,63 @@ def _group_claims(
         f"=== CLAIMS (index: [argument_categories] text [employer]) ===\n{claims_text}"
     )
 
-    client = anthropic.Anthropic(api_key=api_key)
-    kwargs: dict = dict(
-        model=model,
-        max_tokens=1024,
-        system=[{"type": "text", "text": _GROUP_SYSTEM, "cache_control": {"type": "ephemeral"}}],
-        messages=[{"role": "user", "content": content}],
-    )
-    if supports_temperature(model):
-        kwargs["temperature"] = 0
-
-    response = client.messages.create(**kwargs)
-    record(
-        model, response.usage.input_tokens, response.usage.output_tokens,
-        cache_creation_tokens=getattr(response.usage, "cache_creation_input_tokens", 0) or 0,
-        cache_read_tokens=getattr(response.usage, "cache_read_input_tokens", 0) or 0,
-    )
-    raw = response.content[0].text.strip()
+    from coverletter.provider import get_provider
+    raw = get_provider(model, api_key).complete(_GROUP_SYSTEM, content, max_tokens=1024)
     raw = re.sub(r"^```(?:json)?\s*", "", raw)
     raw = re.sub(r"\s*```$", "", raw)
     return json.loads(raw)
+
+
+# ---------------------------------------------------------------------------
+# Gap detection
+# ---------------------------------------------------------------------------
+
+_GAP_SYSTEM = """\
+You are a requirements analyst. Given a job description and a list of JD requirements that
+the candidate's outline already addresses, identify requirements that are NOT covered.
+
+Return ONLY valid JSON:
+{
+  "gaps": [
+    {
+      "requirement_text": "short paraphrase of the uncovered requirement",
+      "inferred_category": "the closest argument category: technical_ownership | approach_method | disposition | motivation | stakeholder_fluency | data_infrastructure | systems_thinking | communication | other",
+      "had_db_coverage": false
+    }
+  ]
+}
+
+Rules:
+- Only include genuine gaps — requirements explicitly stated in the JD that nothing in the
+  covered list addresses.
+- Do not invent requirements. Do not include nice-to-haves not stated in the JD.
+- Keep requirement_text short (one clause).
+- Return an empty gaps list if everything is covered.
+"""
+
+
+def _detect_gaps(
+    jd: str,
+    covered_requirements: list[str],
+    api_key: str,
+    model: str = "claude-haiku-4-5-20251001",
+) -> list[dict]:
+    """Compare JD requirements against what the outline covers. Return uncovered gaps."""
+    from coverletter.provider import get_provider
+
+    covered_block = "\n".join(f"- {r}" for r in covered_requirements if r.strip())
+    content = (
+        f"=== JOB DESCRIPTION ===\n{jd.strip()}\n\n"
+        f"=== REQUIREMENTS COVERED BY THE OUTLINE ===\n{covered_block or '(none)'}"
+    )
+
+    raw = get_provider(model, api_key).complete(_GAP_SYSTEM, content, max_tokens=512)
+    raw = re.sub(r"^```(?:json)?\s*", "", raw)
+    raw = re.sub(r"\s*```$", "", raw)
+    try:
+        return json.loads(raw).get("gaps", [])
+    except Exception:
+        return []
 
 
 # ---------------------------------------------------------------------------
@@ -729,26 +780,30 @@ def build_outline(
     company: str = "Company",
     voyage_api_key: str = "",
     relevance_threshold: float = 0.35,
-) -> str:
+) -> tuple[str, list[dict], list[tuple[str, float]], list[dict]]:
     """Build an editable markdown outline from the claim-evidence DB.
 
-    Returns outline as a markdown string.
+    Returns (outline_markdown, relevant_claims, category_scores, gaps).
     """
     all_claims = _load_claims(conn)
     if not all_claims:
-        return "# No claims found\n\nRun `coverletter extract` first.\n"
+        return "# No claims found\n\nRun `coverletter extract` first.\n", [], [], []
 
-    # Filter by JD relevance. Standalone-category claims (disposition, motivation, etc.)
-    # are always included regardless of score.
-    jd_embedding = _embed_query(jd + "\n" + thesis, voyage_api_key)
-    relevant_claims = _score_claims(all_claims, conn, jd_embedding, relevance_threshold)
+    from coverletter.provider import get_provider
+    provider = get_provider(model, api_key)
 
-    # Standalone-category claims always come through — they are argument structure, not evidence.
-    # Evidence claims are all included; the grouping LLM has structure to work with and
-    # dropping claims arbitrarily produces incomplete outlines.
-    if not relevant_claims:
-        relevant_claims = all_claims
+    jd_embedding = _embed_query(jd + "\n" + thesis, voyage_api_key, provider)
+
+    from coverletter.db import ensure_category_embeddings
+    category_embeddings = ensure_category_embeddings(conn, voyage_api_key, provider)
+    relevant_claims, category_scores = _category_aware_retrieval(
+        all_claims, conn, jd_embedding, category_embeddings, relevance_threshold
+    )
 
     grouping = _group_claims(relevant_claims, jd, thesis, api_key, model)
 
-    return _write_outline_markdown(grouping, relevant_claims, conn, jd, thesis, company)
+    covered = [p.get("jd_requirement", "") for p in grouping.get("paragraphs", [])]
+    gaps = _detect_gaps(jd, covered, api_key, model)
+
+    outline_md = _write_outline_markdown(grouping, relevant_claims, conn, jd, thesis, company)
+    return outline_md, relevant_claims, category_scores, gaps

@@ -258,6 +258,75 @@ def main() -> None:
     out_path = Path(__file__).parent / "align_judge_results.csv"
     save_results_csv(results, out_path)
 
+    # Offer to draft a prompt update if there are disagreements
+    fps = metrics["false_positives"]
+    fns = metrics["false_negatives"]
+    if (fps or fns) and api_key:
+        print()
+        answer = input("Draft a judge prompt patch for these disagreements? [y/N]: ").strip().lower()
+        if answer in ("y", "yes"):
+            draft_prompt_patch(fps, fns, api_key)
+
+
+def draft_prompt_patch(false_positives: list[dict], false_negatives: list[dict], api_key: str) -> None:
+    """Ask Haiku to draft targeted additions to _JUDGE_SYSTEM based on disagreements."""
+    import anthropic
+
+    fp_block = "\n".join(
+        f"- APPROVED (should be REJECTED): {r['claim_text']}\n"
+        f"  Failure pattern: {', '.join(r['failure_categories']) or 'unlabeled'}\n"
+        f"  Why it should be rejected: {r['source_note']}"
+        for r in false_positives
+    )
+    fn_block = "\n".join(
+        f"- REJECTED (should be APPROVED): {r['claim_text']}\n"
+        f"  Judge's reason for rejecting: {r['judge_reason']}\n"
+        f"  Why it should be approved: {r['source_note']}"
+        for r in false_negatives
+    )
+
+    system = """\
+You are editing a judge prompt for a cover letter claim quality system.
+The judge evaluates whether a claim is specific enough to be useful in a cover letter.
+
+You will be given:
+1. The current judge system prompt
+2. Cases where the judge got it wrong
+
+Your job: draft ONLY the new or modified rules needed to fix the errors.
+- Write in the same style and format as the existing prompt
+- Do NOT rewrite the whole prompt — draft additions or replacements for specific rules only
+- Keep it short — one rule per disagreement pattern
+- Do not add user-specific claim texts as examples. Use generic structural descriptions.
+- Output format:
+  ### Changes to _JUDGE_SYSTEM
+  [your additions/modifications here]
+  ### Reasoning
+  [one line per change: what error it fixes and why this wording works]
+"""
+
+    content = (
+        f"=== CURRENT JUDGE PROMPT ===\n{_JUDGE_SYSTEM}\n\n"
+        + (f"=== FALSE POSITIVES (judge too lenient) ===\n{fp_block}\n\n" if fp_block else "")
+        + (f"=== FALSE NEGATIVES (judge too strict) ===\n{fn_block}\n\n" if fn_block else "")
+    )
+
+    client = anthropic.Anthropic(api_key=api_key)
+    print("\nDrafting prompt patch...\n")
+    with client.messages.stream(
+        model="claude-haiku-4-5-20251001",
+        max_tokens=800,
+        system=system,
+        messages=[{"role": "user", "content": content}],
+        temperature=0,
+    ) as stream:
+        for text in stream.text_stream:
+            print(text, end="", flush=True)
+    print("\n")
+    print("─" * 60)
+    print("Review the above, then manually edit _JUDGE_SYSTEM in coverletter/extract.py.")
+    print("Re-run this script to confirm improvement.")
+
 
 if __name__ == "__main__":
     main()

@@ -29,81 +29,103 @@ The gap-to-experience matcher in `experiences.py` was matching on stop words, ca
 
 ---
 
-## Issue #1 — Multi-provider support
+## Issue #1 — Multi-provider support *(partially shipped)*
 
-The tool is currently Anthropic-only. Every API call uses the Anthropic SDK directly,
-model aliases map to Claude model strings, and prompt caching uses Anthropic-specific
-`cache_control` message blocks. This is the top priority to fix.
+### Understanding the two non-negotiables
 
-### Why this is hard
+**Prompt caching** is not optional. The paragraph library (12k+ tokens) is sent on
+every API call. Without caching, a full session costs 3–5× more. Any provider that
+can't cache is unviable for regular use.
 
-Prompt caching isn't a detail — it's what makes the economics work. The paragraph
-library (12k+ tokens) gets sent on every API call in a session. Caching it after the
-first call drops subsequent call costs to ~10% (Anthropic) or ~50% (OpenAI automatic).
-Without caching, a full letter session costs 3–5x more.
+**Semantic embeddings** are not optional for quality. BM25 keyword fallback works
+but is noticeably worse for paragraph selection. Provider-native embeddings (or Voyage
+as a standalone service) are required for the tool to work well.
 
-A generic wrapper like LiteLLM doesn't solve this — its caching abstraction is for
-full response memoization, not provider-level prompt prefix caching. Each provider
-exposes caching differently and needs its own implementation.
+### What's shipped
 
-### Target providers
+**Provider abstraction** (`coverletter/provider.py`) — `AnthropicProvider`,
+`MistralProvider`, and `OpenAIProvider` implement `complete()`, `stream()`, and
+`embed()`. `get_provider(model, api_key)` returns the right one.
 
-**Mistral**
-- Explicit caching API, most similar to Anthropic's model
-- Strong writing quality, competitive pricing
-- European data residency — meaningful for users with GDPR concerns
-- Implement second (after Anthropic) to stress-test the abstraction
+**Model naming**: `provider/model-name` prefix. Bare names default to Anthropic.
+Aliases: `mistral-large`, `mistral-small`, `gpt-4o`, `gpt-4o-mini` etc.
 
-**Cohere**
-- Interesting because it collapses two dependencies into one: Command R+ for
-  generation AND Cohere embeddings to replace Voyage AI
-- Currently the tool requires two API keys (Anthropic + Voyage). Cohere users
-  would need only one
-- Retrieval-trained models are relevant to how this tool works (library search
-  drives paragraph selection)
+**Config**: reads the right API key for the active provider. Never requires keys
+for providers you're not using.
 
-**Ollama**
-- Local inference — zero API cost, nothing leaves the machine
-- Career material is sensitive; some users will care a lot about this
-- Caching works differently (context stays in memory, keep-alive handles it)
-- OpenAI-compatible locally, no auth
-- The most architecturally different provider — implement third to find
-  abstraction gaps before adding more
+**Extraction and judging**: `_fast_model_for()` maps each provider to its cheapest
+model — Haiku for Anthropic, `mistral-small` for Mistral, `gpt-4o-mini` for OpenAI.
 
-**Together AI / Fireworks AI**
-- Hosts open source models (Llama, Mixtral, etc.) at low cost
-- Good fit for users who want model transparency or want to run open weights
-- To evaluate: writing quality for this specific task (cover letter generation
-  requires nuance that not all open source models handle well)
+**Library building** (`coverletter build`, `reflect`, `intake`): non-Anthropic
+providers use pre-search injection instead of tool calling. Same quality signal.
 
-### Planned architecture
+**Mistral is now fully self-contained**:
+- Generation via `mistral-large-latest` or `mistral-small-latest`
+- Caching via `cache_key` parameter — **90% discount** on cached tokens (same as Anthropic)
+- Embeddings via `mistral-embed` ($0.10/1M tokens) — no Voyage key needed
+- One API key covers everything
 
-A thin `Provider` protocol that each provider implements:
+**OpenAI is largely self-contained**:
+- Generation via `gpt-4o` or `gpt-4o-mini`
+- Caching automatic — **50% discount**, activates for prompts ≥1024 tokens with no
+  code changes required. Our prompts are structured correctly (system first, stable
+  before dynamic) so cache hits happen automatically.
+- Embeddings via `text-embedding-3-small` ($0.02/1M tokens) — no Voyage key needed
+- One API key covers everything
 
-```python
-class Provider(Protocol):
-    def complete(self, system: str, messages: list, tools: list | None) -> Response: ...
-    def stream(self, system: str, messages: list) -> Iterator[str]: ...
-    def embed(self, texts: list[str]) -> list[list[float]]: ...  # replaces Voyage
-    def supports_caching(self) -> bool: ...
-    def wrap_cached(self, content: str) -> dict: ...  # provider-specific cache block
-```
+**OpenAI-compatible providers work via `OPENAI_BASE_URL`**: any OpenAI-compatible
+host can be targeted without code changes. Set `OPENAI_BASE_URL` in `.env`:
+- **Regolo.ai** — Italian, 100% green energy, zero data retention, GDPR by design,
+  open-source models only (Llama, Mistral weights). Transparent token pricing.
+- **Hugging Face Inference** — open-source community, aggregates 15+ inference
+  partners, free tier, embeddings via nomic-embed-text.
 
-Each provider handles caching in its own way:
-- **Anthropic**: inject `cache_control: {"type": "ephemeral"}` on library block
-- **Mistral**: explicit cache API call before session, reference by ID
-- **OpenAI**: automatic prefix caching, just structure prompts correctly (library first)
-- **Ollama**: keep-alive, no explicit caching needed
-- **Others**: degrade gracefully — send full context, costs more, still works
+**Voyage AI** remains the default embedding provider for Anthropic users. It is a
+separate key but reliable and cheap ($0.06/1M tokens). Anthropic users who don't want
+a second key can switch to Mistral or OpenAI for a single-key stack.
 
-### Also needed
+### Caching status by provider
 
-- The question judge is hardcoded to `claude-haiku-4-5-20251001` — needs to become
-  a configurable cheap model per provider
-- Voyage AI embedding dependency needs to become optional with a provider-native
-  fallback (Cohere embeddings, Ollama embeddings, or BM25 keyword fallback as last resort)
-- `COVERLETTER_MODEL` env var would accept provider-prefixed model names:
-  `anthropic/claude-sonnet-4-6`, `mistral/mistral-large-latest`, `ollama/llama3.3`, etc.
+| Provider | Caching mechanism | Discount | Status |
+|---|---|---|---|
+| Anthropic | `cache_control` on system prompt | 90% | ✓ Implemented |
+| Mistral | `cache_key` parameter | 90% | ✓ Implemented |
+| OpenAI | Automatic prefix cache | 50% | ✓ Works automatically |
+| Regolo.ai | Via hosted model (unknown discount) | Unknown | Via OpenAI provider |
+| HuggingFace | Unknown | Unknown | Via OpenAI provider |
+| Ollama | Keep-alive (local, free) | 100% (no API cost) | Not yet implemented |
+
+### Embedding status by provider
+
+| Provider | Embeddings | Model | Price | Status |
+|---|---|---|---|---|
+| Anthropic | Via Voyage (separate key) | voyage-3-lite | $0.06/1M | ✓ Works |
+| Mistral | `mistral-embed` (same key) | mistral-embed | $0.10/1M | ✓ Wired into outline/claim pipeline |
+| OpenAI | `text-embedding-3-small` (same key) | text-embedding-3-small | $0.02/1M | ✓ Wired into outline/claim pipeline |
+| Voyage AI | Standalone embedding service | voyage-3-lite | $0.06/1M | ✓ Works (all providers) |
+| Cohere | `embed-v3` (same key as generation) | embed-v3 | $0.10/1M | Not yet implemented |
+| Ollama | nomic-embed-text (local, free) | nomic-embed-text | Free | Not yet implemented |
+
+**Note**: provider-native embeddings are currently wired into the Track 2 (claim/outline)
+pipeline. Track 1 (paragraph filtering via `embed_prefilter`) still calls Voyage directly
+regardless of provider. This is the remaining gap for full single-key operation on
+Mistral and OpenAI.
+
+### What's still needed
+
+**Track 1 `embed_prefilter` via provider**: the classic generate flow re-embeds
+paragraphs via Voyage on every call. Requires opening the DB and provider at the
+`embed_prefilter` call site. Medium-effort refactor.
+
+**Cohere**: Canadian provider that absorbed German Aleph Alpha (April 2026). Offers
+generation (`command-r-plus`) + embeddings (`embed-v3`) on one key. $0.10/1M tokens
+for embeddings. Worth implementing once Ollama is done.
+
+**Ollama**: local inference, nothing leaves the machine, zero API cost. Critical for
+privacy-sensitive users and for making the tool genuinely free. Uses nomic-embed-text
+for embeddings (MTEB 62.39, beats OpenAI ada-002). The most architecturally different
+provider — keep-alive for context instead of stateless API calls. Implement after the
+tool is more mature and can handle degraded model quality gracefully.
 
 ---
 

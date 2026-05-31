@@ -104,21 +104,10 @@ def judge_question(
     Uses Haiku — fast and cheap for binary classification.
     """
     import json
-    import anthropic
-    from coverletter.costs import record
+    from coverletter.provider import get_provider
 
-    client = anthropic.Anthropic(api_key=api_key)
     prompt = f"Context: {context[:300]}\n\nQuestion to judge: {question}"
-
-    response = client.messages.create(
-        model=_JUDGE_MODEL,
-        max_tokens=128,
-        system=_JUDGE_SYSTEM,
-        messages=[{"role": "user", "content": prompt}],
-    )
-    record(_JUDGE_MODEL, response.usage.input_tokens, response.usage.output_tokens)
-
-    raw = response.content[0].text.strip()
+    raw = get_provider(_JUDGE_MODEL, api_key).complete(_JUDGE_SYSTEM, prompt, max_tokens=128)
     raw = re.sub(r"^```(?:json)?\s*", "", raw)
     raw = re.sub(r"\s*```$", "", raw)
     try:
@@ -198,22 +187,14 @@ def company_accuracy_check(
     if not mentioned:
         return True, ""  # question names no company from library — skip LLM check
 
-    import anthropic
-    from coverletter.costs import record
+    from coverletter.provider import get_provider
 
-    client = anthropic.Anthropic(api_key=api_key)
     prompt = (
         f"Library search results:\n{library_results[:2000]}\n\n"
         f"Question: {question}"
     )
-    response = client.messages.create(
-        model=_JUDGE_MODEL,
-        max_tokens=128,
-        system=_COMPANY_JUDGE_SYSTEM,
-        messages=[{"role": "user", "content": prompt}],
-    )
-    record(_JUDGE_MODEL, response.usage.input_tokens, response.usage.output_tokens)
-    return _parse_judge_response(response.content[0].text)
+    raw = get_provider(_JUDGE_MODEL, api_key).complete(_COMPANY_JUDGE_SYSTEM, prompt, max_tokens=128)
+    return _parse_judge_response(raw)
 
 
 def validate_draft(
@@ -229,22 +210,14 @@ def validate_draft(
     if not api_key or not conversation_turns.strip():
         return True, ""
 
-    import anthropic
-    from coverletter.costs import record
+    from coverletter.provider import get_provider
 
-    client = anthropic.Anthropic(api_key=api_key)
     prompt = (
         f"What the person said in this conversation:\n{conversation_turns[:2000]}\n\n"
         f"Draft paragraph:\n{draft}"
     )
-    response = client.messages.create(
-        model=_JUDGE_MODEL,
-        max_tokens=160,
-        system=_DRAFT_JUDGE_SYSTEM,
-        messages=[{"role": "user", "content": prompt}],
-    )
-    record(_JUDGE_MODEL, response.usage.input_tokens, response.usage.output_tokens)
-    return _parse_judge_response(response.content[0].text)
+    raw = get_provider(_JUDGE_MODEL, api_key).complete(_DRAFT_JUDGE_SYSTEM, prompt, max_tokens=160)
+    return _parse_judge_response(raw)
 
 
 def validate_question(
