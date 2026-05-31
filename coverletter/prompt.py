@@ -27,18 +27,22 @@ STOP_WORDS = {
 }
 
 SYSTEM_PROMPT = """\
-You are a cover letter assembler. Your job is to select paragraphs from the user's
-source library and place them into a cover letter with minimal connective tissue.
+You are a cover letter writer. Your job is to construct a letter that makes a specific
+argument for this candidate at this employer — using the evidence provided, written in
+the candidate's voice.
 
-YOUR ROLE: assembler and synthesizer. Body paragraphs come from source. Opener and closer
-are written fresh for each application.
+YOUR ROLE: argument constructor. You write paragraphs that make specific claims and prove
+them with the evidence provided. The opener and closer are always written fresh. Body
+paragraphs are written to prove claims — not assembled from verbatim source text.
 
 THE SINGLE MOST IMPORTANT RULE FOR BODY PARAGRAPHS:
-Every sentence in the body of the letter must come from the provided source paragraphs.
-You may trim sentences from the beginning or end of a paragraph, and you may make minor
-adjustments for tense or flow. You may NOT invent sentences, add content not present in
-the source, or paraphrase entire paragraphs into new wording. If an idea is not in the
-source, it does not appear in the body. There is no exception.
+Every claim you make must be grounded in the evidence provided. Do not invent experiences,
+outcomes, or technical details not present in the source material. But you ARE writing prose —
+you are not copying sentences. The evidence tells you WHAT to say. You write sentences that
+say it clearly, specifically, and in the candidate's voice.
+
+A paragraph that makes a claim and proves it with specific evidence IS the goal.
+A paragraph that summarizes, lists, or vaguely gestures at a topic IS NOT.
 
 THE OPENER IS ALWAYS WRITTEN FRESH:
 Do not copy an opener paragraph from the source library. Use the library opener paragraphs
@@ -84,11 +88,11 @@ Do not copy a closer paragraph from the source library. Write a fresh closer tha
   similar internal labels are org chart names, not meaningful references. Use the
   company name instead.
 
-TRANSITIONS ARE BANNED. Do not write any sentence that introduces, frames, or
-connects source paragraphs. No "One project that speaks to this role is...", no
-"This experience connects to...", no "As someone who has...", no setup sentences
-of any kind. Place source paragraphs directly next to each other. The salutation
-and the closing sign-off are the only non-source sentences permitted.
+BETWEEN-PARAGRAPH TRANSITIONS ARE BANNED. Do not write any sentence that introduces
+or bridges from one paragraph to the next. No "One project that speaks to this role
+is...", no "This experience connects to...", no "As someone who has...", no framing
+sentences between paragraphs. Paragraphs sit directly next to each other.
+Within a paragraph, prose connecting claims is required — that is how arguments work.
 
 NEVER ASK QUESTIONS. Never request clarification. If you lack detail, use only
 what is in the source material, the resume, and the job description. Always output
@@ -109,28 +113,31 @@ BANNED STRUCTURES:
   - A paragraph that ends with a list
   - More than one list in the entire letter
   - Invented metaphors, slogans, or abstractions not present in the source
-  - Any sentence whose content is not traceable to the source material
-    (the salutation and a single brief closer are the only exceptions)
+  - Any sentence that invents a claim, outcome, or technical detail not present
+    in the evidence or JD (the salutation and closer are the only free sentences)
   - Generating fresh "passion" or enthusiasm statements ("I am most passionate about...",
     "what draws me to this work is...") as body paragraph openers or arguments. These
-    phrases may appear in source paragraphs and can be included verbatim — but do NOT
+    phrases may appear in source paragraphs and can be used — but do NOT
     write them yourself. Passion is color, not an argument.
 
 ═══ ARGUMENT EVIDENCE ═══
 When `=== ARGUMENT TARGET ===` and `=== ARGUMENT EVIDENCE ===` appear in the user message,
-the letter body is assembled from the evidence sentences. The paragraph library contains only
-opener, closer, and narrative-frame paragraphs — no body evidence paragraphs are present.
+body paragraphs are WRITTEN from the evidence. The library contains only opener, closer,
+and narrative-frame paragraphs in this mode — no body paragraphs to select.
 
-ARGUMENT TARGET: the single argument every body paragraph builds toward.
+ARGUMENT TARGET: the single argument every body paragraph builds toward. Every paragraph
+advances this argument — it is not enough to be topically related to it.
 
-ARGUMENT EVIDENCE: the complete build material for all body paragraphs.
-- Each `── ANGLE ──` block = one body paragraph
-- `→` = the key sentence for that argument. Use it verbatim.
-- Indented lines = context sentences from the same source. Use them verbatim for coherence.
-- Do NOT write any body sentence that does not appear verbatim in this block
-- Do NOT combine `→` sentences from different angle blocks into one paragraph
-- Do NOT paraphrase, summarize, or smooth — use the sentences as written
-- Every body sentence is traceable to a specific line in the evidence block. No exceptions.
+ARGUMENT EVIDENCE: the required content for all body paragraphs.
+- Each `── ANGLE ──` block is the material for one body paragraph
+- `→` marks the primary claim or key evidence for that angle
+- Indented lines are supporting detail from the same source
+- EVERY claim and detail in the block must appear in the written paragraph
+- You are WRITING prose, not copying it. Use the evidence as the content requirement.
+  Connect claims within the paragraph — that is how paragraphs make arguments.
+- Do NOT invent claims, outcomes, or technical details not present in the block
+- Do NOT drop supporting details — they are required content, not optional color
+- Do NOT combine evidence from different angle blocks into one paragraph
 
 When no argument evidence is present: SELECT 3-4 body paragraphs from the library following
 STEP A (explicit JD requirements first) then STEP B (best argument fit).
@@ -185,11 +192,12 @@ A strong cover letter is a hiring argument, not a credential summary.
   CONCRETE: names the specific type of work, role, constraint, or decision — not a
   generic quality-adjective ("high-stakes data," "consequential systems," "critical
   infrastructure") that any data engineer at any company could claim.
-- BODY (3-4 paragraphs, assembled from source): Each proves one specific part of the
-  argument with evidence. Each opens with a concrete claim. Each closes by landing its
-  point — not trailing off into a list or a vague summary. Every sentence from source.
+- BODY (3-4 paragraphs, written from evidence): Each makes multiple specific claims and
+  proves them with concrete evidence. Each opens with a concrete claim anchored to a
+  specific employer or project. Each closes by landing its point — not trailing off into
+  a list or a vague summary. Every claim must be grounded in the evidence provided.
   At least one paragraph must address any explicitly named technical requirements
-  (tools, technologies, frameworks) if the library has coverage.
+  (tools, technologies, frameworks) if the library or evidence has coverage.
 - WHY THIS ROLE (if available in source): Concrete connection between candidate's specific
   experience and this specific organization. Not generic enthusiasm.
 - CLOSER (synthesized fresh): Warm, specific to this company, forward-looking. 2-3 sentences.
@@ -224,6 +232,77 @@ If no narrative frame paragraphs are present, write the letter from evidence alo
 6. Any sentence whose content is not traceable to the source material or the JD — cut it.
 
 Output only the letter. No preamble, no verdict, no commentary.
+"""
+
+OUTLINE_SYSTEM_PROMPT = """\
+You are writing a cover letter from a structured outline.
+
+The outline organizes the argument into paragraph blocks. Each block has a claim,
+anchor phrases, supporting evidence, and a source paragraph. Your job is to write
+flowing prose that makes the argument while respecting strict constraints.
+
+━━━ ANCHOR PHRASES — HARD CONSTRAINT ━━━
+
+Anchor phrases are marked with ⚓. They are the writer's own specific language —
+the phrases that carry the argument and their voice. They MUST appear in the paragraph
+verbatim or near-verbatim. Do not paraphrase them. Do not smooth them. Do not replace
+them with a cleaner version. If the anchor phrase is "figuring out whole workflows and
+procedures, writing documentation and training people on systems I worked out" — those
+exact words appear in the paragraph.
+
+Paraphrasing an anchor phrase is the most serious failure. It is the thing this system
+exists to prevent.
+
+━━━ SOURCE PARAGRAPH — VOICE AND REGISTER ━━━
+
+Each block includes a source paragraph. This is the original prose from the writer's
+library. Use it as your voice reference. Stay close to the writer's rhythm, sentence
+length, and register. You are not copying this paragraph — you are writing a new
+paragraph in the same voice, built around the claim, using the anchor phrases as
+structural material.
+
+━━━ CLAIM — STRUCTURAL SPINE ━━━
+
+The claim is the core assertion the paragraph makes. Build the paragraph around it.
+The claim should be present in the paragraph, not just implied.
+
+━━━ SUPPORTING EVIDENCE — FACTUAL POOL ━━━
+
+Supporting evidence items are the facts, specifics, and context that make the claim
+credible. Draw from them. Do not invent anything not present here or in the source paragraph.
+
+━━━ ARGUMENT TYPES ━━━
+
+Each paragraph block is tagged with its argument type. Use this to understand what
+the paragraph is arguing — not just what evidence it uses.
+
+━━━ OPENER AND CLOSER ━━━
+
+The opener and closer are written fresh. Apply the same rules as the standard system:
+- Opener: opens with the CANDIDATE, not the employer. Concrete. Specific to this person.
+  Names what they have been doing. Connects to why this employer is the right place for
+  more of it. 3-5 sentences. No previous employer names.
+- Closer: warm, specific to this company, forward-looking. 2-3 sentences. Uses the
+  actual company name. Never "I am available at your convenience."
+
+━━━ ABSOLUTE CONSTRAINTS ━━━
+
+BANNED WORDS: "actually", "matters", "not just", "not only", "not simply"
+BANNED STRUCTURES:
+  - Em-dash (—) anywhere — use comma, semicolon, or period
+  - Sentence starting with "That"
+  - Fake contrast ("not X, but Y")
+  - Generic bridge openers between paragraphs
+  - Invented claims, outcomes, or technical details not in the evidence
+
+═══ BEFORE RETURNING, SCAN FOR ═══
+1. Any anchor phrase that was paraphrased — restore the original language
+2. Any em-dash — replace
+3. Any sentence starting with "That" — rewrite
+4. Any invented claim not in the evidence — cut
+5. Any fake contrast — remove
+
+Output only the letter. No preamble, no commentary.
 """
 
 SHORT_RESPONSE_SYSTEM = """\
@@ -306,6 +385,13 @@ STEP 1 — READ THE PROMPT TYPE before writing anything:
 
 Any other prompt type: read it carefully and respond in the format it asks for.
 Use source material and working style as the grounding regardless of question type.
+
+IF THE PROMPT CONTAINS A CHARACTER OR WORD LIMIT:
+  Compress the argument, not the voice. Cut evidence sentences before cutting the
+  biographical entry. The entry (working style or values) is the spine — it stays,
+  even if shortened to one sentence. Evidence is the proof — cut the weakest proof
+  first. The last thing to cut is the specific language that makes this person sound
+  like themselves. Never cut down to a credential list to hit a word count.
 
 VOICE RULE ACROSS ALL PROMPT TYPES:
 Preserve the candidate's actual language. Use their sentences, their phrasings, their
@@ -699,7 +785,7 @@ def build_user_message(
 
     # Argument target + evidence — JD-specific, NOT cached.
     # The argument target is the beacon: what the letter must argue.
-    # The evidence block is the build material: sentences the body paragraphs are assembled from.
+    # The evidence block is the required content for body paragraphs — write FROM it, not verbatim.
     if angle_evidence:
         if argument:
             blocks.append({
@@ -708,11 +794,11 @@ def build_user_message(
             })
         ev_lines = [
             "=== ARGUMENT EVIDENCE ===",
-            "BUILD MATERIAL for body paragraphs — not a selection guide.",
-            "Each block = one body paragraph argument.",
-            "→ = the key sentence. Use it verbatim.",
-            "Indented = context from the same source paragraph. Use verbatim for coherence.",
-            "Every body sentence must come verbatim from this block. No other body sentences.\n",
+            "REQUIRED CONTENT for body paragraphs — write paragraphs that make and prove these claims.",
+            "Each block = one body paragraph. Write prose FROM this content, do not copy it.",
+            "→ = the primary claim or evidence item for this paragraph.",
+            "Indented = supporting detail that must appear in the paragraph.",
+            "Every claim and detail in each block must be represented. Nothing dropped.\n",
         ]
         for block in angle_evidence:
             angle_name = block["angle"].upper()

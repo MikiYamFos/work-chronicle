@@ -1,3 +1,4 @@
+import json
 import sys
 from pathlib import Path
 
@@ -431,7 +432,7 @@ def _run_verification(
     from rich.rule import Rule
     current = messages[-1]["content"]
 
-    with Live(Spinner("dots", text="Checking quality and source tracing..."), refresh_per_second=10, console=console):
+    with Live(Spinner("dots", text="Checking quality and evidence grounding..."), refresh_per_second=10, console=console):
         result = verify_letter(current, api_key, model)
         verbatim_violations = verbatim_check(
             current, source_paragraphs or [],
@@ -452,7 +453,7 @@ def _run_verification(
             console.print(f"  [yellow]• {f}[/yellow]")
 
     if verbatim_violations:
-        console.print(f"\n[bold red]Invented sentences ({len(verbatim_violations)}) — not found in source:[/bold red]")
+        console.print(f"\n[bold red]Ungrounded sentences ({len(verbatim_violations)}) — no evidence basis found:[/bold red]")
         for v in verbatim_violations:
             console.print(f"  [red]• {v.sentence[:120]}[/red]")
             console.print(f"    [dim]closest source ({v.score:.0%}): {v.best_match[:100]}[/dim]")
@@ -569,7 +570,7 @@ def main(
     no_save: bool,
     fast: bool,
 ) -> None:
-    """Cover letter generator — assembles your voice from your own source paragraphs."""
+    """Cover letter generator — builds argument-driven letters from your evidence library."""
     if ctx.invoked_subcommand is not None:
         ctx.ensure_object(dict)
         ctx.obj["paragraphs"] = paragraphs
@@ -726,7 +727,7 @@ def main(
                 if angle_evidence:
                     n_sents = sum(len(a["sentences"]) for a in angle_evidence)
                     console.print(f"[dim]Argument evidence: {len(angle_evidence)} angles, {n_sents} sentences[/dim]")
-                    # Extract the flat sentence list for verbatim check.
+                    # Extract the flat sentence list as evidence grounding for verification.
                     # Model was given exactly these sentences; any body sentence not
                     # matching them is genuinely invented.
                     for block in angle_evidence:
@@ -1007,6 +1008,20 @@ def main(
             saved_pdf = save_pdf(letter_text, cfg.output_dir, label, cfg.author_name)
             console.print(f"[green]Saved (PDF):[/green] {saved_pdf}\n")
 
+            # Offer resume generation for the same application.
+            typ_path = cfg.resume_typ_file if hasattr(cfg, "resume_typ_file") else None
+            if typ_path and Path(typ_path).exists():
+                _flush_stdin()
+                make_resume = input("Generate a tailored resume for this application? [y/N]: ").strip().lower()
+                if make_resume in ("y", "yes"):
+                    ctx.invoke(
+                        main.commands["resume"],
+                        paragraphs=cfg.paragraphs_files[0].as_posix() if cfg.paragraphs_files else None,
+                        company=company or None,
+                        base=None,
+                        bullets_file=None,
+                    )
+
 
 def _qa_session(
     topic: str,
@@ -1175,7 +1190,7 @@ def build_library(ctx: click.Context, paragraphs: str | None, about: str | None)
     cfg = load_config(paragraphs)
     all_paragraphs = load_paragraphs(cfg.paragraphs_files)
     # Build always saves to library_refined.md — the priority layer.
-    # Seed saves verbatim extractions to library.md (base).
+    # Seed saves raw extractions to library.md (base layer).
     # library_refined.md overrides library.md at generation time.
     # This is true even if library_refined.md doesn't exist yet — append_to_library creates it.
     base_file = cfg.paragraphs_files[-1]
@@ -1850,6 +1865,22 @@ def blurb(
     bio_count = len(working_style or []) + len(values or []) + len(avoid or [])
     if bio_count:
         console.print(f"[dim]Biographical context: {bio_count} entries (working_style + values + avoid)[/dim]")
+
+    # Warn before generation if biographical material is too thin for a biographical prompt.
+    # The model will surface BIOGRAPHICAL_GAPS after the fact, but this saves an API call
+    # when the profile is clearly empty going in.
+    _BIO_MIN = 2
+    if bio_count < _BIO_MIN:
+        console.print(
+            f"\n[yellow]Thin biographical profile ({bio_count} entries).[/yellow]\n"
+            f"[dim]For biographical prompts ('tell me about yourself', 'about me'), the response\n"
+            f"quality depends on working_style + values entries in your profile.\n"
+            f"Consider running [bold]coverletter profile[/bold] to add entries before continuing.[/dim]"
+        )
+        _flush_stdin()
+        proceed = input("Continue anyway? [Y/n]: ").strip().lower()
+        if proceed in ("n", "no"):
+            return
 
     # Application prompt is appended to the JD block — it's the last thing the model
     # reads before writing. The JD drove paragraph prefiltering; the application
@@ -2701,7 +2732,7 @@ def seed_library(ctx: click.Context, input_file: str | None, paragraphs: str | N
 
     # --- Save ---
     from coverletter.seed import append_paragraphs_to_file, upsert_experience_targets
-    # Seed always writes to the base layer — verbatim extractions, not strengthened.
+    # Seed always writes to the base layer — raw extractions, not strengthened.
     # Build writes to library_refined.md (priority layer) after Q&A strengthening.
     target = cfg.paragraphs_files[-1]
     console.print(Rule(style="green"))
@@ -2835,6 +2866,518 @@ def sync_library(ctx: click.Context, paragraphs: str | None, embed: bool, angles
     console.print(table)
 
 
+@main.command("extract")
+@click.option("--paragraphs", "-p", default=None, help="Path to paragraphs MD file")
+@click.option("--model", "-m", default=None, help="Claude model (default: Haiku)")
+@click.option("--force", is_flag=True, default=False, help="Re-extract paragraphs already in claims table")
+@click.option("--dry-run", is_flag=True, default=False, help="Write review files for Streamlit app — insert nothing")
+@click.pass_context
+def extract_library(
+    ctx: click.Context,
+    paragraphs: str | None,
+    model: str | None,
+    force: bool,
+    dry_run: bool,
+) -> None:
+    """Extract claims, evidence, and conclusions from the paragraph library.
+
+    Judge runs on every claim automatically. Judge alignment is checked against the
+    gold standard at the start of every run — warns if accuracy drops below threshold.
+
+    Normal run extracts and inserts directly.
+    Dry-run extracts to review files so you can label in the Streamlit app first,
+    which handles insertion directly without any additional command.
+
+    Example:
+      coverletter extract
+      coverletter extract --dry-run
+      coverletter extract --force
+    """
+    from coverletter.db import open_db, db_path
+    from coverletter.extract import (
+        extract_claims_and_evidence, extract_to_review,
+        _write_review_markdown, _EXTRACT_MODEL,
+    )
+
+    paragraphs = paragraphs or (ctx.obj or {}).get("paragraphs")
+    cfg = load_config(paragraphs)
+    use_model = model or _EXTRACT_MODEL
+
+    if not cfg.api_key:
+        console.print("[red]API key required for extraction.[/red]")
+        return
+
+    path = db_path(cfg.paragraphs_files)
+    lib_dir = cfg.paragraphs_files[0].parent
+
+    if not path.exists():
+        console.print("[red]No database found. Run `coverletter sync` first.[/red]")
+        return
+    conn = open_db(path)
+
+    already = conn.execute(
+        "SELECT COUNT(DISTINCT source_para_hash) FROM claims"
+    ).fetchone()[0]
+    total = conn.execute("SELECT COUNT(*) FROM paragraphs WHERE active = 1").fetchone()[0]
+    pending = total if force else total - already
+
+    if pending == 0:
+        console.print(f"[green]All {total} paragraphs already extracted.[/green] Use --force to re-run.")
+        return
+
+    if dry_run:
+        console.print(
+            f"Extracting from {pending} paragraph(s)  [dim]({already} already done)[/dim]"
+        )
+        console.print("[dim]Judge + alignment check run automatically. Writing review files.[/dim]\n")
+        with Live(Spinner("dots", text="Extracting + judging..."), refresh_per_second=10, console=console):
+            review_data = extract_to_review(conn, cfg.api_key, use_model, force=force)
+        json_path = lib_dir / "extractions_review.json"
+        md_path = lib_dir / "extractions_review.md"
+        json_path.write_text(json.dumps(review_data, indent=2), encoding="utf-8")
+        _write_review_markdown(review_data, md_path)
+        n = review_data["paragraph_count"]
+        n_claims = sum(len(p["claims"]) for p in review_data["paragraphs"])
+        n_rejected = sum(
+            1 for p in review_data["paragraphs"]
+            for c in p["claims"] if c.get("status") == "rejected"
+        )
+        console.print(f"[green]Extracted from {n} paragraph(s)[/green] — {n_claims} claim(s)")
+        if n_rejected:
+            console.print(f"[yellow]Judge pre-rejected {n_rejected} claim(s) — visible in app[/yellow]")
+        console.print(f"\n  [dim]{md_path}[/dim]  ← scan this")
+        console.print(f"  [dim]{json_path}[/dim]")
+        console.print(f"\n  [cyan]uv run streamlit run coverletter/label_evals.py[/cyan]  ← review and insert")
+        if review_data.get("judge_accuracy"):
+            console.print(f"\n  [dim]Judge alignment: {review_data['judge_accuracy']}[/dim]")
+        return
+
+    console.print(
+        f"Extracting from {pending} paragraph(s)  [dim]({already} already done)[/dim]"
+    )
+    console.print("[dim]Judge + alignment check run automatically.[/dim]\n")
+
+    try:
+        with Live(Spinner("dots", text="Extracting + judging..."), refresh_per_second=10, console=console):
+            n, alignment = extract_claims_and_evidence(
+                conn, cfg.api_key, use_model,
+                voyage_api_key=cfg.voyage_api_key or "",
+                force=force,
+            )
+    except RuntimeError as e:
+        console.print(f"\n[yellow]Not ready for full extraction:[/yellow]\n")
+        for line in str(e).splitlines():
+            console.print(f"  {line}")
+        console.print(f"\n[dim]Run `coverletter onboard` to see the full setup checklist.[/dim]")
+        return
+
+    n_claims = conn.execute("SELECT COUNT(*) FROM claims").fetchone()[0]
+    n_contexts = conn.execute("SELECT COUNT(*) FROM claim_contexts").fetchone()[0]
+    n_support = conn.execute("SELECT COUNT(*) FROM support_items").fetchone()[0]
+    n_conclusions = conn.execute("SELECT COUNT(*) FROM conclusions").fetchone()[0]
+    console.print(f"[green]Extracted from {n} paragraph(s)[/green]")
+    console.print(f"  Claims:      {n_claims}")
+    console.print(f"  Contexts:    {n_contexts}")
+    console.print(f"  Support:     {n_support}")
+    console.print(f"  Conclusions: {n_conclusions}")
+    if alignment:
+        acc = alignment["accuracy"]
+        color = "green" if acc >= 0.80 else "yellow" if acc >= 0.65 else "red"
+        console.print(f"\n  Judge alignment: [{color}]{acc:.0%}[/{color}]  "
+                      f"precision {alignment['precision']:.0%}  recall {alignment['recall']:.0%}")
+
+
+@main.command("onboard")
+@click.option("--paragraphs", "-p", default=None, help="Path to paragraphs MD file")
+@click.pass_context
+def onboard_command(ctx: click.Context, paragraphs: str | None) -> None:
+    """Check setup readiness and print the steps to get started.
+
+    Run this first as a new user, or any time you want to see what's missing
+    before running extract, outline, or generate.
+
+    Example:
+      coverletter onboard
+    """
+    from coverletter.db import open_db, db_path
+    from coverletter.extract import _check_gold_standard_readiness, _GS_MIN_APPROVED, _GS_MIN_REJECTED
+
+    paragraphs = paragraphs or (ctx.obj or {}).get("paragraphs")
+    cfg = load_config(paragraphs)
+    path = db_path(cfg.paragraphs_files)
+    lib_dir = cfg.paragraphs_files[0].parent
+    gs_path = Path(__file__).parent / "evals" / "gold_standard_claims.json"
+
+    steps = []
+
+    # Step 1: library synced?
+    db_ok = path.exists()
+    para_count = 0
+    if db_ok:
+        conn = open_db(path)
+        para_count = conn.execute("SELECT COUNT(*) FROM paragraphs WHERE active = 1").fetchone()[0]
+    steps.append((
+        para_count > 0,
+        f"Library synced ({para_count} paragraphs)" if para_count > 0 else "Library not synced",
+        "coverletter sync",
+    ))
+
+    # Step 2: extraction dry-run done?
+    review_file = lib_dir / "extractions_review.json"
+    review_exists = review_file.exists()
+    steps.append((
+        review_exists,
+        "Extraction review file exists" if review_exists else "No extraction review file yet",
+        "coverletter extract --dry-run",
+    ))
+
+    # Step 3: gold standard ready?
+    gs_ready, gs_msg = _check_gold_standard_readiness()
+    if gs_path.exists():
+        gs = json.loads(gs_path.read_text(encoding="utf-8"))
+        gs_approved = sum(1 for e in gs.get("examples", []) if e["label"] == "approved")
+        gs_rejected = sum(1 for e in gs.get("examples", []) if e["label"] == "rejected")
+        gs_label = f"Gold standard: {gs_approved} approved, {gs_rejected} rejected"
+    else:
+        gs_approved, gs_rejected = 0, 0
+        gs_label = "No gold standard yet"
+    steps.append((
+        gs_ready,
+        gs_label,
+        "uv run streamlit run coverletter/label_evals.py  ← label claims, check 'Save as gold standard'",
+    ))
+
+    # Step 4: claims in DB?
+    claims_count = 0
+    if db_ok:
+        conn = open_db(path)
+        claims_count = conn.execute("SELECT COUNT(*) FROM claims").fetchone()[0]
+    steps.append((
+        claims_count > 0,
+        f"Claims extracted ({claims_count} in DB)" if claims_count > 0 else "No claims in DB yet",
+        "coverletter extract",
+    ))
+
+    console.print("\n[bold]Setup checklist[/bold]\n")
+    all_done = True
+    next_step_shown = False
+    for done, label, cmd in steps:
+        icon = "[green]✅[/green]" if done else "[yellow]⬜[/yellow]"
+        console.print(f"  {icon}  {label}")
+        if not done and not next_step_shown:
+            console.print(f"       [cyan]→ {cmd}[/cyan]")
+            next_step_shown = True
+            all_done = False
+
+    if all_done:
+        console.print(f"\n[green]Ready.[/green] Next steps:")
+        console.print(f"  [cyan]coverletter outline <jd_file>[/cyan]  — build claim-driven outline")
+        console.print(f"  [cyan]coverletter outline <jd_file>[/cyan]  — build claim-driven outline (generation from outline coming)")
+    else:
+        console.print(f"\n[dim]Re-run `coverletter onboard` after each step to track progress.[/dim]")
+
+    console.print()
+
+
+@main.command("outline")
+@click.argument("jd_file", type=click.Path(exists=True, path_type=Path))
+@click.option("--paragraphs", "-p", default=None, help="Path to paragraphs MD file")
+@click.option("--model", "-m", default=None, help="Claude model")
+@click.option("--company", "-c", default=None, help="Company name (used in output filename)")
+@click.option("--output", "-o", default=None, help="Output path for outline markdown")
+@click.pass_context
+def build_outline_command(
+    ctx: click.Context,
+    jd_file: Path,
+    paragraphs: str | None,
+    model: str | None,
+    company: str | None,
+    output: str | None,
+) -> None:
+    """Build an editable claim-evidence outline from the library for a given JD.
+
+    Pulls relevant claims from the DB, groups them into argument-driven paragraph
+    blocks, and writes a markdown outline you edit before generating the letter.
+
+    Requires `coverletter extract` to have been run first to populate claims.
+
+    Example:
+      coverletter outline jobs/acme_jd.md --company Acme
+      coverletter outline jobs/acme_jd.md -c Acme -o outlines/acme_outline.md
+    """
+    from coverletter.db import open_db, db_path
+    from coverletter.align import generate_argument
+    from coverletter.outline import build_outline
+    from coverletter.profile import load_profile
+
+    paragraphs = paragraphs or (ctx.obj or {}).get("paragraphs")
+    cfg = load_config(paragraphs)
+    use_model = model or cfg.model
+
+    if not cfg.api_key:
+        console.print("[red]API key required.[/red]")
+        return
+
+    path = db_path(cfg.paragraphs_files)
+    if not path.exists():
+        console.print("[red]No database found. Run `coverletter sync` first.[/red]")
+        return
+
+    conn = open_db(path)
+    n_claims = conn.execute("SELECT COUNT(*) FROM claims").fetchone()[0]
+    if n_claims == 0:
+        console.print("[red]No claims in DB. Run `coverletter extract` first.[/red]")
+        return
+
+    jd = jd_file.read_text(encoding="utf-8")
+    company_name = company or jd_file.stem.replace("_", " ").title()
+
+    # Generate thesis from JD
+    profile = load_profile(cfg.paragraphs_files)
+    console.print(f"Building outline for [cyan]{company_name}[/cyan] — {n_claims} claims in DB\n")
+
+    with Live(Spinner("dots", text="Generating thesis..."), refresh_per_second=10, console=console):
+        thesis = generate_argument(jd, cfg.api_key, use_model, profile)
+
+    console.print(f"[dim]Thesis:[/dim] {thesis}\n")
+
+    with Live(Spinner("dots", text="Assembling outline..."), refresh_per_second=10, console=console):
+        outline_md = build_outline(
+            conn, jd, thesis,
+            api_key=cfg.api_key,
+            model=use_model,
+            company=company_name,
+            voyage_api_key=cfg.voyage_api_key or "",
+        )
+
+    # Write output
+    if output:
+        out_path = Path(output)
+    else:
+        safe = re.sub(r"[^a-z0-9]+", "_", company_name.lower()).strip("_")
+        out_path = jd_file.parent / f"{safe}_outline.md"
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(outline_md, encoding="utf-8")
+
+    # Record application and capture category/claim scores for analytics
+    from coverletter.db import (
+        record_application, record_category_scores, record_claim_scores,
+        ensure_category_embeddings, get_category_embeddings, score_jd_against_categories,
+    )
+    ensure_category_embeddings(conn, cfg.voyage_api_key or "")
+    application_id = record_application(conn, company_name, "", jd)
+
+    if cfg.voyage_api_key:
+        from coverletter.outline import _embed_query
+        jd_emb = _embed_query(jd, cfg.voyage_api_key)
+        if jd_emb:
+            cat_embs = get_category_embeddings(conn)
+            if cat_embs:
+                cat_scores = score_jd_against_categories(jd_emb, cat_embs)
+                record_category_scores(conn, application_id, cat_scores)
+
+    console.print(f"[green]Outline written:[/green] {out_path}")
+    console.print(f"[dim]Application recorded (id={application_id}) — update outcome later with `coverletter outcome`[/dim]")
+    console.print(f"\nEdit the outline, then:")
+    console.print(f"  [cyan]coverletter generate --from-outline {out_path} {jd_file}[/cyan]")
+
+
+@main.command("generate")
+@click.option("--from-outline", "outline_file", default=None, type=click.Path(exists=True, path_type=Path),
+              help="Path to an edited outline markdown file (from coverletter outline)")
+@click.argument("jd_file", type=click.Path(exists=True, path_type=Path))
+@click.option("--paragraphs", "-p", default=None, help="Path to paragraphs file")
+@click.option("--model", "-m", default=None, help="Claude model")
+@click.option("--no-save", is_flag=True, default=False, help="Skip saving to file")
+@click.pass_context
+def generate_from_outline_command(
+    ctx: click.Context,
+    outline_file: Path | None,
+    jd_file: Path,
+    paragraphs: str | None,
+    model: str | None,
+    no_save: bool,
+) -> None:
+    """Generate a cover letter from an edited outline.
+
+    The outline is produced by `coverletter outline`, edited by you, then
+    passed here. Anchor phrases from the outline appear in the letter verbatim.
+    Source paragraphs provide voice and register.
+
+    Example:
+      coverletter generate --from-outline acme_outline.md acme_jd.md
+    """
+    from coverletter.outline import parse_outline, build_outline_user_message
+    from coverletter.prompt import OUTLINE_SYSTEM_PROMPT
+    from coverletter.db import open_db, db_path
+    from rich.panel import Panel
+    from rich.markdown import Markdown
+
+    if not outline_file:
+        console.print("[red]--from-outline is required.[/red]")
+        console.print("[dim]Run `coverletter outline <jd>` first to produce an outline.[/dim]")
+        return
+
+    paragraphs = paragraphs or (ctx.obj or {}).get("paragraphs")
+    cfg = load_config(paragraphs, model_override=model)
+    use_model = model or cfg.model
+    profile = load_profile(cfg.profile_file)
+
+    if not cfg.api_key:
+        console.print("[red]API key required.[/red]")
+        return
+
+    jd = jd_file.read_text(encoding="utf-8")
+
+    # Parse the outline
+    outline = parse_outline(outline_file)
+    company = outline.get("company", "")
+
+    if not outline["paragraphs"]:
+        console.print("[red]No paragraph blocks found in outline. Check the file format.[/red]")
+        return
+
+    console.print(f"\n[bold blue]Generate from Outline[/bold blue]")
+    console.print(f"Outline:  [dim]{outline_file.name}[/dim]")
+    console.print(f"Company:  [bold]{company}[/bold]")
+    console.print(f"Thesis:   [dim]{outline['thesis'][:80]}...[/dim]" if len(outline['thesis']) > 80 else f"Thesis:   [dim]{outline['thesis']}[/dim]")
+    console.print(f"Blocks:   {len(outline['paragraphs'])} paragraph(s)\n")
+
+    # Open DB for source paragraph lookups and analytics capture
+    db = db_path(cfg.paragraphs_files)
+    if not db.exists():
+        console.print("[yellow]Warning: DB not found — source paragraph voice references unavailable.[/yellow]")
+        conn = None
+        application_id = None
+    else:
+        conn = open_db(db)
+        from coverletter.db import record_application, ensure_category_embeddings
+        # Ensure category embeddings are stored (no-op if already computed)
+        ensure_category_embeddings(conn, cfg.voyage_api_key or "")
+        # Record this application
+        application_id = record_application(conn, company, "", jd)
+        console.print(f"[dim]Application recorded (id={application_id})[/dim]")
+
+    # Build profile text for the prompt
+    profile_text = ""
+    if profile and not profile.is_empty:
+        profile_text = profile.as_goals_text()
+
+    # Build user message
+    user_message = build_outline_user_message(
+        outline,
+        conn,
+        jd,
+        company,
+        profile_text=profile_text,
+    )
+
+    if conn:
+        conn.close()
+        conn = None
+
+    # Stream the letter
+    anchor_count = sum(
+        len(claim["anchors"])
+        for para in outline["paragraphs"]
+        for claim in para["claims"]
+    )
+    console.print(f"[dim]{anchor_count} anchor phrase(s) enforced[/dim]\n")
+
+    letter_parts: list[str] = []
+    with Live(Spinner("dots", text="Generating..."), refresh_per_second=10, console=console):
+        for chunk in stream_cover_letter(OUTLINE_SYSTEM_PROMPT, user_message, cfg.api_key, use_model):
+            letter_parts.append(chunk)
+
+    letter_text = "".join(letter_parts)
+    console.print(f"[dim]{running_total()}[/dim]\n")
+    console.print(Panel(Markdown(letter_text), title=f"[bold]{company or 'Letter'}[/bold]",
+                         border_style="cyan", padding=(1, 2)))
+
+    # Build message history for verification and revision
+    messages: list[dict] = [
+        {"role": "user", "content": user_message},
+        {"role": "assistant", "content": letter_text},
+    ]
+
+    # Verification
+    console.print()
+    _run_verification(letter_text, messages, cfg.api_key, use_model)
+
+    # Revision loop
+    while True:
+        console.print()
+        _flush_stdin()
+        feedback = input("Revise (free text), or Enter to finish: ").strip()
+        if not feedback:
+            break
+
+        with Live(Spinner("dots", text="Revising..."), refresh_per_second=10, console=console):
+            parts: list[str] = []
+            for chunk in stream_revision(OUTLINE_SYSTEM_PROMPT, messages, feedback, cfg.api_key, use_model):
+                parts.append(chunk)
+
+        revised = "".join(parts)
+        console.print(Panel(Markdown(revised), title="Revised", border_style="cyan", padding=(1, 2)))
+        console.print(f"[dim]{running_total()}[/dim]")
+
+        _flush_stdin()
+        accept = input("[A]ccept / [R]eject: ").strip().lower()
+        messages.append({"role": "user", "content": feedback})
+        messages.append({"role": "assistant", "content": revised})
+        if accept in ("", "a", "accept", "y", "yes"):
+            letter_text = revised
+
+    from coverletter.costs import session_summary
+    summary = session_summary()
+    if summary:
+        console.print(f"[dim]Session cost: {summary}[/dim]\n")
+
+    if not no_save:
+        _flush_stdin()
+        save_it = input(f"Save to {cfg.output_dir}? [Y/n]: ").strip().lower()
+        if save_it in ("", "y", "yes"):
+            label = company or "letter"
+            saved_md = save_letter(letter_text, cfg.output_dir, label, cfg.author_name)
+            console.print(f"[green]Saved (MD):[/green] {saved_md}")
+            saved_pdf = save_pdf(letter_text, cfg.output_dir, label, cfg.author_name)
+            console.print(f"[green]Saved (PDF):[/green] {saved_pdf}\n")
+
+            # Mark claims that appeared in the letter and update outcome to 'applied'
+            if application_id is not None:
+                _conn = open_db(db_path(cfg.paragraphs_files))
+                from coverletter.db import mark_claims_in_letter, update_application_outcome, infer_paragraph_provenance
+                # Collect claim ids from the outline blocks that were used
+                used_claim_texts = {
+                    claim["text"]
+                    for para in outline["paragraphs"]
+                    for claim in para["claims"]
+                }
+                used_ids = [
+                    row["id"] for row in _conn.execute("SELECT id, text FROM claims").fetchall()
+                    if row["text"] in used_claim_texts
+                ]
+                mark_claims_in_letter(_conn, application_id, used_ids)
+                update_application_outcome(_conn, application_id, "applied")
+                infer_paragraph_provenance(_conn)
+                _conn.close()
+                console.print(f"[dim]Analytics updated — {len(used_ids)} claim(s) marked in letter[/dim]")
+
+            typ_path = cfg.resume_typ_file if hasattr(cfg, "resume_typ_file") else None
+            if typ_path and Path(typ_path).exists():
+                _flush_stdin()
+                make_resume = input("Generate a tailored resume for this application? [y/N]: ").strip().lower()
+                if make_resume in ("y", "yes"):
+                    ctx.invoke(
+                        main.commands["resume"],
+                        paragraphs=cfg.paragraphs_files[0].as_posix() if cfg.paragraphs_files else None,
+                        company=company or None,
+                        base=None,
+                        bullets_file=None,
+                    )
+
+
 @main.command("pdf")
 @click.argument("letter_file", type=click.Path(exists=True, path_type=Path))
 @click.option("--output", "-o", default=None, help="Output directory (default: same as letter)")
@@ -2868,6 +3411,158 @@ def render_pdf(
     output_dir = Path(output) if output else letter_file.parent
     out_path = save_pdf(text, output_dir, company, cfg.author_name)
     console.print(f"[green]PDF saved:[/green] {out_path}")
+
+
+@main.command("outcome")
+@click.argument("company")
+@click.argument("result", type=click.Choice(["response", "interview", "offer", "rejected", "withdrew"]))
+@click.option("--notes", "-n", default=None, help="Optional notes on this outcome")
+@click.option("--paragraphs", "-p", default=None)
+@click.pass_context
+def record_outcome(ctx: click.Context, company: str, result: str, notes: str | None, paragraphs: str | None) -> None:
+    """Update the outcome for a recent application.
+
+    Example:
+      coverletter outcome "New York Times" interview
+      coverletter outcome Acme rejected --notes "no Spark experience"
+    """
+    from coverletter.db import open_db, db_path, update_application_outcome
+    paragraphs = paragraphs or (ctx.obj or {}).get("paragraphs")
+    cfg = load_config(paragraphs)
+    path = db_path(cfg.paragraphs_files)
+    if not path.exists():
+        console.print("[red]No DB found. Run `coverletter sync` first.[/red]")
+        return
+    conn = open_db(path)
+    # Find most recent application for this company
+    row = conn.execute(
+        "SELECT id, company, role, applied_at FROM applications "
+        "WHERE company LIKE ? ORDER BY applied_at DESC LIMIT 1",
+        (f"%{company}%",),
+    ).fetchone()
+    if not row:
+        console.print(f"[red]No application found for '{company}'.[/red]")
+        conn.close()
+        return
+    update_application_outcome(conn, row["id"], result, notes)
+    conn.close()
+    console.print(f"[green]Updated:[/green] {row['company']} ({row['applied_at'][:10]}) → {result}")
+
+
+@main.command("analytics")
+@click.option("--paragraphs", "-p", default=None)
+@click.option("--min-gap-count", default=2, help="Minimum applications a gap must appear in to be shown")
+@click.pass_context
+def show_analytics(ctx: click.Context, paragraphs: str | None, min_gap_count: int) -> None:
+    """Cross-application analysis — coverage patterns, recurring gaps, claim usage, JD similarity."""
+    from coverletter.db import (
+        open_db, db_path, application_summary, recurring_gaps,
+        claim_usage_stats, category_coverage_trend, jd_similarity_matrix,
+    )
+    from rich.table import Table
+
+    paragraphs = paragraphs or (ctx.obj or {}).get("paragraphs")
+    cfg = load_config(paragraphs)
+    path = db_path(cfg.paragraphs_files)
+    if not path.exists():
+        console.print("[red]No DB found.[/red]")
+        return
+    conn = open_db(path)
+
+    # --- Applications summary ---
+    apps = application_summary(conn)
+    if not apps:
+        console.print("[dim]No applications recorded yet. Applications are captured when you run `coverletter outline`.[/dim]")
+        conn.close()
+        return
+
+    console.print(f"\n[bold blue]Application Analytics[/bold blue]  ({len(apps)} application(s))\n")
+
+    t = Table(show_header=True, header_style="bold cyan")
+    t.add_column("Company", style="bold")
+    t.add_column("Date", style="dim")
+    t.add_column("Outcome")
+    t.add_column("Claims used", justify="right")
+    t.add_column("Gaps", justify="right")
+    for a in apps:
+        outcome = a["outcome"] or "—"
+        outcome_style = {
+            "interview": "green", "offer": "bold green",
+            "response": "cyan", "rejected": "red", "withdrew": "dim",
+        }.get(outcome, "dim")
+        t.add_row(
+            a["company"],
+            (a["applied_at"] or "")[:10],
+            f"[{outcome_style}]{outcome}[/{outcome_style}]",
+            str(a["claims_in_letter"] or 0),
+            str(a["gap_count"] or 0),
+        )
+    console.print(t)
+
+    # --- Category coverage ---
+    cat_trend = category_coverage_trend(conn)
+    if cat_trend:
+        console.print("\n[bold]Argument category coverage[/bold]")
+        console.print("[dim]How often each category is matching and reaching letters[/dim]\n")
+        t2 = Table(show_header=True, header_style="bold cyan")
+        t2.add_column("Category")
+        t2.add_column("Avg score", justify="right")
+        t2.add_column("Times in outline", justify="right")
+        t2.add_column("Times in letter", justify="right")
+        for c in cat_trend:
+            t2.add_row(
+                c["argument_category"],
+                f"{c['avg_score']:.2f}" if c["avg_score"] else "—",
+                str(c["times_in_outline"] or 0),
+                str(c["times_in_letter"] or 0),
+            )
+        console.print(t2)
+
+    # --- Recurring gaps ---
+    gaps = recurring_gaps(conn, min_count=min_gap_count)
+    if gaps:
+        console.print(f"\n[bold]Recurring gaps[/bold]  (appearing in ≥{min_gap_count} applications)\n")
+        for g in gaps:
+            console.print(f"  [yellow]• {g['requirement_text']}[/yellow]")
+            console.print(f"    [dim]{g['app_count']} application(s) — {g['companies']}[/dim]")
+            if g["inferred_category"]:
+                console.print(f"    [dim]category: {g['inferred_category']}[/dim]")
+            console.print()
+
+    # --- Claim usage ---
+    usage = claim_usage_stats(conn)
+    never_used = [c for c in usage if (c["times_in_letter"] or 0) == 0 and (c["times_in_outline"] or 0) == 0]
+    high_use = [c for c in usage if (c["times_in_letter"] or 0) >= 2]
+
+    if high_use:
+        console.print("[bold]Claims doing the most work[/bold]\n")
+        for c in high_use[:5]:
+            cats = c["argument_categories"] or ""
+            console.print(f"  [green]•[/green] {c['text'][:90]}")
+            console.print(f"    [dim]in letter {c['times_in_letter']}x — category: {cats}[/dim]")
+        console.print()
+
+    if never_used and len(apps) >= 3:
+        console.print(f"[bold]{len(never_used)} claim(s) never reached a letter[/bold]")
+        console.print("[dim]These may not be relevant to the roles you're targeting, or may not be strong enough to surface.[/dim]\n")
+
+    # --- JD similarity ---
+    sim = jd_similarity_matrix(conn)
+    if sim:
+        high_sim = [p for p in sim if p["similarity"] >= 0.85]
+        low_sim = [p for p in sim if p["similarity"] < 0.60]
+        if high_sim:
+            console.print("[bold]Very similar JDs[/bold]  (≥0.85 similarity)\n")
+            for p in high_sim[:3]:
+                console.print(f"  {p['company_a']} ↔ {p['company_b']}  [dim]{p['similarity']}[/dim]")
+            console.print()
+        if low_sim and len(apps) >= 4:
+            console.print("[bold]Most different JDs[/bold]  (<0.60 similarity)\n")
+            for p in low_sim[-3:]:
+                console.print(f"  {p['company_a']} ↔ {p['company_b']}  [dim]{p['similarity']}[/dim]")
+            console.print()
+
+    conn.close()
 
 
 @main.command("show-library")

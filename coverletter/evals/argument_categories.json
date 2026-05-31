@@ -1,0 +1,56 @@
+{
+  "version": "1",
+  "description": "Argument categories for claim extraction and judging. Each claim is tagged with one or more categories. Adding a new category here automatically updates the extraction and judge prompts — no code change needed.",
+  "categories": [
+    {
+      "name": "accountability",
+      "description": "High-stakes ownership of outcomes — figuring out the work, executing, reporting back, being the person responsible for whether it works. Not just building something but owning whether it was right.",
+      "anchor_signals": ["responsible for", "reported back", "figured out", "ensured", "accountable", "owned the outcome", "had to make it work"]
+    },
+    {
+      "name": "stakeholder_fluency",
+      "description": "Translating across the technical/non-technical boundary — requirements gathering, training non-technical staff, turning vague direction into something buildable. The axis is technical/non-technical boundary crossing.",
+      "anchor_signals": ["trained", "translating", "requirements", "non-technical", "what they needed", "what they were asking for", "could rely on", "could use"]
+    },
+    {
+      "name": "technical_ownership",
+      "description": "Owned specific systems end-to-end — built it, maintained it, accountable for its correctness in production. Named system, named employer, full lifecycle.",
+      "anchor_signals": ["owned", "built", "maintained", "end-to-end", "pipeline", "system", "infrastructure", "production"]
+    },
+    {
+      "name": "autonomy",
+      "description": "Operated independently under high expectations — figured out the path without being told how, did the job without someone defining it first. Solo operation under real accountability.",
+      "anchor_signals": ["on my own", "figured out", "no one told me", "up to me", "given latitude", "without direction", "had to determine"]
+    },
+    {
+      "name": "technical_depth",
+      "description": "Deep knowledge of specific tools, domains, or problem spaces — not just used the tool but understood its failure modes, tradeoffs, and how to get reliable output from it.",
+      "anchor_signals": ["specifically", "edge cases", "tradeoffs", "failure mode", "how it actually works", "under the hood", "at scale"]
+    },
+    {
+      "name": "approach_method",
+      "description": "How this person consistently thinks and works — a cross-cutting professional method provable across employers. Not what was built but how the person approaches any problem of this type.",
+      "anchor_signals": ["I always", "consistently", "across every", "how I think about", "my approach", "the way I work", "before writing a line of code"]
+    },
+    {
+      "name": "disposition",
+      "description": "Who they are as an engineer — professional character, what they bring that is rare or specific to them. Not a skill claim but an assertion about who this person is, provable by pattern across their work.",
+      "anchor_signals": ["rare", "unusual", "what distinguishes", "I am the kind of", "what I bring", "this is uncommon", "most engineers"]
+    },
+    {
+      "name": "motivation",
+      "description": "What draws them to this kind of work and why — specific orientation toward the work, not generic enthusiasm. What kind of problem they find meaningful and what they get from solving it.",
+      "anchor_signals": ["excited by", "drawn to", "find most meaningful", "what matters to me", "why I do this", "the work I want"]
+    },
+    {
+      "name": "communication",
+      "description": "Making things visible, legible, and documented — proactively surfacing constraints, writing documentation others rely on, making complex things clear across any audience. The axis is clarity and proactive information sharing.",
+      "anchor_signals": ["documented", "wrote", "surfaced", "made clear", "communicated", "explained", "before anyone asked", "could see"]
+    },
+    {
+      "name": "leadership",
+      "description": "Directing work, setting priorities, making architectural calls with authority, owning a project or initiative beyond individual contribution. Distinct from autonomy — this is directing others, not just operating independently.",
+      "anchor_signals": ["led", "directed", "set the agenda", "made the call", "owned the project", "responsible for the team", "others depended on"]
+    }
+  ]
+}
