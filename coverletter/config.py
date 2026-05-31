@@ -20,8 +20,8 @@ DEFAULT_TOP_N = 100  # safety cap — libraries under this size pass everything 
 
 @dataclass
 class Config:
-    api_key: str
-    voyage_api_key: str  # empty string = fall back to keyword prefilter
+    api_key: str          # active provider key (Anthropic or Mistral)
+    voyage_api_key: str   # empty string = fall back to keyword prefilter
     paragraphs_files: list[Path]  # ordered by priority — index 0 is layer 0 (highest)
     resume_file: Path
     resume_typ_file: Path       # base resume.typ for Typst compilation
@@ -65,14 +65,39 @@ def load_config(
     model_override: str | None = None,
     resume_override: str | None = None,
 ) -> Config:
-    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
-    if not api_key:
-        raise SystemExit(
-            "\nANTHROPIC_API_KEY is not set.\n"
-            "Add it to a .env file in the project directory:\n\n"
-            "  ANTHROPIC_API_KEY=sk-ant-...\n\n"
-            "Or export it in your shell before running coverletter.\n"
-        )
+    # Resolve model first so we know which provider key to require
+    model = resolve_model(model_override or os.environ.get("COVERLETTER_MODEL", DEFAULT_MODEL))
+
+    from coverletter.provider import parse_model
+    provider_name, _ = parse_model(model)
+
+    if provider_name == "mistral":
+        api_key = os.environ.get("MISTRAL_API_KEY", "")
+        if not api_key:
+            raise SystemExit(
+                "\nMISTRAL_API_KEY is not set.\n"
+                "Add it to a .env file in the project directory:\n\n"
+                "  MISTRAL_API_KEY=...\n\n"
+                "Or export it in your shell before running coverletter.\n"
+            )
+    elif provider_name == "openai":
+        api_key = os.environ.get("OPENAI_API_KEY", "")
+        if not api_key:
+            raise SystemExit(
+                "\nOPENAI_API_KEY is not set.\n"
+                "Add it to a .env file in the project directory:\n\n"
+                "  OPENAI_API_KEY=sk-...\n\n"
+                "Or export it in your shell before running coverletter.\n"
+            )
+    else:
+        api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+        if not api_key:
+            raise SystemExit(
+                "\nANTHROPIC_API_KEY is not set.\n"
+                "Add it to a .env file in the project directory:\n\n"
+                "  ANTHROPIC_API_KEY=sk-ant-...\n\n"
+                "Or export it in your shell before running coverletter.\n"
+            )
 
     voyage_api_key = os.environ.get("VOYAGE_API_KEY", "")
     paragraphs_files = _resolve_paragraphs_files(paragraphs_override)
@@ -85,7 +110,6 @@ def load_config(
         if candidate.exists():
             resume_bullets_file = candidate
     output_dir = Path(output_override) if output_override else Path(os.environ.get("OUTPUT_DIR", str(DEFAULT_OUTPUT_DIR)))
-    model = resolve_model(model_override or os.environ.get("COVERLETTER_MODEL", DEFAULT_MODEL))
     top_n = int(os.environ.get("COVERLETTER_TOP_N", DEFAULT_TOP_N))
     author_name = os.environ.get("AUTHOR_NAME", "")
 

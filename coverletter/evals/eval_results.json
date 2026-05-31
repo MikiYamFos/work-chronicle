@@ -1,0 +1,43 @@
+[
+  {
+    "para_hash": "f13ae3ddabfa75b593d2",
+    "para_text": "I have worked across disparate datasets in multiple domains, each with its own rules,\nstakeholders, and regulatory environment.",
+    "role": "General",
+    "section": "Opening",
+    "claims": [],
+    "claim_count": 0
+  },
+  {
+    "para_hash": "deca170c81050e3f4ede",
+    "para_text": "Across every domain I have worked in -- labor organizing, streaming media, electoral data,\ncivic tech -- the same pattern has appeared: organizations are making decisions with worse\ndata than they could have, and the gap between what they are seeing and what they could see\nis almost always an engineering problem. I know metrics. I know how they break down, where\nthe business rules are hidden in the logic, and what it takes to produce a number someone\ncan act on without second-guessing it. I think in workflows, systems, and interfaces, and\nthe work I find most satisfying is translating a fuzzy stakeholder need into a data model\nthat answers it cleanly, then building the infrastructure that keeps answering it correctly\nfor as long as someone depends on it.",
+    "role": "General",
+    "section": "Through-Line",
+    "claims": [],
+    "claim_count": 0
+  },
+  {
+    "para_hash": "f46696fb75df7f69f756",
+    "para_text": "One thing that distinguishes me as an engineer is that I am both deeply thoughtful about\nnon-technical users and stakeholders, and serious about building solid, well-typed, tested\nPython. I spent many years caring for data on the frontlines of large campaigns, where data\nhad to have precision and certainty, and I did extremely well with what would be considered\nan overwhelming amount of accountability for the numbers I delivered; this intensive experience of\nresponsibility around data integrity is especially rare for data and backend engineers and it has \ninformed my abilities and focus in data governance.",
+    "role": "General",
+    "section": "Through-Line",
+    "claims": [
+      {
+        "text": "I built solid, well-typed, tested Python while staying deeply thoughtful about non-technical users and stakeholders",
+        "contexts": [],
+        "support_count": 1,
+        "detail_count": 2,
+        "judge_label": "approved",
+        "judge_reason": ""
+      },
+      {
+        "text": "I developed a focus on data governance informed by frontline accountability for data integrity",
+        "contexts": [],
+        "support_count": 1,
+        "detail_count": 1,
+        "judge_label": "approved",
+        "judge_reason": ""
+      }
+    ],
+    "claim_count": 2
+  }
+]

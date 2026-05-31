@@ -1,114 +1,52 @@
-# Cover Letter Generator — End-to-End Workflow
+# Cover Letter Generator — Workflow Reference
 
-This document walks through the full system as it currently exists. It covers what works,
-what is partial, and what is not yet built. It does not describe aspirations as if they
-are implemented.
-
----
-
-## Overview
-
-The system has two distinct tracks that were built at different times and connect
-imperfectly. Understanding both is necessary to understand where things stand.
-
-**Track 1 — Paragraph assembly (original flow)**
-The library is a set of markdown paragraphs. The tool selects the most relevant ones for
-a given JD and sends them to Claude with a system prompt. Claude writes a letter grounded
-in that material. This is fully working end to end.
-
-**Track 2 — Claim-evidence extraction (newer flow)**
-Library paragraphs are parsed into atomic claims with hierarchical evidence. Claims are
-stored in a SQLite database. An outline tool groups them into paragraph blocks against a
-JD. Track 2 ends at the outline — there is no `coverletter generate --from-outline`
-command. Track 1 is still what actually generates letters.
+This document describes what the system does and how to use it. It covers what works,
+what is partial, and what is not built. It does not describe aspirations as if implemented.
 
 ---
 
 ## Library files — what lives where
 
-Files fall into two groups: **main flow** (what generation uses and what you write into
-going forward) and **triage** (cleanup work for existing damaged material, not the ongoing path).
-
-### Main flow files — these are what matters
-
 | File | Role |
 |------|------|
-| `library.md` | Your raw paragraphs. Write here first. Source of truth. Never rewritten by the tool. |
-| `library_rebuilt.md` | Paragraphs built through the correct workflow: raw → coaching → your edits → approved. This is where new good material lands. |
+| `library.md` | Your raw paragraphs. Write here first. Never rewritten by the tool. |
+| `library_rebuilt.md` | Paragraphs built through the correct workflow: raw → coaching → your edits → approved. |
 | `library_salvaged.md` | Paragraphs recovered from damaged material via the diff tool. Same status as `library_rebuilt.md` once approved. |
-| `library.db` | SQLite database. Populated by `coverletter sync`. Holds claims, evidence, embeddings. Generation uses this. |
-| `candidate_profile.toml` | Your goals, working style, values, seniority signals. Drives thesis and alignment. |
+| `library.db` | SQLite database. Populated by `coverletter sync`. Holds paragraphs, claims, evidence, embeddings. |
+| `candidate_profile.toml` | Your goals, working style, values, seniority signals. |
 
 **The write path going forward:**
-Raw text → `library.md` → diff tool (draft + coaching + your edits) → `library_rebuilt.md` → `coverletter sync` → extraction → DB
+Raw text → `library.md` → diff tool (draft + coaching + your edits) → `library_rebuilt.md` → `coverletter sync` → `coverletter extract` → DB
 
-### Triage files — cleanup work, not the ongoing path
-
-| File | What it is |
-|------|------------|
-| `library_refined.md` | Historically Claude-damaged refinements. Being corrected via the diff tool. Not written to anymore — it is input to the diff tool, not output. Once fully processed, it retires. |
-| `story_notes.md` | Raw conversation material that hasn't been turned into paragraphs yet. Not used in generation. The diff tool surfaces relevant sections when you're working through related paragraphs. |
-
-### Other files
+### Triage files — cleanup work only, not the ongoing path
 
 | File | What it is |
 |------|------------|
-| `experiences.md` | Supplementary fact sheet per experience — raw notes, angle inventory, Q&A targets. Used by `build` to ask better questions. Not prose, not used directly in generation. |
-| `corrections.md` | Band-aid file — sentence-level fixes applied before generation to catch known problems. A corrections entry means a paragraph should probably be fixed at source. |
-| `resume_bullets.md` | Alternative bullets for the resume command. Separate from the letter flow. |
+| `library_refined.md` | Historically Claude-damaged refinements. Being corrected via the diff tool. Input to the diff tool, not output. Retires once fully processed. |
+| `story_notes.md` | Raw conversation material not yet turned into paragraphs. The diff tool surfaces relevant sections when working through related paragraphs. |
 
 ---
 
-## Phase 1 — Cold start: getting material into the system
+## Building your library
 
-### 1a. `coverletter init`
+This is ongoing work, not a one-time setup. Every time you have new material — a project
+that just shipped, a decision you made, something you want to be able to say — you come
+back here.
 
-Creates the initial config file (`.coverletter.yaml`) and the markdown library files.
-Asks for name, target role, and API keys. Nothing is generated yet; this is scaffolding only.
+### `coverletter init`
 
-### 1b. `coverletter seed`
+First-time setup only. Creates `.coverletter.yaml` and empty library files. Run once.
 
-If you have existing material — a resume, a LinkedIn export, old cover letters — `seed`
-reads it and extracts initial paragraphs into the library via light Q&A.
+### `coverletter profile`
 
-**What's incomplete**: paragraphs from `seed` tend to be thinner than paragraphs built
-through the full `build` loop. They need further Q&A development afterward.
-
-### 1c. `coverletter profile`
-
-Captures the candidate's goals, values, working style, and seniority signals into
+Captures your goals, values, working style, and seniority signals into
 `.coverletter_profile.yaml`. Used in alignment reporting, thesis generation, and blurb
-generation. Not required to generate a letter but substantially improves quality.
+generation. Profiles are versioned — re-running archives the previous one. If your goals
+have shifted, the tool detects the diff and runs a brief Q&A before saving.
 
-Profile sections:
-- `goals` — what the person is looking for in their next role
-- `values` — what they believe as an engineer and teammate
-- `working_style` — how they work (used heavily in `blurb`)
-- `avoid` — roles or contexts that are wrong for them (values inference)
-- `seniority_signals` — what dimensions to flag when evaluating fit for senior roles
+Profile sections: `goals`, `values`, `working_style`, `avoid`, `seniority_signals`.
 
-Profiles are versioned. When you re-run `profile`, the previous one is archived with a
-timestamp. If your goals have changed since the last profile, the tool detects the diff
-and offers a perspective Q&A session to capture the shift before saving.
-
----
-
-## Phase 2 — Building and refining the library
-
-### 2a. `coverletter sync`
-
-Reads all configured `.md` files and upserts paragraphs into the SQLite DB (`library.db`).
-Run this any time you edit the markdown files directly or add new paragraphs.
-
-Sync also:
-- Computes Voyage AI embeddings for paragraphs (`--embed` flag, requires Voyage key)
-- Assigns angle classifications (`--angles` flag)
-
-Paragraphs are tagged with metadata in their markdown front matter: `role`, `section`,
-`angle`, `tone`, `layer`, `via`, etc. The angle taxonomy has 18 categories. Tags drive
-paragraph selection during generation.
-
-### 2b. `coverletter build`
+### `coverletter build`
 
 The core library-building tool. Takes a gap or topic and runs a focused Q&A session that
 draws out specific details about that experience. Drafts a paragraph at the end.
@@ -117,82 +55,69 @@ The build agent searches the library before asking anything, so it does not re-a
 things already documented. One question per turn. Type `e` to open `$EDITOR` for a long
 answer.
 
-**The draft prompt is strictly constrained**: the draft must lift the writer's actual
-sentences, must not invent openers or closers not present in the source, and must not
-paraphrase or substitute polished language for the writer's register.
+**The draft is strictly constrained**: it must lift your actual sentences, must not invent
+openers or closers not present in the source, and must not paraphrase or substitute
+polished language for your register.
 
-### 2c. `coverletter reflect`
+### `coverletter reflect`
 
 Captures perspective material — through-lines, pivots, reframes, and synthesis paragraphs.
-These are not evidence paragraphs — they are the candidate's voice connecting their arc.
+These are not evidence paragraphs — they are your voice connecting your arc.
 
-Q&A is angle-specific: a through-line session asks about what's been consistent across
-the whole arc. A pivot session asks about the specific moment of change and the reason.
+Q&A is angle-specific: a through-line session asks about what has been consistent across
+your whole arc. A pivot session asks about the specific moment of change and the reason.
 
-Perspective paragraphs are tagged `via=reflect` and pinned during prefilter (never filtered
-out by relevance scoring). They are labeled `[NARRATIVE FRAME]` in the library block so
-the generation model knows their role.
+Perspective paragraphs are pinned during prefilter (never filtered out by relevance
+scoring) and labeled `[NARRATIVE FRAME]` in the generation context.
 
-### 2d. `coverletter intake`
+### `coverletter intake`
 
 Two modes: `--mission` (capture why a company's purpose resonates) and `--evidence`
-(capture what was built or owned at a specific role). Both run focused Q&A sessions and
-draft paragraphs.
+(capture what was built or owned at a specific role). Both run focused Q&A and draft
+paragraphs.
 
----
+### `coverletter seed`
 
-## Phase 3 — Library diff tool (Streamlit)
+For bootstrapping from existing material — a resume, LinkedIn export, old cover letters.
+Reads the file and extracts initial paragraphs via light Q&A. Paragraphs from `seed` tend
+to be thinner than paragraphs built through the full `build` loop and need further
+development.
+
+### `coverletter sync`
+
+Reads all configured `.md` files and upserts paragraphs into the SQLite DB. Run this any
+time you edit the markdown files directly or add new paragraphs.
+
+Sync also computes Voyage AI embeddings (`--embed` flag) and angle classifications
+(`--angles` flag).
+
+### Library diff tool (Streamlit)
 
 ```
 uv run streamlit run coverletter/library_diff.py
 ```
 
-The diff tool is for correcting the existing `library_refined.md` paragraphs that were
-damaged by Claude rewriting. It shows three sources side by side and lets you decide what
-goes into `library_salvaged.md`.
+For correcting `library_refined.md` paragraphs that were damaged by Claude rewriting.
+Shows three sources side by side — raw, damaged, and story notes — and lets you decide
+what goes into `library_salvaged.md`.
 
-**Three columns:**
-- **Raw** (`library.md`) — your words, read-only, source of truth
-- **Damaged** (`library_refined.md`) — Claude-corrupted version, read-only reference
-- **Story notes** (`story_notes.md`) — relevant sections surfaced automatically by
-  keyword match, in case there's additional material that didn't make it into either file
+**Two coaching buttons**: "Check what the draft got wrong" (Level 1 — finds where Claude
+corrupted your words) and "Check my edited version" (Level 2 — checks for weak openers,
+AI constructs, passive claims before you save).
 
-**Edit area** below the three columns — your working version. Starts from raw text.
-Edit here. This is what gets saved to `library_salvaged.md`.
-
-**Two coaching buttons** above the action buttons — both are manual triggers, both cost
-API calls, both disabled if no API key is set:
-
-- **"Check what the draft got wrong"** — Level 1 coach. Compares the damaged column
-  against your raw text. Finds where Claude swapped your words for worse ones, added
-  sentences you never wrote, or dropped things you said. Run this before editing to
-  understand what got corrupted.
-
-- **"Check my edited version"** — Level 2 coach. Checks your edited text for specific
-  problems before saving: a weak opener that doesn't do any work, AI writing constructs
-  that lose precision (false contrast, em-dash, banned words), or a main claim sentence
-  in passive voice. Run this after editing, before saving.
-
-**Action buttons:**
-- **Use raw & next** — your raw text is already correct, approve it as-is
-- **Use damaged & next** — the damaged version is actually fine, use it
-- **Save edit & next** — save your edited version
-- **Skip** — come back later
-- **Exclude** — mark reviewed without saving; paragraph won't appear in output
-
-Progress saves automatically to `library_salvaged.reviewed.txt`. Output writes to
-`library_salvaged.md` only when you click **Save to output file** in the sidebar. Raw and
-damaged files are never modified.
+**Action buttons**: Use raw & next / Use damaged & next / Save edit & next / Skip / Exclude.
 
 ---
 
-## Phase 4 — Claim-evidence extraction (Track 2)
+## Extracting claims
 
-This track is built but does not yet connect to letter generation.
+Claims are extracted from your library paragraphs and stored in the DB. This is what
+powers the argument-driven generation flow. You do not need to do this before generating
+with the classic flow, but you do need it before `coverletter outline`.
 
-### 4a. `coverletter extract --dry-run`
+### `coverletter extract --dry-run`
 
-Extracts claims from all pending paragraphs in the DB. For each paragraph, pulls:
+Extracts claims from all pending paragraphs. For each paragraph, pulls:
 - **Claims** — atomic assertions in five types: ownership/decision, approach/method,
   disposition/character, motivation/orientation, personal project
 - **Support items** — evidence that makes claims believable
@@ -203,12 +128,12 @@ The judge runs on every claim concurrently. Paragraphs run concurrently against 
 
 In `--dry-run` mode, nothing writes to the DB. Results go to `extractions_review.json`.
 
-### 4b. `coverletter extract` (without dry-run)
+### `coverletter extract` (without `--dry-run`)
 
-Same extraction and judging, but passing claims insert directly into the DB. Requires a
-gold standard with at least 5 approved and 5 rejected examples.
+Same extraction and judging; passing claims insert directly into the DB. Requires a gold
+standard with at least 5 approved and 5 rejected examples before it will run.
 
-### 4c. Claim review app (Streamlit)
+### Claim review app (Streamlit)
 
 ```
 uv run streamlit run coverletter/label_evals.py
@@ -217,70 +142,149 @@ uv run streamlit run coverletter/label_evals.py
 Review extracted claims after a dry-run. For each claim: source paragraph (editable),
 claim text, judge pass/fail with reason, contexts, and support hierarchy.
 
-**Session resumption**: cursor position saves to the review JSON on every action. Reopen
-the app and it picks up where you left off. Jump to any paragraph via the sidebar selector.
+**Approve** inserts the claim to the DB immediately. **Reject** with a failure category.
+**Gold standard checkbox** marks a claim as a reference example for the judge.
 
-**Paragraph editing**: the source paragraph is an editable text area. Save edits to the
-review JSON — nothing re-extracts yet.
+**Session resumption**: cursor position saves on every action. Reopen and it picks up where
+you left off.
 
-**End-of-session re-extract**: when all claims are labeled, a "Re-extract N edited
-paragraphs" button appears. One click, one API pass. New claims go into a judge queue
-stored in the JSON — visible and actionable but not blocking. Come back to the queue in
-a later session.
+**End-of-session re-extract**: when all claims are labeled, a button appears to re-extract
+paragraphs you edited. New claims go into a judge queue in the JSON.
 
-**Gold standard candidates**: also surfaces at end of session. Both approved claims and
-rejected claims with failure categories appear as candidates, grouped and explained. Only
-add unambiguous cases. The mid-flow gold standard checkbox (in the label area) is for
-clear cases you want to capture as you go.
+**Gold standard candidates**: surfaces at end of session. Both approved and rejected claims
+with clear failure categories appear as candidates. Mark unambiguous cases only.
 
-### 4d. `coverletter outline`
+### `coverletter claims`
 
-Given a JD, generates a thesis, loads claims from the DB, scores by relevance, and groups
-claims into paragraph blocks. Handles all five claim types — ownership claims group into
-argument blocks; disposition, motivation, and approach claims get their own standalone
-blocks and are not forced into evidence groups or marked unused.
+Zero-cost view of claim coverage across the library. Shows claim count, anchor count, and
+argument categories per paragraph. Run this to see which paragraphs still need extraction.
 
-**Track 2 ends here.** No `coverletter generate --from-outline` exists. The handoff from
-structured claims to generation is unresolved — see the design questions section below.
+```
+coverletter claims
+```
+
+### Judge calibration
+
+```
+uv run python coverletter/evals/align_judge.py
+```
+
+Checks judge accuracy against your gold standard. Reports accuracy, precision, and recall.
+Shows all disagreements with the judge's reasoning.
+
+If alignment is below target, the script offers to draft a targeted patch to `_JUDGE_SYSTEM`
+in `extract.py` via a Haiku call. Review the draft before applying it — the script does
+not edit the file automatically.
+
+**Alignment targets**: recall ≥ 89% (catching bad claims), accuracy ≥ 80%.
+
+```
+uv run python coverletter/evals/run_evals.py
+```
+
+Measures overall pipeline quality as the percentage of claims the judge approves across
+the full library. Use this to compare the effect of prompt changes.
 
 ---
 
-## Phase 5 — Generating a letter (Track 1)
+## Writing a letter
 
-### 5a. `coverletter generate`
+Two paths. Both are fully working. Use the argument-driven path when you have a populated
+claim library. Use the classic path for speed, or when the claim library is thin.
 
-Takes a JD (file, clipboard, or typed), selects paragraphs from the library, streams a letter.
+### Argument-driven path
 
-**Paragraph selection**: Voyage embeddings if available, BM25 keyword fallback. Perspective
-paragraphs are always included. Layer-0 paragraphs supersede layer-1 for the same section.
+#### Step 1 — `coverletter outline`
 
-**After the letter streams**:
+```
+coverletter outline jd.txt --company "Acme Corp"
+```
+
+Generates a thesis from the JD, then pauses and lets you edit the thesis before grouping
+runs — this is where you steer the argument. Then retrieves claims from the DB using
+two-stage retrieval: first scores argument categories against the JD, then ranks claims
+within relevant categories by embedding similarity. Groups them into argument-driven
+paragraph blocks and writes an editable markdown outline.
+
+After writing, prints any JD requirements that no claim covers (gaps). These are also
+recorded in the analytics DB for cross-application tracking.
+
+**Edit the outline before generating.** The outline is the steering point — reorder blocks,
+drop weak claims, adjust the thesis framing, add notes to claims.
+
+#### Step 2 — Edit the outline
+
+Open the generated `acme_corp_outline.md`. The format:
+
+```markdown
+## paragraph label
+*Addresses: JD requirement*
+
+- **Claim:** At Acme, I owned the VideoViewEvents pipeline [Acme]
+  - support item text
+    - sub-detail text
+
+*Conclusion: insight text*
+```
+
+You can reorder paragraph blocks, remove claims, add notes below a claim, and change the
+`Addresses:` line to be more specific. Do not change the `**Claim:**` prefix or anchor
+phrase formatting — those are parsed.
+
+#### Step 3 — `coverletter generate --from-outline`
+
+```
+coverletter generate --from-outline acme_corp_outline.md jd.txt
+```
+
+Reads the edited outline, reconstructs claim/support/conclusion structure, and generates
+a letter grounded in that structure. Anchor phrases from the outline appear in the letter
+verbatim. Construction rules (first-sentence anchoring, banned words, em-dashes) are
+applied here.
+
+After generation:
+1. Verification — LLM pass for invented facts and banned constructs
+2. Alignment report — which outline blocks made it into the letter (by anchor phrase match)
+   vs. were dropped
+3. Revision loop — free text feedback to revise; accept or reject each revision
+
+After saving, marks which claims reached the letter in the analytics DB and updates the
+application outcome to "applied".
+
+### Classic path
+
+#### `coverletter generate`
+
+Takes a JD (file, clipboard, or typed), selects paragraphs from the library using Voyage
+embeddings (BM25 keyword fallback), and streams a letter. Perspective paragraphs are always
+included. Layer-0 paragraphs supersede layer-1 for the same section.
+
+After the letter streams:
 1. Verification — LLM pass for invented facts and banned constructs; deterministic verbatim check
 2. Alignment report — JD requirements covered, gaps, seniority signal gaps, goal alignment,
-   BM25 library coverage detection
+   library coverage detection
 3. Thesis — one sentence stating what the letter argues
 
 **Revision loop**: enter a gap number to Q&A and add a paragraph; `r` + feedback to revise
 inline; `g` for the full gap loop; `s` to save; `q` to quit.
 
 After saving, if a `.typ` resume file is configured, the tool offers to generate a tailored
-resume for the same application.
+resume.
 
-**What's incomplete**: thesis is generated after the letter, not used to focus it. Alignment
-report gaps are addressed manually.
+### After generating
 
-### 5b. `coverletter pdf`
+#### `coverletter pdf`
 
 Converts a saved letter markdown to PDF using Typst. Requires Typst to be installed.
 
-### 5c. `coverletter resume`
+#### `coverletter resume`
 
 Generates a tailored resume by selecting bullet options per company. Also offered
 automatically after `coverletter generate` saves a letter.
 
 ---
 
-## Phase 6 — Short-form applications
+## Short-form applications
 
 ### `coverletter blurb`
 
@@ -291,41 +295,47 @@ Two-input flow: JD first (paragraph selection), then the specific application pr
 The model uses `working_style` + `values` as the argument spine, library paragraphs as
 evidence.
 
-If `working_style` + `values` + `avoid` entries total fewer than 2, the tool warns before
-generation and offers to bail. The model will surface `BIOGRAPHICAL_GAPS` if material is
-thin — the tool catches this and offers to add profile entries on the spot.
-
 When the application prompt contains a character or word limit, the model compresses the
 argument rather than the voice — evidence sentences get cut before biographical language.
 
 Revision loop retains rejected drafts in conversation history.
 
-**What's incomplete**: behavioral and approach prompt types are less tested than
-biographical.
+---
+
+## Analytics and tracking
+
+These commands are useful after you have run several applications.
+
+### `coverletter outcome <company> <result>`
+
+Record the result of an application. Fuzzy-matches against recorded applications by
+company name.
+
+```
+coverletter outcome "Acme Corp" interview
+coverletter outcome "Acme Corp" rejected
+```
+
+Results: `interview`, `rejected`, `offer`, `ghosted`, or any string.
+
+### `coverletter analytics`
+
+Cross-application analysis: category coverage rates, recurring JD gaps (grouped by
+requirement text across companies), highest-use claims, never-used claims (after 3+
+applications), JD similarity between past applications.
+
+Run this after several applications to see what your letter is consistently missing and
+which claims are doing the most work.
 
 ---
 
-## What is not built and needs design before building
-
-**Letter generation from the claim-evidence DB** (Track 2 completion). The generation
-prompt structure when the input is structured claims rather than prose paragraphs is
-unresolved. Key questions: do claims replace paragraphs in the library block or supplement
-them? What is the prompt structure for claim types 3-5 (disposition, motivation,
-orientation) that don't map to argument paragraphs?
+## What is not built
 
 **Coaching pass — Level 3 narrative awareness**. The current letter-level coaching pass
 (`coach.py:analyze_letter`) evaluates sentences in isolation. It does not know what kind
-of paragraph it is reading or what the letter as a whole is arguing. A first pass that
-identifies what each paragraph is doing before evaluating sentences against that
-understanding is needed.
+of paragraph it is reading or what the letter as a whole is arguing.
 
-**Thesis as input to generation, not output**. Currently the thesis is generated from the
-finished letter. Using the argument target to shape paragraph selection and assembly
-ordering has not been done.
-
-**Multi-provider support**. The tool is Anthropic-only. See ROADMAP.md for the full design.
-
-**Gold standard → judge feedback loop**. Adding examples to the gold standard has no
-automatic effect on the judge prompt (`_JUDGE_SYSTEM` in `extract.py`). The loop between
-"gold standard grows" → "judge improves" requires a human to read `align_judge.py` output
-and manually update the prompt.
+**`embed_prefilter` reads from DB**. The classic generate flow re-embeds all paragraphs on
+every call even though embeddings are stored in the DB. Fixing it requires opening the DB
+at the `embed_prefilter` call site, which currently has no DB connection at that point.
+Low priority — the argument-driven path does not have this problem.

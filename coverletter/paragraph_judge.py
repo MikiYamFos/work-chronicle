@@ -86,24 +86,13 @@ def judge_paragraph(
 ) -> tuple[bool, str, list[str]]:
     """LLM source-fidelity judge. Returns (passes, reason, offending_phrases)."""
     import json
-    import anthropic
-    from coverletter.costs import record
+    from coverletter.provider import get_provider
 
-    client = anthropic.Anthropic(api_key=api_key)
     prompt = (
         f"SOURCE MATERIAL:\n{source[:2000]}\n\n"
         f"GENERATED PARAGRAPH:\n{paragraph}"
     )
-
-    response = client.messages.create(
-        model=_JUDGE_MODEL,
-        max_tokens=256,
-        system=_JUDGE_SYSTEM,
-        messages=[{"role": "user", "content": prompt}],
-    )
-    record(_JUDGE_MODEL, response.usage.input_tokens, response.usage.output_tokens)
-
-    raw = response.content[0].text.strip()
+    raw = get_provider(_JUDGE_MODEL, api_key).complete(_JUDGE_SYSTEM, prompt, max_tokens=256)
     raw = re.sub(r"^```(?:json)?\s*", "", raw)
     raw = re.sub(r"\s*```$", "", raw)
     try:
@@ -151,10 +140,8 @@ def rewrite_paragraph(
 ) -> str | None:
     """Ask the model to rewrite a paragraph that failed validation.
     Returns the rewritten text, or None if it can't be extracted."""
-    import anthropic
-    from coverletter.costs import record, supports_temperature
+    from coverletter.provider import get_provider
 
-    client = anthropic.Anthropic(api_key=api_key)
     phrases_str = "\n".join(f"- {p}" for p in offending_phrases) if offending_phrases else "(see reason)"
     prompt = (
         f"SOURCE MATERIAL:\n{source[:2000]}\n\n"
@@ -163,20 +150,7 @@ def rewrite_paragraph(
         f"OFFENDING PHRASES TO REMOVE:\n{phrases_str}\n\n"
         f"Rewrite the paragraph using only the writer's own language from the source."
     )
-
-    kwargs: dict = dict(
-        model=model,
-        max_tokens=1024,
-        system=_REWRITE_SYSTEM,
-        messages=[{"role": "user", "content": prompt}],
-    )
-    if supports_temperature(model):
-        kwargs["temperature"] = 0.2
-
-    response = client.messages.create(**kwargs)
-    record(model, response.usage.input_tokens, response.usage.output_tokens)
-
-    text = response.content[0].text.strip()
+    text = get_provider(model, api_key).complete(_REWRITE_SYSTEM, prompt, max_tokens=1024, temperature=0.2)
     return text if text else None
 
 

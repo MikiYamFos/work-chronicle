@@ -166,8 +166,7 @@ def suggest_from_library(
     model: str,
 ) -> dict[str, list[str]]:
     """Use the LLM to suggest profile sections from the paragraph library."""
-    import anthropic
-    from coverletter.costs import record
+    from coverletter.provider import get_provider
 
     library_text = "\n\n".join(
         f"[{p.role} / {p.section}]\n{p.text}" for p in paragraphs
@@ -205,23 +204,9 @@ PARAGRAPH LIBRARY:
 {library_text}
 """
 
-    client = anthropic.Anthropic(api_key=api_key)
-    response = client.messages.create(
-        model=model,
-        max_tokens=2048,
-        messages=[{"role": "user", "content": prompt}],
-    )
-    record(model, response.usage.input_tokens, response.usage.output_tokens)
-
-    if response.stop_reason == "max_tokens":
-        raise RuntimeError(
-            f"Model hit max_tokens limit ({response.usage.output_tokens} tokens). "
-            "Response was truncated — JSON will be invalid. Increase max_tokens."
-        )
-
     import json
     import re
-    raw = response.content[0].text.strip()
+    raw = get_provider(model, api_key).complete("", prompt, max_tokens=2048)
 
     # Strategy 1: find the outermost JSON object by brace matching
     # This handles preamble text, trailing commentary, and any fence style

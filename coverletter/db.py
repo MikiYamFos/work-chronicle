@@ -1115,16 +1115,16 @@ def stats(conn: sqlite3.Connection) -> dict:
 # Category embeddings — precomputed, stored in DB, recomputed only on change
 # ---------------------------------------------------------------------------
 
-def ensure_category_embeddings(conn: sqlite3.Connection, voyage_api_key: str) -> int:
+def ensure_category_embeddings(
+    conn: sqlite3.Connection,
+    voyage_api_key: str,
+    provider: "object | None" = None,
+) -> int:
     """Compute and store category description embeddings if missing or stale.
 
-    Compares stored category names against current categories file. Recomputes
-    only categories that are new or whose description has changed.
+    Tries provider-native embeddings first, then Voyage, then skips.
     Returns number of categories (re)computed.
     """
-    if not voyage_api_key:
-        return 0
-
     categories = load_argument_categories()
     if not categories:
         return 0
@@ -1138,22 +1138,37 @@ def ensure_category_embeddings(conn: sqlite3.Connection, voyage_api_key: str) ->
     if not to_compute:
         return 0
 
-    try:
-        import voyageai  # type: ignore
-        client = voyageai.Client(api_key=voyage_api_key)
-        descriptions = [c["description"] for c in to_compute]
-        result = client.embed(descriptions, model="voyage-3-lite", input_type="document")
-        for cat, vec in zip(to_compute, result.embeddings):
-            blob = json.dumps(vec).encode()
-            conn.execute(
-                "INSERT OR REPLACE INTO category_embeddings (category_name, embedding, computed_at) "
-                "VALUES (?, ?, datetime('now'))",
-                (cat["name"], blob),
-            )
-        conn.commit()
-        return len(to_compute)
-    except Exception:
+    descriptions = [c["description"] for c in to_compute]
+    vectors: list[list[float]] | None = None
+
+    # Try provider-native embeddings first
+    if provider is not None:
+        from coverletter.provider import Provider as ProviderBase
+        if isinstance(provider, ProviderBase) and provider.supports_embed():
+            vectors = provider.embed(descriptions, input_type="document")
+
+    # Fall back to Voyage
+    if vectors is None and voyage_api_key:
+        try:
+            import voyageai  # type: ignore
+            client = voyageai.Client(api_key=voyage_api_key)
+            result = client.embed(descriptions, model="voyage-3-lite", input_type="document")
+            vectors = result.embeddings
+        except Exception:
+            pass
+
+    if not vectors:
         return 0
+
+    for cat, vec in zip(to_compute, vectors):
+        blob = json.dumps(vec).encode()
+        conn.execute(
+            "INSERT OR REPLACE INTO category_embeddings (category_name, embedding, computed_at) "
+            "VALUES (?, ?, datetime('now'))",
+            (cat["name"], blob),
+        )
+    conn.commit()
+    return len(to_compute)
 
 
 def get_category_embeddings(conn: sqlite3.Connection) -> dict[str, list[float]]:

@@ -13,6 +13,8 @@ dependencies = [
     "rank-bm25>=0.2.2",
     "odfpy>=1.4.1",
     "streamlit>=1.32.0",
+    "mistralai>=2.4.8",
+    "openai>=2.38.0",
 ]
 
 [project.scripts]

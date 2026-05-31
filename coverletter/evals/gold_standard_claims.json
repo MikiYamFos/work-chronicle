@@ -1,0 +1,245 @@
+{
+  "description": "Gold standard claim examples built from explicit user feedback. Used to validate the judge — run coverletter extract --validate-judge to check judge accuracy against these.",
+  "version": "1",
+  "examples": [
+
+    {
+      "id": "gs_001",
+      "label": "approved",
+      "claim_text": "At BritBox, I owned the VideoViewEvents pipeline end-to-end",
+      "contexts": [{"type": "employer", "name": "BritBox"}],
+      "source_note": "Ownership claim at the right level — specific employer, specific system, ownership verb",
+      "failure_categories": []
+    },
+
+    {
+      "id": "gs_002",
+      "label": "approved",
+      "claim_text": "At BritBox, I determined what 'watch duration' meant at the subscriber grain before any engineering began",
+      "contexts": [{"type": "employer", "name": "BritBox"}],
+      "source_note": "Decision-level claim — this is requirements definition work, matchable to 'data modeling' and 'requirements translation' JD requirements",
+      "failure_categories": []
+    },
+
+    {
+      "id": "gs_003",
+      "label": "approved",
+      "claim_text": "At Universe, I built the dbt environment from scratch",
+      "contexts": [{"type": "employer", "name": "Universe"}],
+      "source_note": "Ownership + build claim, employer-specific, right abstraction level",
+      "failure_categories": []
+    },
+
+    {
+      "id": "gs_004",
+      "label": "approved",
+      "claim_text": "At BritBox, I had full admin access in AWS and owned the full infrastructure setup — EC2, IAM roles, Glue jobs, and DynamoDB metadata tracking",
+      "contexts": [{"type": "employer", "name": "BritBox"}],
+      "source_note": "Scope/ownership claim across cloud services — right level, specific employer",
+      "failure_categories": []
+    },
+
+    {
+      "id": "gs_005",
+      "label": "approved",
+      "claim_text": "At UNITE HERE, I built data catalogs to track distinct definitions across locals on national campaigns",
+      "contexts": [{"type": "employer", "name": "UNITE HERE"}],
+      "source_note": "Ownership claim, employer-specific, specific deliverable",
+      "failure_categories": []
+    },
+
+    {
+      "id": "gs_006",
+      "label": "approved",
+      "claim_text": "For my personal project CBA Clock, I built an 8-task Airflow DAG that takes a collective bargaining agreement from raw PDF to structured, queryable data",
+      "contexts": [{"type": "project", "name": "CBA Clock"}],
+      "source_note": "Personal project claim — context type is 'project' not 'employer'. CBA Clock is NOT an employer. The phrase 'For my personal project' must appear or the context must be 'project'.",
+      "failure_categories": []
+    },
+
+    {
+      "id": "gs_007",
+      "label": "approved",
+      "claim_text": "At BritBox, I was the primary engineer on the Amazon platform viewership pipeline covering millions of users",
+      "contexts": [{"type": "employer", "name": "BritBox"}],
+      "source_note": "Ownership claim — Amazon here is a data source/partner, not the employer. BritBox is the employer. Claim correctly grounded.",
+      "failure_categories": []
+    },
+
+    {
+      "id": "gs_008",
+      "label": "approved",
+      "claim_text": "At Universe, I introduced Great Expectations alongside dbt so documentation, definitions, and lineage were connected in one place",
+      "contexts": [{"type": "employer", "name": "Universe"}],
+      "source_note": "Decision + build claim — specific tooling decision with a stated purpose",
+      "failure_categories": []
+    },
+
+    {
+      "id": "gs_009",
+      "label": "rejected",
+      "claim_text": "I have experience with event-based data",
+      "contexts": [],
+      "source_note": "Too generic — this is a capability statement, not a claim. Cannot be matched to a specific JD requirement. Not grounded in any employer.",
+      "failure_categories": ["too_generic", "capability_statement"]
+    },
+
+    {
+      "id": "gs_010",
+      "label": "rejected",
+      "claim_text": "I work comfortably in both Airflow and dbt",
+      "contexts": [],
+      "source_note": "Capability statement — says nothing about what was built or owned. 'Work comfortably in X' is not a claim.",
+      "failure_categories": ["capability_statement", "too_generic"]
+    },
+
+    {
+      "id": "gs_011",
+      "label": "rejected",
+      "claim_text": "At CBA Clock, I built an 8-task Airflow DAG",
+      "contexts": [{"type": "employer", "name": "CBA Clock"}],
+      "source_note": "Wrong context type — CBA Clock is a personal project, not an employer. The context must be 'project', not 'employer'. This is a hallucinated employer attribution.",
+      "failure_categories": ["wrong_context_type"]
+    },
+
+    {
+      "id": "gs_012",
+      "label": "rejected",
+      "claim_text": "I have been able to figure myself out and get up to speed in all four cloud environments",
+      "contexts": [],
+      "source_note": "Not a claim about what was built or owned — it's a self-assessment about adaptability. Cannot be matched to a JD requirement. The real claims are the specific employer-grounded ownership statements ('At X, I owned Y in cloud Z') — this sentence is a summary of those claims, not a claim itself.",
+      "failure_categories": ["capability_statement", "too_generic"]
+    },
+
+    {
+      "id": "gs_013",
+      "label": "rejected",
+      "claim_text": "I have never needed a ramp period when a new cloud environment was the requirement",
+      "contexts": [],
+      "source_note": "Too generic and framed as a negative ('never needed'). Not a claim about what was built. The user explicitly corrected this framing during a session.",
+      "failure_categories": ["too_generic", "negative_framing", "capability_statement"]
+    },
+
+    {
+      "id": "gs_014",
+      "label": "rejected",
+      "claim_text": "The VideoViewEvents pipeline processed play, pause, seek, heartbeat, error, and session-end signals",
+      "contexts": [{"type": "employer", "name": "BritBox"}],
+      "source_note": "This is a SUPPORT ITEM, not a claim. It describes what the pipeline did — it belongs as evidence under the 'I owned the VideoViewEvents pipeline' claim, not as a standalone claim.",
+      "failure_categories": ["should_be_support_item"]
+    },
+
+    {
+      "id": "gs_015",
+      "label": "rejected",
+      "claim_text": "Cross-midnight plays required explicit handling in the pipeline logic",
+      "contexts": [{"type": "employer", "name": "BritBox"}],
+      "source_note": "This is a SUB-DETAIL, not a claim. It's a specific technical constraint that belongs nested under a support item about the VideoViewEvents pipeline.",
+      "failure_categories": ["should_be_sub_detail"]
+    },
+
+    {
+      "id": "gs_016",
+      "label": "rejected",
+      "claim_text": "This demonstrates strong data engineering skills across multiple cloud platforms",
+      "contexts": [],
+      "source_note": "Summary conclusion masquerading as a claim. 'Demonstrates' is a dead giveaway — it's summarizing, not asserting.",
+      "failure_categories": ["summary_not_claim", "resume_speak"]
+    },
+
+    {
+      "id": "gs_017",
+      "label": "approved",
+      "claim_text": "At BritBox, I worked with the GA4 BigQuery export and was the person analysts came to for queries on that data",
+      "contexts": [{"type": "employer", "name": "BritBox"}],
+      "source_note": "Ownership claim — not primary owner but a named role ('the person analysts came to'). Employer-specific, specific dataset.",
+      "failure_categories": []
+    },
+
+    {
+      "id": "gs_018",
+      "label": "approved",
+      "claim_text": "At UNITE HERE, I built and owned custom BI reports and dashboards in SSRS, Power BI, and Sisense delivered across at least 40 locals throughout the international union",
+      "contexts": [{"type": "employer", "name": "UNITE HERE"}],
+      "source_note": "Ownership + scale claim — specific tools, specific scope, employer-grounded",
+      "failure_categories": []
+    },
+
+    {
+      "id": "gs_019",
+      "label": "rejected",
+      "claim_text": "I built a layered and branched architecture for handling voterfile data at Universe",
+      "contexts": [{"type": "employer", "name": "Universe"}],
+      "source_note": "Borderline — this is close to a support item. 'Layered and branched architecture' is the implementation detail of the dbt environment build. Should be support under 'I built the dbt environment from scratch at Universe'.",
+      "failure_categories": ["should_be_support_item"],
+      "note": "This one is close — if the paragraph is specifically about architecture decisions it might be a valid claim. Context-dependent."
+    },
+
+    {
+      "id": "gs_020",
+      "label": "approved",
+      "claim_text": "At BritBox, I built an observation and discovery suite using DynamoDB tables feeding into DuckDB to track data quality and catch late or incomplete Amazon data",
+      "contexts": [{"type": "employer", "name": "BritBox"}],
+      "source_note": "Ownership + build claim — specific tool combination, specific purpose, employer-grounded. The GA4 event_params detail would be a sub-detail under a support item here, not part of the claim itself.",
+      "failure_categories": []
+    },
+
+    {
+      "id": "gs_021",
+      "label": "approved",
+      "claim_text": "I am both deeply thoughtful about non-technical users and stakeholders, and serious about building solid, well-typed, tested Python",
+      "contexts": [],
+      "source_note": "APPROACH/METHOD claim — describes a specific and unusual combination (technical rigor + stakeholder orientation). Provable with specific systems built and specific stakeholder interactions from the library. Not a capability statement — it describes a WAY of working.",
+      "failure_categories": []
+    },
+
+    {
+      "id": "gs_022",
+      "label": "approved",
+      "claim_text": "I spent years caring for data where precision and certainty were non-negotiable, and that intensive accountability is rare for data engineers — it shaped how I think about governance",
+      "contexts": [],
+      "source_note": "DISPOSITION/CHARACTER claim — specific assertion about professional standing grounded in real work history. Provable by showing the specific campaign data work and the accountability scope. Not just 'I care about data quality' — it asserts rarity and a specific formative experience.",
+      "failure_categories": []
+    },
+
+    {
+      "id": "gs_023",
+      "label": "approved",
+      "claim_text": "I am most excited by work where careful engineering makes organizations more accountable, resilient, and effective — especially where better tooling helps good people do their work with more clarity",
+      "contexts": [],
+      "source_note": "MOTIVATION/ORIENTATION claim — specific about what KIND of work and what it produces. Not just 'passionate about data' — it names a specific outcome (organizations more accountable) and a specific mechanism (careful engineering + tooling). This is a real orientation, provable by the kinds of roles chosen.",
+      "failure_categories": []
+    },
+
+    {
+      "id": "gs_024",
+      "label": "approved",
+      "claim_text": "Working backwards from what someone needs to understand into the data model that produces it is the hardest part of this work — and the part most often skipped",
+      "contexts": [],
+      "source_note": "APPROACH/METHOD claim — describes a specific professional method and a strong opinion about the work. Provable across employers (the BritBox watch-duration definition work, the UNITE HERE requirements translation) — this is not just said, it's demonstrated.",
+      "failure_categories": []
+    },
+
+    {
+      "id": "gs_025",
+      "label": "rejected",
+      "claim_text": "I care about data quality",
+      "contexts": [],
+      "source_note": "Pure self-description with no specific assertion. Not provable — it's just said. The valid version names a specific formative experience and claims a specific professional standing (like gs_022). 'I care about X' is never a valid claim.",
+      "failure_categories": ["too_generic", "capability_statement"]
+    },
+
+    {
+      "id": "gs_026",
+      "label": "rejected",
+      "claim_text": "I am passionate about data engineering",
+      "contexts": [],
+      "source_note": "Generic motivation statement with no specific orientation. Not provable. The valid version names what KIND of work matters and why (like gs_023). 'Passionate about X' without specifics is not a claim.",
+      "failure_categories": ["too_generic", "capability_statement"]
+    }
+
+  ],
+
+  "judge_validation_results": null,
+  "notes": "Add new examples as patterns emerge from labeling sessions. Failure categories: too_generic, capability_statement, wrong_context_type, should_be_support_item, should_be_sub_detail, summary_not_claim, resume_speak, negative_framing, hallucinated. Claim types: (1) employer-specific ownership, (2) cross-employer thesis, (3) approach/method, (4) disposition/character, (5) motivation/orientation, (6) personal project."
+}

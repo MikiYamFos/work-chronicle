@@ -484,6 +484,90 @@ def _extract_draft(text: str) -> tuple[str | None, str]:
 _MAX_QUESTION_RETRIES = 2
 
 
+def _qa_turn_no_tools(
+    history: list[dict],
+    api_key: str,
+    model: str,
+    all_paragraphs: list[Paragraph] | None = None,
+    voyage_api_key: str = "",
+    system: str = BUILD_SYSTEM,
+) -> tuple[str | None, str]:
+    """qa_turn for providers that don't support tool calling.
+
+    Pre-runs library search and injects results into the system prompt, then
+    runs a simple multi-turn loop with no tool machinery.
+    """
+    from coverletter.provider import get_provider
+    from coverletter.question_judge import validate_question, validate_draft
+
+    provider = get_provider(model, api_key)
+
+    # Pre-search using the first user message as the query
+    search_query = next(
+        (m["content"] for m in history if m["role"] == "user" and isinstance(m["content"], str)),
+        "",
+    )
+    library_results = ""
+    if search_query and all_paragraphs:
+        library_results = _search_library(search_query, all_paragraphs, voyage_api_key=voyage_api_key)
+
+    augmented_system = system
+    if library_results:
+        augmented_system = (
+            system
+            + f"\n\n━━━ LIBRARY SEARCH RESULTS (pre-searched for this topic) ━━━\n{library_results}\n"
+            + "Do NOT ask about anything already documented above. "
+            + "Ask ONLY about what is missing from the library results.\n"
+        )
+
+    messages = list(history)
+    question_retries = 0
+    judge_context = search_query[:300]
+
+    while True:
+        # Build single user content string from the last user message
+        last_user = next(
+            (m["content"] for m in reversed(messages) if m["role"] == "user" and isinstance(m["content"], str)),
+            "",
+        )
+        text = provider.complete(augmented_system, last_user, max_tokens=4096, temperature=0.4)
+        draft, question = _extract_draft(text)
+
+        if draft:
+            conversation_turns = "\n".join(
+                m["content"] for m in messages
+                if m["role"] == "user" and isinstance(m["content"], str)
+            )
+            passes, reason = validate_draft(draft, conversation_turns, api_key)
+            if not passes and question_retries < _MAX_QUESTION_RETRIES:
+                question_retries += 1
+                messages.append({"role": "assistant", "content": text})
+                messages.append({"role": "user", "content": (
+                    f"[DRAFT JUDGE: draft rejected — {reason}. "
+                    f"Rewrite using only what was said in this conversation. "
+                    f"Write DRAFT on its own line, then the paragraph.]"
+                )})
+                continue
+            return draft, ""
+
+        if question and question_retries < _MAX_QUESTION_RETRIES:
+            passes, reason = validate_question(
+                question, judge_context, api_key,
+                library_results=library_results,
+            )
+            if not passes:
+                question_retries += 1
+                messages.append({"role": "assistant", "content": question})
+                messages.append({"role": "user", "content": (
+                    f"[JUDGE: question rejected — {reason}. "
+                    f"Ask a different question about a specific decision, "
+                    f"constraint, consequence, or who depended on the work.]"
+                )})
+                continue
+
+        return None, question or ""
+
+
 def _call_model(client, model: str, messages: list[dict], system: str = BUILD_SYSTEM) -> object:
     """Single model call — separated so the retry loop can call it cleanly."""
     kwargs: dict = dict(
@@ -518,6 +602,11 @@ def qa_turn(
     and regenerated up to _MAX_QUESTION_RETRIES times.
     Returns (draft_or_none, question_or_signal)."""
     from coverletter.question_judge import validate_question, validate_draft
+    from coverletter.provider import parse_model
+
+    provider_name, _ = parse_model(model)
+    if provider_name != "anthropic":
+        return _qa_turn_no_tools(history, api_key, model, all_paragraphs, voyage_api_key, system)
 
     client = anthropic.Anthropic(api_key=api_key)
     messages = list(history)
@@ -701,6 +790,7 @@ def _build_initial_context(
     job_description: str | None = None,
     gap_description: str | None = None,
     framing_context: str = "",
+    use_tools: bool = True,
 ) -> str:
     """Build initial Q&A context. Framing context (experience notes + angle inventory)
     is injected first so the agent targets missing angles with grounded questions."""
@@ -712,7 +802,8 @@ def _build_initial_context(
     if job_description:
         parts.append(f"Job description excerpt:\n{job_description[:600]}")
     parts.append(f"Topic to explore: {topic}")
-    parts.append("Use the search_library tool now to check what is already written about this topic before asking any questions.")
+    if use_tools:
+        parts.append("Use the search_library tool now to check what is already written about this topic before asking any questions.")
     return "\n\n".join(parts)
 
 

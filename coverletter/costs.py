@@ -1,17 +1,41 @@
 from __future__ import annotations
 
-# Short aliases → canonical model IDs
+# Short aliases → canonical model IDs (provider-prefixed or bare for Anthropic)
 MODEL_ALIASES: dict[str, str] = {
+    # Anthropic (bare names = backwards compatible)
     "haiku": "claude-haiku-4-5-20251001",
     "sonnet": "claude-sonnet-4-6",
     "opus": "claude-opus-4-7",
+    # Mistral aliases
+    "mistral-large": "mistral/mistral-large-latest",
+    "mistral-small": "mistral/mistral-small-latest",
+    "mistral-medium": "mistral/mistral-medium-latest",
+    "codestral": "mistral/codestral-latest",
+    # OpenAI aliases
+    "gpt-4o": "openai/gpt-4o",
+    "gpt-4o-mini": "openai/gpt-4o-mini",
+    "o3-mini": "openai/o3-mini",
 }
 
-# Prices per million tokens (input, output). Verify at https://www.anthropic.com/pricing
+# Prices per million tokens (input, output).
+# Anthropic: https://www.anthropic.com/pricing
+# Mistral:   https://mistral.ai/technology/#pricing
 _PRICES: dict[str, tuple[float, float]] = {
+    # Anthropic
     "claude-haiku-4-5-20251001": (0.80, 4.00),
     "claude-sonnet-4-6": (3.00, 15.00),
     "claude-opus-4-7": (15.00, 75.00),
+    # Mistral
+    "mistral-large-latest": (2.00, 6.00),
+    "mistral-small-latest": (0.10, 0.30),
+    "mistral-medium-latest": (0.40, 2.00),
+    "codestral-latest": (0.20, 0.60),
+    "mistral-embed": (0.10, 0.10),       # embeddings — input only, output price unused
+    "codestral-embed-2505": (0.15, 0.15),
+    # OpenAI
+    "gpt-4o": (2.50, 10.00),
+    "gpt-4o-mini": (0.15, 0.60),
+    "o3-mini": (1.10, 4.40),
 }
 
 
