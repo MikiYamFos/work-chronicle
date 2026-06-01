@@ -8,7 +8,7 @@ from rich.spinner import Spinner
 from rich.table import Table
 from rich.live import Live
 
-from coverletter.align import AlignmentResult, alignment_report, generate_argument, generate_thesis, has_library_coverage
+from coverletter.align import AlignmentResult, alignment_report, generate_argument, generate_thesis
 from coverletter.profile import CandidateProfile, load_profile
 from coverletter.costs import running_total
 from coverletter.coach import WeakSentence, analyze_letter, get_context, rewrite_sentence
@@ -53,6 +53,7 @@ def _display_jd(text: str) -> None:
 
 def _save_jd(text: str, jds_dir: "Path") -> None:
     import datetime
+    from coverletter.jd import clean_jd
     jds_dir.mkdir(parents=True, exist_ok=True)
     default = datetime.date.today().isoformat()
     console.print(f"\nSave JD as [dim](press Enter for {default})[/dim]: ", end="")
@@ -61,7 +62,6 @@ def _save_jd(text: str, jds_dir: "Path") -> None:
         label = input().strip() or default
     except (KeyboardInterrupt, EOFError):
         return
-    # Sanitize to safe filename
     safe = "".join(c if c.isalnum() or c in "-_" else "-" for c in label).strip("-")
     if not safe:
         safe = default
@@ -70,7 +70,7 @@ def _save_jd(text: str, jds_dir: "Path") -> None:
     while fname.exists():
         fname = jds_dir / f"{safe}_{counter}.txt"
         counter += 1
-    fname.write_text(text, encoding="utf-8")
+    fname.write_text(clean_jd(text), encoding="utf-8")
     console.print(f"[dim]Saved → {fname}[/dim]")
 
 
@@ -231,6 +231,8 @@ def _gap_loop(
     job_description: str,
     seniority_gaps: "list[str] | None" = None,
     resume_text: str = "",
+    conn: "object | None" = None,
+    embed_provider: "object | None" = None,
 ) -> int:
     """Show all gaps at once, let user pick which to address. Returns count of paragraphs saved."""
     import re
@@ -241,13 +243,23 @@ def _gap_loop(
     if not all_gaps:
         return 0
 
+    # Check which gaps have matching claims in the DB (semantic coverage check)
+    jd_gap_texts = [g for g, _ in all_gaps]
+    if conn is not None:
+        from coverletter.db import gap_library_coverage
+        db_covered_indices = gap_library_coverage(
+            conn, jd_gap_texts, cfg.voyage_api_key or "", embed_provider
+        )
+    else:
+        db_covered_indices = set()
+
     # Separate library-covered (already have material, just need regen) from truly missing
     actionable: list[tuple[int, str, str]] = []
     covered_by_library: list[int] = []
 
     console.print(f"[bold]{len(all_gaps)} gap(s):[/bold]\n")
     for i, (gap, kind) in enumerate(all_gaps, 1):
-        if has_library_coverage(gap):
+        if (i - 1) in db_covered_indices:
             console.print(f"  [dim]{i}. [in library] {gap}[/dim]")
             covered_by_library.append(i)
         elif kind == "Seniority":
@@ -258,7 +270,7 @@ def _gap_loop(
             actionable.append((i, gap, kind))
 
     if covered_by_library:
-        console.print(f"\n[dim]Gaps {', '.join(str(n) for n in covered_by_library)} already have library paragraphs — they'll be pulled in on regen.[/dim]")
+        console.print(f"\n[dim]Gaps {', '.join(str(n) for n in covered_by_library)} already have library material — they'll be pulled in on regen.[/dim]")
 
     if not actionable:
         console.print("[dim]No actionable gaps — all have library coverage.[/dim]")
@@ -663,6 +675,8 @@ def main(
     job_description = read_job_description(
         jds_dir=cfg.paragraphs_files[0].parent / "jds",
     )
+    from coverletter.jd import clean_jd
+    job_description = clean_jd(job_description)
 
     _flush_stdin()
     company = input("\nCompany name (for filename, optional): ").strip()
@@ -676,10 +690,15 @@ def main(
         notes = raw_notes or None
 
     from coverletter.provider import get_embed_provider as _get_ep, get_provider as _get_provider
+    from coverletter.db import open_db, db_path, get_or_embed_jd, get_or_company_values
     _provider = _get_provider(cfg.model, cfg.api_key)
     _embed_provider = _get_ep(cfg.embed_model) or _provider
+    _db = db_path(cfg.paragraphs_files)
+    _conn = open_db(_db) if _db.exists() else None
+    _cached_jd_vec = get_or_embed_jd(_conn, job_description, cfg.voyage_api_key or "", _embed_provider) if _conn else None
+    _company_values = get_or_company_values(_conn, job_description, cfg.api_key, cfg.model) if _conn else None
     if cfg.voyage_api_key or _embed_provider.supports_embed() or _embed_provider.supports_hybrid():
-        filtered = embed_prefilter(role_paragraphs, job_description, cfg.top_n, cfg.voyage_api_key or "", _embed_provider)
+        filtered = embed_prefilter(role_paragraphs, job_description, cfg.top_n, cfg.voyage_api_key or "", _embed_provider, jd_vec=_cached_jd_vec)
     else:
         filtered = prefilter(role_paragraphs, job_description, cfg.top_n)
 
@@ -700,7 +719,8 @@ def main(
         with Live(Spinner("dots", text="Deriving argument target..."), refresh_per_second=10, console=console):
             try:
                 provisional_argument = generate_argument(
-                    job_description, cfg.api_key, cfg.model, profile=profile
+                    job_description, cfg.api_key, cfg.model, profile=profile,
+                    company_values=_company_values,
                 )
             except Exception:
                 provisional_argument = None
@@ -784,6 +804,7 @@ def main(
         template=template_text, notes=notes,
         angle_evidence=angle_evidence,
         argument=provisional_argument,
+        company_values=_company_values,
     )
 
     # Build conversation history — enables revision loop
@@ -844,6 +865,8 @@ def main(
                 report.gaps, all_paragraphs, gap_priority_file, cfg, job_description,
                 seniority_gaps=report.seniority_gaps,
                 resume_text=resume_text or "",
+                conn=_conn,
+                embed_provider=_embed_provider,
             )
 
         # Regenerate if new paragraphs were saved
@@ -854,7 +877,7 @@ def main(
                 all_paragraphs = load_paragraphs(cfg.paragraphs_files)
                 role_paragraphs = filter_by_role(all_paragraphs, role) if role else all_paragraphs
                 if cfg.voyage_api_key or _embed_provider.supports_embed() or _embed_provider.supports_hybrid():
-                    filtered = embed_prefilter(role_paragraphs, job_description, cfg.top_n, cfg.voyage_api_key or "", _embed_provider)
+                    filtered = embed_prefilter(role_paragraphs, job_description, cfg.top_n, cfg.voyage_api_key or "", _embed_provider, jd_vec=_cached_jd_vec)
                 else:
                     filtered = prefilter(role_paragraphs, job_description, cfg.top_n)
                 corrections = load_corrections(corrections_file)
@@ -909,6 +932,7 @@ def main(
                     resume=resume_text or None, template=template_text, notes=notes,
                     angle_evidence=regen_angle_evidence,
                     argument=provisional_argument,
+                    company_values=_company_values,
                 )
                 messages = [{"role": "user", "content": user_message}]
                 console.print()
@@ -1265,6 +1289,9 @@ def build_library(ctx: click.Context, paragraphs: str | None, about: str | None,
             job_description = jd_path.read_text(encoding="utf-8").strip()
         else:
             job_description = jd_text.strip()
+
+        from coverletter.jd import clean_jd
+        job_description = clean_jd(job_description)
 
         if not job_description:
             console.print("[yellow]JD is empty — exiting.[/yellow]")
@@ -2003,6 +2030,8 @@ def blurb(
         ),
         jds_dir=cfg.paragraphs_files[0].parent / "jds",
     )
+    from coverletter.jd import clean_jd
+    job_description = clean_jd(job_description)
 
     # Application prompt — copy the question from the application form to clipboard, press Enter.
     console.print(
@@ -2031,10 +2060,16 @@ def blurb(
     from coverletter.provider import get_embed_provider as _get_ep, get_provider as _get_provider
     _provider = _get_provider(cfg.model, cfg.api_key)
     _embed_provider = _get_ep(cfg.embed_model) or _provider
+    from coverletter.db import open_db, db_path, get_or_embed_jd
+    _db = db_path(cfg.paragraphs_files)
+    _conn = open_db(_db) if _db.exists() else None
+    _cached_jd_vec = get_or_embed_jd(_conn, job_description, cfg.voyage_api_key or "", _embed_provider) if _conn else None
     if cfg.voyage_api_key or _embed_provider.supports_embed() or _embed_provider.supports_hybrid():
-        filtered = embed_prefilter(role_paragraphs, job_description, cfg.top_n, cfg.voyage_api_key or "", _embed_provider)
+        filtered = embed_prefilter(role_paragraphs, job_description, cfg.top_n, cfg.voyage_api_key or "", _embed_provider, jd_vec=_cached_jd_vec)
     else:
         filtered = prefilter(role_paragraphs, job_description, cfg.top_n)
+    if _conn:
+        _conn.close()
 
     from coverletter.corrections import apply_corrections, load_corrections
     corrections_file = cfg.paragraphs_files[0].parent / "corrections.md"
@@ -2080,6 +2115,7 @@ def blurb(
         values=values,
         goals=goals,
         avoid=avoid,
+        company_values=_company_values,
     )
 
     console.print()
@@ -3322,15 +3358,19 @@ def build_outline_command(
         console.print("[red]No claims in DB. Run `coverletter extract` first.[/red]")
         return
 
-    jd = jd_file.read_text(encoding="utf-8")
+    from coverletter.jd import clean_jd
+    from coverletter.db import get_or_company_values
+    jd = clean_jd(jd_file.read_text(encoding="utf-8"))
     company_name = company or jd_file.stem.replace("_", " ").title()
 
     # Generate thesis from JD
     profile = load_profile(cfg.paragraphs_files)
     console.print(f"Building outline for [cyan]{company_name}[/cyan] — {n_claims} claims in DB\n")
 
+    company_values = get_or_company_values(conn, jd, cfg.api_key, cfg.model)
+
     with Live(Spinner("dots", text="Generating thesis..."), refresh_per_second=10, console=console):
-        thesis = generate_argument(jd, cfg.api_key, use_model, profile)
+        thesis = generate_argument(jd, cfg.api_key, use_model, profile, company_values=company_values)
 
     console.print(f"[dim]Thesis:[/dim] {thesis}")
     _flush_stdin()
@@ -3827,6 +3867,126 @@ def show_analytics(ctx: click.Context, paragraphs: str | None, min_gap_count: in
             console.print()
 
     conn.close()
+
+
+@main.group("jd")
+def jd_cmd() -> None:
+    """Manage saved job descriptions (list, rename, replace)."""
+
+
+@jd_cmd.command("list")
+@click.option("--paragraphs", "-p", default=None, help="Path to paragraphs file (to locate jds/ dir)")
+@click.pass_context
+def jd_list(ctx: click.Context, paragraphs: str | None) -> None:
+    """List saved job descriptions."""
+    from pathlib import Path
+    paragraphs = paragraphs or (ctx.obj or {}).get("paragraphs")
+    cfg = load_config(paragraphs)
+    jds_dir = cfg.paragraphs_files[0].parent / "jds"
+    if not jds_dir.exists():
+        console.print("[dim]No jds/ directory found — JDs are saved on first generate run.[/dim]")
+        return
+    files = sorted(jds_dir.glob("*.txt"), key=lambda f: f.stat().st_mtime, reverse=True)
+    if not files:
+        console.print("[dim]No saved JDs.[/dim]")
+        return
+    import datetime
+    from rich.table import Table
+    console.print(f"\n[bold]Saved job descriptions[/bold]  [dim]→ {jds_dir}[/dim]\n")
+    table = Table(show_header=False, box=None, padding=(0, 2, 0, 0))
+    for f in files:
+        size = f.stat().st_size
+        mtime = datetime.datetime.fromtimestamp(f.stat().st_mtime).strftime("%Y-%m-%d")
+        preview = f.read_text(encoding="utf-8")[:80].replace("\n", " ").strip()
+        table.add_row(
+            f"[bold]{f.stem}[/bold]",
+            f"[dim]{mtime}[/dim]",
+            f"[dim]{size:,}B[/dim]",
+            f"[dim]{preview}…[/dim]",
+        )
+    console.print(table)
+
+
+@jd_cmd.command("rename")
+@click.argument("old_name")
+@click.argument("new_name")
+@click.option("--paragraphs", "-p", default=None, help="Path to paragraphs file")
+@click.pass_context
+def jd_rename(ctx: click.Context, old_name: str, new_name: str, paragraphs: str | None) -> None:
+    """Rename a saved JD. Names are file stems without .txt extension."""
+    paragraphs = paragraphs or (ctx.obj or {}).get("paragraphs")
+    cfg = load_config(paragraphs)
+    jds_dir = cfg.paragraphs_files[0].parent / "jds"
+    old_path = jds_dir / f"{old_name}.txt"
+    if not old_path.exists():
+        console.print(f"[red]Not found:[/red] {old_path}")
+        return
+    new_path = jds_dir / f"{new_name}.txt"
+    if new_path.exists():
+        console.print(f"[red]Already exists:[/red] {new_path} — choose a different name.")
+        return
+    old_path.rename(new_path)
+    console.print(f"[dim]Renamed: {old_name} → {new_name}[/dim]")
+
+
+@jd_cmd.command("replace")
+@click.argument("name")
+@click.option("--paragraphs", "-p", default=None, help="Path to paragraphs file")
+@click.pass_context
+def jd_replace(ctx: click.Context, name: str, paragraphs: str | None) -> None:
+    """Replace a saved JD with a new one pasted from clipboard.
+
+    Also clears the DB embedding cache so the next run re-embeds from scratch.
+    """
+    from pathlib import Path
+    paragraphs = paragraphs or (ctx.obj or {}).get("paragraphs")
+    cfg = load_config(paragraphs)
+    jds_dir = cfg.paragraphs_files[0].parent / "jds"
+    target = jds_dir / f"{name}.txt"
+    if not target.exists():
+        console.print(f"[red]Not found:[/red] {target}")
+        console.print("[dim]Use 'coverletter jd list' to see saved JDs.[/dim]")
+        return
+
+    # Show current content briefly
+    current = target.read_text(encoding="utf-8")
+    console.print(f"\n[dim]Current ({len(current):,} chars):[/dim]")
+    console.print(f"[dim]{current[:200].replace(chr(10), ' ')}…[/dim]\n")
+
+    # Read new JD from clipboard
+    console.print("[bold]Copy the new job description to your clipboard, then press Enter.[/bold]")
+    try:
+        _flush_stdin()
+        input()
+    except (KeyboardInterrupt, EOFError):
+        console.print("[dim]Cancelled.[/dim]")
+        return
+
+    new_text = _read_from_clipboard().strip()
+    if not new_text:
+        console.print("[red]Clipboard was empty.[/red]")
+        return
+
+    from coverletter.jd import clean_jd
+    new_text = clean_jd(new_text)
+    if not new_text:
+        console.print("[red]JD was empty after cleaning.[/red]")
+        return
+
+    # Clear DB cache entry for the old JD
+    from coverletter.db import open_db, db_path, _hash as _db_hash
+    db = db_path(cfg.paragraphs_files)
+    if db.exists():
+        conn = open_db(db)
+        old_hash = _db_hash(current)
+        conn.execute("DELETE FROM jd_embedding_cache WHERE jd_hash = ?", (old_hash,))
+        conn.commit()
+        conn.close()
+        console.print("[dim]Cleared DB cache for old JD.[/dim]")
+
+    target.write_text(new_text, encoding="utf-8")
+    console.print(f"[green]Replaced:[/green] {target.name}  ({len(new_text):,} chars)")
+    console.print("[dim]Next run will re-embed the new JD.[/dim]")
 
 
 @main.command("show-library")

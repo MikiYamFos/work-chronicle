@@ -46,6 +46,22 @@ have shifted, the tool detects the diff and runs a brief Q&A before saving.
 
 Profile sections: `goals`, `values`, `working_style`, `avoid`, `seniority_signals`.
 
+### `coverletter jd`
+
+Manage saved job descriptions. JDs are saved automatically when you paste one during
+`generate` or `blurb`. They are saved after cleaning — boilerplate is stripped before
+storage so the file matches what gets embedded. JD embeddings and company values are
+cached in the DB so the same JD is never re-embedded across multiple runs.
+
+```bash
+coverletter jd list                  # show saved JDs with date, size, preview
+coverletter jd rename <old> <new>    # rename a saved JD
+coverletter jd replace <name>        # paste new JD from clipboard; clears DB cache
+```
+
+`jd replace` shows the current content briefly, reads new JD from clipboard, cleans it,
+overwrites the file, and deletes the cache entry so the next run re-embeds from scratch.
+
 ### `coverletter build`
 
 The core library-building tool. Runs a focused Q&A session that draws out specific details
@@ -216,6 +232,37 @@ the full library. Use this to compare the effect of prompt changes.
 
 ---
 
+## Job description processing
+
+Every JD is processed before it touches anything — embedding, LLM calls, or caching.
+
+### Cleaning
+
+`clean_jd()` in `coverletter/jd.py` strips EEO, disability disclosure, and legal
+boilerplate before the JD is used. Strategy: tail truncation when boilerplate appears
+at the end with nothing substantive after it; paragraph-level stripping for scattered
+boilerplate. Company values and mission content are explicitly not stripped.
+
+JDs are saved to `jds/` in their cleaned form. If you paste a JD with an EEO section,
+the file stores the cleaned version — what you see is what gets used.
+
+### Company values extraction
+
+If the JD contains a company values statement, mission, or cultural principles, they are
+extracted via a cheap LLM call and cached in the DB alongside the JD embedding. Extracted
+values are injected into the generation context and the argument-beacon prompt with an
+explicit instruction: show alignment through what you've actually done, don't echo values
+back as assertions.
+
+Returns `None` silently if no values content is found — the flow works identically
+whether or not the JD contains values.
+
+### Embedding cache
+
+JD embeddings are stored in `jd_embedding_cache` keyed by content hash. Once a JD has
+been embedded, subsequent runs (generate → blurb → outline → build --jd on the same JD)
+return the cached vector immediately. Company values are stored in the same cache row.
+
 ## Writing a letter
 
 Two paths. Both are fully working. Use the argument-driven path when you have a populated
@@ -303,6 +350,10 @@ After the letter streams:
 2. Alignment report — JD requirements covered, gaps, seniority signal gaps, goal alignment,
    library coverage detection
 3. Thesis — one sentence stating what the letter argues
+
+**Gap coverage**: gaps are checked against the claims DB using embedding cosine similarity.
+Gaps where a claim already scores above threshold are dimmed and labeled `[in library]` —
+they pull in automatically on regeneration. This is semantic coverage, not keyword matching.
 
 **Revision loop**: enter a gap number to Q&A and add a paragraph; `r` + feedback to revise
 inline; `g` for the full gap loop; `s` to save; `q` to quit.
@@ -399,10 +450,16 @@ cosine similarity for terminology-sensitive matching.
 of paragraph it is reading or what the letter as a whole is arguing.
 
 **`build --jd` gap analysis requires populated claims DB**. The gap analysis scores the JD
-against argument categories and claims already in the DB. If the DB is empty or no
-`coverletter extract` has been run, it returns no results. The tool prints an actionable
-message. Classic `coverletter build` (manual mode) works without the DB.
+against argument categories and claims in the DB. If no `coverletter extract` has been run,
+it returns no results with a clear message. Classic `coverletter build` (manual mode) works
+without the DB.
 
-**BGE-M3 hybrid scoring for Track 1 requires FlagEmbedding**. Dense-only BGE-M3 works
-via any OpenAI-compatible local server (set `OPENAI_BASE_URL`). Hybrid dense+sparse
-requires `FlagEmbedding` and a local model download.
+**BGE-M3 hybrid scoring requires FlagEmbedding**. Dense-only BGE-M3 works via any
+OpenAI-compatible local server (set `OPENAI_BASE_URL`). Hybrid dense+sparse requires
+`uv add FlagEmbedding` and a local model download (~2GB).
+
+**Cohere generation and streaming untested against real keys**. The provider is implemented
+but has not been run against a real Cohere API key. Stream event field names may need
+adjustment.
+
+**Ollama** — not yet implemented.

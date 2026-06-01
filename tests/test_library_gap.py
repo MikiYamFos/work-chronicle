@@ -60,6 +60,7 @@ def test_returns_no_db_when_db_has_no_category_embeddings_table():
     conn.row_factory = sqlite3.Row
     conn.execute("CREATE TABLE category_embeddings (category_name TEXT, embedding BLOB, computed_at TEXT)")
     conn.execute("CREATE TABLE claims (id INTEGER, text TEXT, argument_categories TEXT, embedding BLOB)")
+    conn.execute("CREATE TABLE jd_embedding_cache (jd_hash TEXT PRIMARY KEY, embedding BLOB, cached_at TEXT)")
     conn.commit()
     provider = _FixedEmbedProvider([1.0, 0.0])
     result = library_gap_analysis("JD text", "key", "claude-sonnet-4-6",
@@ -86,6 +87,13 @@ def _make_db_with_categories():
             text TEXT,
             argument_categories TEXT,
             embedding BLOB
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE jd_embedding_cache (
+            jd_hash TEXT PRIMARY KEY,
+            embedding BLOB,
+            cached_at TEXT
         )
     """)
     # Two categories with real (unit) embeddings

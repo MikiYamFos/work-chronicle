@@ -556,11 +556,14 @@ def embed_prefilter(
     top_n: int,
     voyage_api_key: str,
     provider=None,
+    jd_vec: "list[float] | None" = None,
 ) -> list[Paragraph]:
     """Semantic prefilter. Tries provider-native embeddings first, then Voyage, then BM25.
 
     If the active library fits within top_n, pass everything — no filtering.
     Only filters when the library genuinely exceeds the cap.
+
+    Pass jd_vec to skip JD embedding (use a cached vector from get_or_embed_jd).
     """
     candidates = _active(paragraphs)
     if len(candidates) <= top_n:
@@ -583,18 +586,26 @@ def embed_prefilter(
             raw_scores = provider.hybrid_scores(job_description, remaining_texts) or []
             base_score_map = {p.index: s for p, s in zip(remaining, raw_scores)}
         else:
-            # Dense-only path: Voyage or provider-native embed + cosine
-            if provider is not None and provider.supports_embed():
+            # Dense-only path: use cached jd_vec if provided, else embed now
+            if jd_vec is not None:
+                _jd_vec = jd_vec
+                if provider is not None and provider.supports_embed():
+                    doc_vecs = provider.embed(texts, input_type="document")
+                else:
+                    import voyageai  # type: ignore
+                    client = voyageai.Client(api_key=voyage_api_key)
+                    doc_vecs = client.embed(texts, model="voyage-3-lite", input_type="document").embeddings
+            elif provider is not None and provider.supports_embed():
                 doc_vecs = provider.embed(texts, input_type="document")
-                jd_vec = provider.embed([job_description], input_type="query")[0]
+                _jd_vec = provider.embed([job_description], input_type="query")[0]
             else:
                 import voyageai  # type: ignore
-
                 client = voyageai.Client(api_key=voyage_api_key)
                 doc_result = client.embed(texts, model="voyage-3-lite", input_type="document")
                 query_result = client.embed([job_description], model="voyage-3-lite", input_type="query")
                 doc_vecs = doc_result.embeddings
-                jd_vec = query_result.embeddings[0]
+                _jd_vec = query_result.embeddings[0]
+            jd_vec = _jd_vec
 
             embed_map = {p.index: vec for p, vec in zip(candidates, doc_vecs)}
             base_score_map = {p.index: _cosine(embed_map[p.index], jd_vec) for p in remaining}
@@ -678,6 +689,7 @@ def build_user_message(
     avoid: list[str] | None = None,
     angle_evidence: list[dict] | None = None,  # from db.build_angle_evidence — JD-specific, not cached
     argument: str | None = None,  # provisional argument target — beacon for assembly
+    company_values: str | None = None,  # extracted values/mission from the JD
 ) -> list[ContentBlock]:
     """Return structured content blocks with the library portion marked as cacheable.
 
@@ -841,8 +853,14 @@ def build_user_message(
             "text": "\n".join(ev_lines),
         })
 
-    blocks.append({
-        "type": "text",
-        "text": "=== JOB DESCRIPTION ===\n" + job_description.strip(),
-    })
+    jd_block = "=== JOB DESCRIPTION ===\n" + job_description.strip()
+    if company_values:
+        jd_block += (
+            "\n\n=== COMPANY VALUES / MISSION ===\n"
+            + company_values.strip()
+            + "\n\nNote: use these values to frame why this candidate is a good fit — "
+            "do not echo them back as assertions or summarise them. Show alignment through "
+            "what the candidate has actually done."
+        )
+    blocks.append({"type": "text", "text": jd_block})
     return blocks

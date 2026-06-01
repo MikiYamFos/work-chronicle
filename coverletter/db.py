@@ -333,6 +333,16 @@ CREATE TABLE IF NOT EXISTS category_embeddings (
     computed_at     TEXT DEFAULT (datetime('now'))
 );
 
+-- JD embedding cache — keyed by content hash so the same JD is never re-embedded
+-- across generate, outline, blurb, build --jd regardless of which flow runs first.
+-- company_values: extracted values/mission from the JD (NULL if none found or not yet extracted)
+CREATE TABLE IF NOT EXISTS jd_embedding_cache (
+    jd_hash         TEXT PRIMARY KEY,
+    embedding       BLOB NOT NULL,
+    company_values  TEXT,
+    cached_at       TEXT DEFAULT (datetime('now'))
+);
+
 CREATE INDEX IF NOT EXISTS idx_para_hash          ON paragraphs(text_hash);
 CREATE INDEX IF NOT EXISTS idx_para_source        ON paragraphs(source_file, active);
 CREATE INDEX IF NOT EXISTS idx_para_type          ON paragraphs(type, active);
@@ -389,6 +399,135 @@ def embed_query(
             pass
 
     return None
+
+
+def get_or_embed_jd(
+    conn: "sqlite3.Connection",
+    jd_text: str,
+    voyage_api_key: str,
+    provider: "object | None" = None,
+) -> "list[float] | None":
+    """Return a JD embedding, using the cache when available.
+
+    Checks jd_embedding_cache by content hash first. On a cache miss, embeds
+    and stores the result so subsequent calls (generate → outline → blurb on
+    the same JD) skip re-embedding entirely.
+    """
+    jd_hash = _hash(jd_text)
+    row = conn.execute(
+        "SELECT embedding FROM jd_embedding_cache WHERE jd_hash = ?", (jd_hash,)
+    ).fetchone()
+    if row and row["embedding"]:
+        try:
+            return json.loads(row["embedding"])
+        except Exception:
+            pass
+
+    vec = embed_query(jd_text, voyage_api_key, provider)
+    if vec is not None:
+        conn.execute(
+            "INSERT OR REPLACE INTO jd_embedding_cache (jd_hash, embedding) VALUES (?, ?)",
+            (jd_hash, json.dumps(vec).encode()),
+        )
+        conn.commit()
+    return vec
+
+
+def gap_library_coverage(
+    conn: "sqlite3.Connection",
+    gaps: "list[str]",
+    voyage_api_key: str,
+    embed_provider: "object | None" = None,
+    threshold: float = 0.45,
+) -> "set[int]":
+    """Return indices (0-based) of gaps that have matching claims in the DB.
+
+    Embeds all gaps in one batch call. Loads all claim embeddings once.
+    Returns the set of gap indices where at least one claim scores above threshold.
+    Falls back to empty set if no embeddings are available.
+    """
+    if not gaps:
+        return set()
+
+    # Load claim embeddings once
+    rows = conn.execute(
+        "SELECT embedding FROM claims WHERE embedding IS NOT NULL"
+    ).fetchall()
+    if not rows:
+        return set()
+
+    claim_vecs: list[list[float]] = []
+    for row in rows:
+        try:
+            claim_vecs.append(json.loads(row["embedding"]))
+        except Exception:
+            pass
+    if not claim_vecs:
+        return set()
+
+    # Embed all gaps in one call
+    if embed_provider is not None:
+        from coverletter.provider import Provider as _P
+        if isinstance(embed_provider, _P) and embed_provider.supports_embed():
+            gap_vecs = embed_provider.embed(gaps, input_type="query")
+        else:
+            gap_vecs = None
+    else:
+        gap_vecs = None
+
+    if gap_vecs is None and voyage_api_key:
+        try:
+            import voyageai  # type: ignore
+            client = voyageai.Client(api_key=voyage_api_key)
+            gap_vecs = client.embed(gaps, model="voyage-3-lite", input_type="query").embeddings
+        except Exception:
+            gap_vecs = None
+
+    if not gap_vecs:
+        return set()
+
+    covered: set[int] = set()
+    for i, gap_vec in enumerate(gap_vecs):
+        for claim_vec in claim_vecs:
+            if _cosine(gap_vec, claim_vec) >= threshold:
+                covered.add(i)
+                break
+    return covered
+
+
+def get_or_company_values(
+    conn: "sqlite3.Connection",
+    jd_text: str,
+    api_key: str,
+    model: str,
+) -> "str | None":
+    """Return company values/mission extracted from the JD, using cache when available.
+
+    Values are extracted once per unique JD and stored alongside the embedding.
+    Returns None if the JD contains no values/mission content.
+    """
+    jd_hash = _hash(jd_text)
+
+    row = conn.execute(
+        "SELECT company_values FROM jd_embedding_cache WHERE jd_hash = ?", (jd_hash,)
+    ).fetchone()
+
+    if row is not None:
+        # Row exists — return cached value (may be NULL meaning "no values found")
+        return row["company_values"]
+
+    # No cache entry yet — extract and store
+    from coverletter.jd import extract_company_values
+    values = extract_company_values(jd_text, api_key, model)
+    # Store even if None — records that extraction ran so we don't repeat it
+    conn.execute(
+        """INSERT INTO jd_embedding_cache (jd_hash, embedding, company_values)
+           VALUES (?, ?, ?)
+           ON CONFLICT(jd_hash) DO UPDATE SET company_values = excluded.company_values""",
+        (jd_hash, b"", values),
+    )
+    conn.commit()
+    return values
 
 
 # ---------------------------------------------------------------------------
