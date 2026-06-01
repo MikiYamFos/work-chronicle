@@ -60,6 +60,33 @@ class Provider:
     def supports_embed(self) -> bool:
         return False
 
+    def rerank(self, query: str, documents: list[str]) -> list[float] | None:
+        """Return relevance scores for each document given the query (cross-encoder).
+
+        Returns a list of floats, one per document, in original document order.
+        Returns None if reranking is not supported.
+        """
+        return None
+
+    def supports_rerank(self) -> bool:
+        return False
+
+    def hybrid_scores(
+        self,
+        query: str,
+        documents: list[str],
+        alpha: float = 0.5,
+    ) -> list[float] | None:
+        """Return hybrid (dense + sparse) relevance scores, one per document.
+
+        alpha controls the dense weight: score = alpha * dense + (1-alpha) * sparse.
+        Returns None if hybrid scoring is not supported.
+        """
+        return None
+
+    def supports_hybrid(self) -> bool:
+        return False
+
 
 # ---------------------------------------------------------------------------
 # Anthropic
@@ -270,16 +297,214 @@ class OpenAIProvider(Provider):
 
     def embed(self, texts: list[str], input_type: str = "document") -> list[list[float]] | None:
         try:
+            import os
             client = self._client()
-            result = client.embeddings.create(
-                model="text-embedding-3-small",
-                input=texts,
-            )
+            # OPENAI_EMBED_MODEL lets compatible hosts (Regolo, local) specify
+            # their embedding model; defaults to text-embedding-3-small for OpenAI.
+            embed_model = os.environ.get("OPENAI_EMBED_MODEL", "text-embedding-3-small")
+            result = client.embeddings.create(model=embed_model, input=texts)
             return [e.embedding for e in result.data]
         except Exception:
             return None
 
     def supports_embed(self) -> bool:
+        return True
+
+
+# ---------------------------------------------------------------------------
+# Cohere — embed-v4 + rerank-v3
+# ---------------------------------------------------------------------------
+
+class CohereProvider(Provider):
+    """Cohere generation, embeddings (embed-v4), and reranking (rerank-v3).
+
+    Reranker is a cross-encoder: sees (query, document) pairs jointly, not as
+    separate vectors. Can't be pre-cached, but is highly precise for small
+    candidate sets (e.g. top-N claims per category).
+
+    Pricing: https://cohere.com/pricing
+    """
+
+    def complete(self, system: str, user_content: str, max_tokens: int = 512, temperature: float = 0) -> str:
+        import cohere  # type: ignore
+        from coverletter.costs import record
+
+        client = cohere.ClientV2(api_key=self.api_key)
+        messages: list[dict] = []
+        if system:
+            messages.append({"role": "system", "content": system})
+        messages.append({"role": "user", "content": user_content})
+        response = client.chat(
+            model=self.model,
+            messages=messages,
+            max_tokens=max_tokens,
+            temperature=temperature,
+        )
+        usage = response.usage
+        if usage:
+            record(self.model, getattr(usage, "input_tokens", 0) or 0, getattr(usage, "output_tokens", 0) or 0)
+        return response.message.content[0].text.strip()
+
+    def stream(self, system: str, messages: list[dict], max_tokens: int = 2048, temperature: float = 0.3) -> Iterator[str]:
+        import cohere  # type: ignore
+
+        client = cohere.ClientV2(api_key=self.api_key)
+        full_messages: list[dict] = []
+        if system:
+            full_messages.append({"role": "system", "content": system})
+        full_messages.extend(messages)
+        with client.chat_stream(
+            model=self.model,
+            messages=full_messages,
+            max_tokens=max_tokens,
+            temperature=temperature,
+        ) as stream:
+            for event in stream:
+                if event.type == "content-delta":
+                    try:
+                        text = event.delta.message.content.text
+                    except AttributeError:
+                        # SDK may return content as a list
+                        try:
+                            text = event.delta.message.content[0].text
+                        except (AttributeError, IndexError, TypeError):
+                            continue
+                    if text:
+                        yield text
+
+    def embed(self, texts: list[str], input_type: str = "document") -> list[list[float]] | None:
+        try:
+            import cohere  # type: ignore
+
+            client = cohere.ClientV2(api_key=self.api_key)
+            cohere_type = "search_query" if input_type == "query" else "search_document"
+            response = client.embed(
+                texts=texts,
+                model="embed-v4.0",
+                input_type=cohere_type,
+                embedding_types=["float"],
+            )
+            return response.embeddings.float_
+        except Exception:
+            return None
+
+    def supports_embed(self) -> bool:
+        return True
+
+    def rerank(self, query: str, documents: list[str]) -> list[float] | None:
+        try:
+            import cohere  # type: ignore
+
+            client = cohere.ClientV2(api_key=self.api_key)
+            response = client.rerank(
+                model="rerank-v3.5",
+                query=query,
+                documents=documents,
+                return_documents=False,
+            )
+            scores = [0.0] * len(documents)
+            for result in response.results:
+                scores[result.index] = result.relevance_score
+            return scores
+        except Exception:
+            return None
+
+    def supports_rerank(self) -> bool:
+        return True
+
+
+# ---------------------------------------------------------------------------
+# BGE-M3 (local, embed-only)
+# ---------------------------------------------------------------------------
+
+class BGEM3Provider(Provider):
+    """BGE-M3 local embeddings with hybrid dense+sparse scoring.
+
+    Uses the FlagEmbedding library (uv add FlagEmbedding) to run
+    BAAI/bge-m3 locally. Requires ~2 GB disk for the model download on first use.
+
+    No API key needed — runs fully offline.
+
+    Hybrid score = alpha * dense_cosine + (1-alpha) * sparse_dot_product.
+    The sparse component gives lexical precision ("Kafka" matches "Kafka")
+    while the dense component gives semantic generalization.
+
+    This provider is embed-only: complete() and stream() raise NotImplementedError.
+    Pair it with any generation provider via EMBED_MODEL=bge-m3.
+    """
+
+    _model_name = "BAAI/bge-m3"
+    _alpha = 0.5  # dense weight in hybrid score
+
+    def __init__(self, model: str = "BAAI/bge-m3", api_key: str = "") -> None:
+        super().__init__(model or "BAAI/bge-m3", api_key)
+        self._flag_model = None  # lazy-loaded
+
+    def _load(self):
+        if self._flag_model is None:
+            from FlagEmbedding import BGEM3FlagModel  # type: ignore
+            self._flag_model = BGEM3FlagModel(self.model, use_fp16=True)
+        return self._flag_model
+
+    def complete(self, system: str, user_content: str, max_tokens: int = 512, temperature: float = 0) -> str:
+        raise NotImplementedError("BGEM3Provider is embed-only. Use a generation provider for completions.")
+
+    def stream(self, system: str, messages: list[dict], max_tokens: int = 2048, temperature: float = 0.3) -> Iterator[str]:
+        raise NotImplementedError("BGEM3Provider is embed-only. Use a generation provider for streaming.")
+
+    def embed(self, texts: list[str], input_type: str = "document") -> list[list[float]] | None:
+        """Return dense vectors (for DB storage and cosine similarity)."""
+        try:
+            model = self._load()
+            output = model.encode(texts, return_dense=True, return_sparse=False)
+            return [v.tolist() for v in output["dense_vecs"]]
+        except Exception:
+            return None
+
+    def supports_embed(self) -> bool:
+        return True
+
+    def hybrid_scores(
+        self,
+        query: str,
+        documents: list[str],
+        alpha: float | None = None,
+    ) -> list[float] | None:
+        """Hybrid dense+sparse scores: alpha * dense_cosine + (1-alpha) * sparse_dot."""
+        if alpha is None:
+            alpha = self._alpha
+        try:
+            import numpy as np  # type: ignore
+
+            model = self._load()
+            # Encode query + all documents together for efficiency
+            all_texts = [query] + documents
+            output = model.encode(all_texts, return_dense=True, return_sparse=True)
+
+            dense_vecs = output["dense_vecs"]          # shape: (1+N, dim)
+            sparse_vecs = output["lexical_weights"]    # list of dicts {token: weight}
+
+            q_dense = dense_vecs[0]
+            q_sparse = sparse_vecs[0]
+            doc_dense = dense_vecs[1:]
+            doc_sparse = sparse_vecs[1:]
+
+            scores = []
+            for d_dense, d_sparse in zip(doc_dense, doc_sparse):
+                # Dense cosine (BGE-M3 outputs normalized vectors, so dot product = cosine)
+                dense_score = float(np.dot(q_dense, d_dense))
+                # Sparse dot product over shared tokens
+                sparse_score = sum(
+                    float(q_sparse.get(tok, 0)) * float(weight)
+                    for tok, weight in d_sparse.items()
+                    if tok in q_sparse
+                )
+                scores.append(alpha * dense_score + (1.0 - alpha) * sparse_score)
+            return scores
+        except Exception:
+            return None
+
+    def supports_hybrid(self) -> bool:
         return True
 
 
@@ -307,4 +532,23 @@ def get_provider(model: str, api_key: str) -> Provider:
         import os
         base_url = os.environ.get("OPENAI_BASE_URL") or None
         return OpenAIProvider(model_name, api_key, base_url=base_url)
+    if provider_name == "cohere":
+        return CohereProvider(model_name, api_key)
+    if provider_name == "bge-m3":
+        return BGEM3Provider(model_name or "BAAI/bge-m3")
     return AnthropicProvider(model_name, api_key)
+
+
+def get_embed_provider(embed_model: str) -> "Provider | None":
+    """Return an embed-capable Provider for the given EMBED_MODEL string.
+
+    Returns None if embed_model is empty (caller uses generation provider's embed).
+
+    Supported values:
+      bge-m3   → BGEM3Provider (local, hybrid dense+sparse, no API key)
+    """
+    if not embed_model:
+        return None
+    if embed_model.lower() == "bge-m3":
+        return BGEM3Provider()
+    return None

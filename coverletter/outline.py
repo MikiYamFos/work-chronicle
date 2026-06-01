@@ -205,26 +205,9 @@ def _embed_query(
     voyage_api_key: str,
     provider: "object | None" = None,
 ) -> list[float] | None:
-    """Embed a query string. Tries provider-native embeddings first, then Voyage, then None."""
-    # Provider-native embeddings (Mistral, OpenAI)
-    if provider is not None:
-        from coverletter.provider import Provider as ProviderBase
-        if isinstance(provider, ProviderBase) and provider.supports_embed():
-            result = provider.embed([text], input_type="query")
-            if result:
-                return result[0]
-
-    # Voyage fallback
-    if voyage_api_key:
-        try:
-            import voyageai  # type: ignore
-            client = voyageai.Client(api_key=voyage_api_key)
-            result = client.embed([text], model="voyage-3-lite", input_type="query")
-            return result.embeddings[0]
-        except Exception:
-            pass
-
-    return None
+    """Embed a query string. Delegates to db.embed_query."""
+    from coverletter.db import embed_query
+    return embed_query(text, voyage_api_key, provider)
 
 
 def _cosine(a: list[float], b: list[float]) -> float:
@@ -242,8 +225,11 @@ def _category_aware_retrieval(
     relevance_threshold: float = 0.35,
     claims_per_category: int = 4,
     category_score_threshold: float = 0.30,
+    reranker=None,
+    jd_query: str = "",
+    embed_provider=None,
 ) -> tuple[list[dict], list[tuple[str, float]]]:
-    """Retrieve claims using category-aware two-stage filtering.
+    """Retrieve claims using category-aware two-stage (optionally three-stage) filtering.
 
     Stage 1: Score argument categories against the JD embedding.
              Only query claims from categories that are relevant to this JD.
@@ -251,6 +237,13 @@ def _category_aware_retrieval(
 
     Stage 2: Within each relevant category, rank claims by embedding similarity
              to the JD. Take top claims_per_category per category.
+             With BGE-M3 (embed_provider.supports_hybrid()), uses hybrid dense+sparse
+             scores against claim text rather than pre-stored dense embeddings.
+
+    Stage 3 (optional, Cohere reranker): Cross-encode each selected claim text
+             against the full JD. Replace embedding score with reranker relevance
+             score and re-sort within each category. Provides precision gain for
+             terminology-sensitive matching (e.g. "Kafka" vs "event streaming").
 
     Returns (selected_claims, category_scores) where category_scores is
     [(category_name, score)] for analytics capture.
@@ -294,29 +287,42 @@ def _category_aware_retrieval(
     # Stage 2 — score claims within relevant categories
     # Standalone claims always included at score 1.0
     standalone_claims = []
-    evidence_by_category: dict[str, list[tuple[float, dict]]] = {}
+    evidence_candidates: list[dict] = []
 
     for claim in claims:
         cats = set(claim.get("argument_categories", []))
-
         if cats & _STANDALONE_CATEGORIES:
-            claim = dict(claim, _similarity_score=1.0)
-            standalone_claims.append(claim)
+            standalone_claims.append(dict(claim, _similarity_score=1.0))
             continue
+        if relevant_categories is not None and not (cats & relevant_categories):
+            continue
+        evidence_candidates.append(claim)
 
-        # Skip claims from irrelevant categories when we have category scores
-        if relevant_categories is not None:
-            if not (cats & relevant_categories):
-                continue
+    # Score evidence candidates — hybrid (BGE-M3) or dense cosine
+    use_hybrid = (
+        embed_provider is not None
+        and embed_provider.supports_hybrid()
+        and jd_query
+        and evidence_candidates
+    )
+    if use_hybrid:
+        candidate_texts = [c.get("text", "") for c in evidence_candidates]
+        hybrid_score_list = embed_provider.hybrid_scores(jd_query, candidate_texts) or []
+        hybrid_score_map = {
+            c["id"]: s for c, s in zip(evidence_candidates, hybrid_score_list)
+        }
 
-        # Score this claim against the JD
-        emb = emb_map.get(claim["id"])
-        score = _cosine(jd_embedding, emb) if emb else 0.0
+    evidence_by_category: dict[str, list[tuple[float, dict]]] = {}
+    for claim in evidence_candidates:
+        if use_hybrid:
+            score = hybrid_score_map.get(claim["id"], 0.0)
+        else:
+            emb = emb_map.get(claim["id"])
+            score = _cosine(jd_embedding, emb) if emb else 0.0
 
         if score < relevance_threshold and relevant_categories is not None:
             continue
 
-        # Bucket by primary category for per-category capping
         primary_cat = next(
             (c for c in claim.get("argument_categories", []) if c in _EVIDENCE_CATEGORIES),
             "uncategorized"
@@ -328,6 +334,22 @@ def _category_aware_retrieval(
     for cat, scored in evidence_by_category.items():
         scored.sort(key=lambda x: -x[0])
         selected_evidence.extend(c for _, c in scored[:claims_per_category])
+
+    # Stage 3 — cross-encoder reranking (Cohere rerank-v3.5 or compatible)
+    # Runs over selected_evidence only (small set), replaces cosine score with
+    # reranker relevance score, then re-sorts. Standalone claims are not reranked.
+    if reranker is not None and jd_query and selected_evidence:
+        try:
+            texts = [c.get("claim_text", "") or c.get("text", "") for c in selected_evidence]
+            rerank_scores = reranker.rerank(jd_query, texts)
+            if rerank_scores is not None:
+                selected_evidence = [
+                    dict(c, _similarity_score=s)
+                    for c, s in zip(selected_evidence, rerank_scores)
+                ]
+                selected_evidence.sort(key=lambda c: -c["_similarity_score"])
+        except Exception:
+            pass
 
     result = standalone_claims + selected_evidence
     if not result:
@@ -780,6 +802,7 @@ def build_outline(
     company: str = "Company",
     voyage_api_key: str = "",
     relevance_threshold: float = 0.35,
+    embed_model: str = "",
 ) -> tuple[str, list[dict], list[tuple[str, float]], list[dict]]:
     """Build an editable markdown outline from the claim-evidence DB.
 
@@ -789,15 +812,18 @@ def build_outline(
     if not all_claims:
         return "# No claims found\n\nRun `coverletter extract` first.\n", [], [], []
 
-    from coverletter.provider import get_provider
+    from coverletter.provider import get_embed_provider, get_provider
     provider = get_provider(model, api_key)
+    embed_provider = get_embed_provider(embed_model) or provider
 
-    jd_embedding = _embed_query(jd + "\n" + thesis, voyage_api_key, provider)
+    jd_embedding = _embed_query(jd + "\n" + thesis, voyage_api_key, embed_provider)
 
     from coverletter.db import ensure_category_embeddings
-    category_embeddings = ensure_category_embeddings(conn, voyage_api_key, provider)
+    category_embeddings = ensure_category_embeddings(conn, voyage_api_key, embed_provider)
+    reranker = provider if provider.supports_rerank() else None
     relevant_claims, category_scores = _category_aware_retrieval(
-        all_claims, conn, jd_embedding, category_embeddings, relevance_threshold
+        all_claims, conn, jd_embedding, category_embeddings, relevance_threshold,
+        reranker=reranker, jd_query=jd + "\n" + thesis, embed_provider=embed_provider,
     )
 
     grouping = _group_claims(relevant_claims, jd, thesis, api_key, model)

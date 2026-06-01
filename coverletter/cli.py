@@ -230,6 +230,7 @@ def _gap_loop(
     cfg: "Config",
     job_description: str,
     seniority_gaps: "list[str] | None" = None,
+    resume_text: str = "",
 ) -> int:
     """Show all gaps at once, let user pick which to address. Returns count of paragraphs saved."""
     import re
@@ -309,6 +310,7 @@ def _gap_loop(
                 gap, all_paragraphs, priority_file, cfg,
                 job_description=job_description, gap_description=gap,
                 voyage_api_key=cfg.voyage_api_key,
+                resume_text=resume_text,
             )
         except KeyboardInterrupt:
             console.print("\n[dim]Stopped. Any paragraphs saved above are in the library.[/dim]")
@@ -673,8 +675,11 @@ def main(
         ).strip()
         notes = raw_notes or None
 
-    if cfg.voyage_api_key:
-        filtered = embed_prefilter(role_paragraphs, job_description, cfg.top_n, cfg.voyage_api_key)
+    from coverletter.provider import get_embed_provider as _get_ep, get_provider as _get_provider
+    _provider = _get_provider(cfg.model, cfg.api_key)
+    _embed_provider = _get_ep(cfg.embed_model) or _provider
+    if cfg.voyage_api_key or _embed_provider.supports_embed() or _embed_provider.supports_hybrid():
+        filtered = embed_prefilter(role_paragraphs, job_description, cfg.top_n, cfg.voyage_api_key or "", _embed_provider)
     else:
         filtered = prefilter(role_paragraphs, job_description, cfg.top_n)
 
@@ -838,6 +843,7 @@ def main(
             new_paragraphs_saved = _gap_loop(
                 report.gaps, all_paragraphs, gap_priority_file, cfg, job_description,
                 seniority_gaps=report.seniority_gaps,
+                resume_text=resume_text or "",
             )
 
         # Regenerate if new paragraphs were saved
@@ -847,8 +853,8 @@ def main(
             if regen in ("", "y", "yes"):
                 all_paragraphs = load_paragraphs(cfg.paragraphs_files)
                 role_paragraphs = filter_by_role(all_paragraphs, role) if role else all_paragraphs
-                if cfg.voyage_api_key:
-                    filtered = embed_prefilter(role_paragraphs, job_description, cfg.top_n, cfg.voyage_api_key)
+                if cfg.voyage_api_key or _embed_provider.supports_embed() or _embed_provider.supports_hybrid():
+                    filtered = embed_prefilter(role_paragraphs, job_description, cfg.top_n, cfg.voyage_api_key or "", _embed_provider)
                 else:
                     filtered = prefilter(role_paragraphs, job_description, cfg.top_n)
                 corrections = load_corrections(corrections_file)
@@ -1064,6 +1070,7 @@ def _qa_session(
     job_description: str | None = None,
     gap_description: str | None = None,
     voyage_api_key: str = "",
+    resume_text: str = "",
 ) -> str | None:
     """Interactive Q&A session. Returns accepted paragraph text or None."""
     from rich.panel import Panel
@@ -1085,7 +1092,12 @@ def _qa_session(
 
     from coverletter.provider import parse_model
     _use_tools = parse_model(cfg.model)[0] == "anthropic"
-    context = _build_initial_context(topic, job_description, gap_description, framing_context=framing_ctx, use_tools=_use_tools)
+    context = _build_initial_context(
+        topic, job_description, gap_description,
+        framing_context=framing_ctx,
+        resume_context=resume_text,
+        use_tools=_use_tools,
+    )
     history: list[dict] = [{"role": "user", "content": context}]
 
     console.print(f"\n[bold blue]Building:[/bold blue] {topic}")
@@ -1217,12 +1229,20 @@ def _qa_session(
 @main.command("build")
 @click.option("--paragraphs", "-p", default=None, help="Path to paragraphs file")
 @click.option("--about", "-a", default=None, help="What to build a paragraph about")
+@click.option("--resume", "-R", default=None, help="Path to resume file (.pdf, .md, or .txt)")
+@click.option("--jd", "jd_text", default=None, help="Job description text or path to a JD file — drives gap-first build mode")
 @click.pass_context
-def build_library(ctx: click.Context, paragraphs: str | None, about: str | None) -> None:
-    """Grow your paragraph library through Q&A — add new experiences, projects, or angles."""
+def build_library(ctx: click.Context, paragraphs: str | None, about: str | None, resume: str | None, jd_text: str | None) -> None:
+    """Grow your paragraph library through Q&A — add new experiences, projects, or angles.
+
+    With --jd: analyzes the JD against your library, shows what's covered and what's missing,
+    then walks you through filling gaps with targeted Q&A.
+
+    Without --jd: prompts you for a topic and builds one paragraph at a time.
+    """
     from pathlib import Path
     paragraphs = paragraphs or (ctx.obj or {}).get("paragraphs")
-    cfg = load_config(paragraphs)
+    cfg = load_config(paragraphs, resume_override=resume)
     all_paragraphs = load_paragraphs(cfg.paragraphs_files)
     # Build always saves to library_refined.md — the priority layer.
     # Seed saves raw extractions to library.md (base layer).
@@ -1231,8 +1251,134 @@ def build_library(ctx: click.Context, paragraphs: str | None, about: str | None)
     base_file = cfg.paragraphs_files[-1]
     priority_file = base_file.parent / "library_refined.md"
 
+    resume_text = load_resume(cfg.resume_file)
+    if resume_text:
+        console.print(f"Resume: [dim]{cfg.resume_file}[/dim]")
+
     console.print(f"\n[bold blue]Paragraph Builder[/bold blue]  [dim]→ {priority_file.name}[/dim]\n")
 
+    # --- Gap-driven mode: JD provided ---
+    if jd_text:
+        # Accept either raw JD text or a file path
+        jd_path = Path(jd_text)
+        if jd_path.exists():
+            job_description = jd_path.read_text(encoding="utf-8").strip()
+        else:
+            job_description = jd_text.strip()
+
+        if not job_description:
+            console.print("[yellow]JD is empty — exiting.[/yellow]")
+            return
+
+        from coverletter.align import library_gap_analysis
+        from coverletter.db import open_db, db_path
+        from coverletter.provider import get_embed_provider as _get_ep, get_provider as _get_provider
+        _gen_provider = _get_provider(cfg.model, cfg.api_key)
+        _embed_prov = _get_ep(cfg.embed_model) or _gen_provider
+        _db = db_path(cfg.paragraphs_files)
+        if not _db.exists():
+            console.print(
+                "[yellow]No claims DB found.[/yellow] Run [bold]coverletter sync[/bold] then "
+                "[bold]coverletter extract[/bold] to build the DB before using --jd gap analysis."
+            )
+            return
+        _conn = open_db(_db)
+        console.print("[dim]Analyzing your library against the JD...[/dim]")
+        with Live(Spinner("dots", text="Analyzing..."), refresh_per_second=10, console=console):
+            result = library_gap_analysis(
+                job_description, cfg.api_key, cfg.model,
+                conn=_conn,
+                voyage_api_key=cfg.voyage_api_key or "",
+                embed_provider=_embed_prov,
+            )
+        _conn.close()
+
+        if result.no_db:
+            console.print(
+                "[yellow]No embeddings found in DB.[/yellow] Run [bold]coverletter sync[/bold] "
+                "to compute embeddings, then [bold]coverletter extract[/bold] to populate claims."
+            )
+            return
+
+        # Show what's covered
+        if result.covered:
+            console.print(f"\n[bold green]Covered ({len(result.covered)}):[/bold green]")
+            for item in result.covered:
+                console.print(f"  [green]✓[/green] {item['requirement']}")
+                if item.get("best_claim"):
+                    console.print(f"    [dim]{item['best_claim'][:100]}[/dim]")
+        else:
+            console.print("\n[dim]Nothing in your library addresses this JD yet.[/dim]")
+
+        # Show gaps
+        if not result.gaps:
+            console.print("\n[bold green]No gaps — your library covers this JD well.[/bold green]")
+            return
+
+        console.print(f"\n[bold red]Gaps ({len(result.gaps)}):[/bold red]")
+        for i, gap in enumerate(result.gaps, 1):
+            console.print(f"  [red]{i}.[/red] {gap['requirement']}")
+            if gap.get("build_prompt"):
+                console.print(f"    [dim]→ {gap['build_prompt']}[/dim]")
+
+        # Let user pick which gaps to address
+        _flush_stdin()
+        raw = input(
+            f"\nAddress which gaps? (e.g. 1,3 or 'all' or Enter to skip): "
+        ).strip()
+        if not raw:
+            return
+        if raw.lower() in ("all", "a"):
+            selected_indices = set(range(1, len(result.gaps) + 1))
+        else:
+            try:
+                selected_indices = {int(n.strip()) for n in raw.replace(" ", "").split(",") if n.strip().isdigit()}
+            except ValueError:
+                selected_indices = set()
+
+        for i, gap in enumerate(result.gaps, 1):
+            if i not in selected_indices:
+                continue
+            requirement = gap["requirement"]
+            build_prompt = gap.get("build_prompt", "")
+            # Seed the Q&A topic with the gap requirement; the build_prompt goes into the
+            # initial context so the coach starts from a concrete angle rather than cold.
+            seed_topic = requirement
+            if build_prompt:
+                seed_topic = f"{requirement}\n\nStarting angle: {build_prompt}"
+            console.print(f"\n[bold]Gap {i}:[/bold] {requirement}")
+            try:
+                accepted = _qa_session(
+                    seed_topic, all_paragraphs, priority_file, cfg,
+                    job_description=job_description,
+                    gap_description=requirement,
+                    voyage_api_key=cfg.voyage_api_key,
+                    resume_text=resume_text or "",
+                )
+            except KeyboardInterrupt:
+                console.print("\n[dim]Stopped.[/dim]")
+                break
+
+            # Sync newly written paragraph into the DB so subsequent gap
+            # sessions can see it in coverage scoring.
+            if accepted:
+                all_paragraphs = load_paragraphs(cfg.paragraphs_files)
+                try:
+                    from coverletter.db import (
+                        open_db, db_path, sync_from_markdown, compute_embeddings,
+                    )
+                    _sync_db = db_path(cfg.paragraphs_files)
+                    if _sync_db.exists():
+                        _sync_conn = open_db(_sync_db)
+                        sync_from_markdown(_sync_conn, all_paragraphs, cfg.paragraphs_files)
+                        compute_embeddings(_sync_conn, cfg.voyage_api_key)
+                        _sync_conn.close()
+                        console.print("[dim]Synced new paragraph to DB.[/dim]")
+                except Exception:
+                    pass  # sync failure never blocks the build flow
+        return
+
+    # --- Manual mode: no JD ---
     topic = about
     if not topic:
         _flush_stdin()
@@ -1246,7 +1392,7 @@ def build_library(ctx: click.Context, paragraphs: str | None, about: str | None)
         return
 
     while True:
-        _qa_session(topic, all_paragraphs, priority_file, cfg, voyage_api_key=cfg.voyage_api_key)
+        _qa_session(topic, all_paragraphs, priority_file, cfg, voyage_api_key=cfg.voyage_api_key, resume_text=resume_text or "")
 
         _flush_stdin()
         another = input("Build another paragraph? [Y/n]: ").strip().lower()
@@ -1882,8 +2028,11 @@ def blurb(
     _flush_stdin()
     company = input("\nCompany name (for filename, optional): ").strip()
 
-    if cfg.voyage_api_key:
-        filtered = embed_prefilter(role_paragraphs, job_description, cfg.top_n, cfg.voyage_api_key)
+    from coverletter.provider import get_embed_provider as _get_ep, get_provider as _get_provider
+    _provider = _get_provider(cfg.model, cfg.api_key)
+    _embed_provider = _get_ep(cfg.embed_model) or _provider
+    if cfg.voyage_api_key or _embed_provider.supports_embed() or _embed_provider.supports_hybrid():
+        filtered = embed_prefilter(role_paragraphs, job_description, cfg.top_n, cfg.voyage_api_key or "", _embed_provider)
     else:
         filtered = prefilter(role_paragraphs, job_description, cfg.top_n)
 
@@ -2069,21 +2218,29 @@ def init() -> None:
     else:
         env_path.write_text(
             "# Cover Letter Generator — configuration\n"
-            "# Get your key at https://console.anthropic.com\n"
-            "ANTHROPIC_API_KEY=sk-ant-...\n\n"
-            "# Optional: Voyage AI for semantic paragraph matching (better than keyword)\n"
-            "# Get your key at https://www.voyageai.com\n"
-            "# VOYAGE_API_KEY=pa-...\n\n"
+            "# ─────────────────────────────────────────\n"
+            "# Generation provider — pick one:\n"
+            "ANTHROPIC_API_KEY=sk-ant-...        # https://console.anthropic.com\n"
+            "# MISTRAL_API_KEY=...               # https://console.mistral.ai\n"
+            "# OPENAI_API_KEY=sk-...             # https://platform.openai.com\n"
+            "# COHERE_API_KEY=...                # https://dashboard.cohere.com\n\n"
+            "# Switch provider by setting the model (prefix selects provider):\n"
+            "# COVERLETTER_MODEL=claude-sonnet-4-6   (default, Anthropic)\n"
+            "# COVERLETTER_MODEL=mistral/mistral-large-latest\n"
+            "# COVERLETTER_MODEL=openai/gpt-4o\n"
+            "# COVERLETTER_MODEL=cohere/command-r-plus\n\n"
+            "# Embeddings (for paragraph + claim retrieval):\n"
+            "# VOYAGE_API_KEY=pa-...             # https://www.voyageai.com — best retrieval quality\n"
+            "# OPENAI_EMBED_MODEL=text-embedding-3-small  # if using OpenAI-compat host\n"
+            "# EMBED_MODEL=bge-m3                # local hybrid dense+sparse (uv add FlagEmbedding)\n\n"
             "# Your name as it appears on the sign-off\n"
             "AUTHOR_NAME=Your Name\n\n"
             "# Absolute path to your resume PDF (or .md / .txt)\n"
             "# RESUME_FILE=/path/to/your/resume.pdf\n\n"
             "# Where to save generated letters (defaults to ./output)\n"
             "# OUTPUT_DIR=/path/to/output\n\n"
-            "# Override the model (defaults to claude-sonnet-4-6)\n"
-            "# COVERLETTER_MODEL=claude-opus-4-7\n\n"
-            "# How many paragraphs to pass to the model (default 20)\n"
-            "# COVERLETTER_TOP_N=20\n",
+            "# How many paragraphs to pass to the model (default 100)\n"
+            "# COVERLETTER_TOP_N=100\n",
             encoding="utf-8",
         )
         created.append(".env")
@@ -2202,19 +2359,20 @@ def init() -> None:
 
     console.print()
     console.print("[bold]Next steps:[/bold]")
-    console.print("  1. Add your [bold]ANTHROPIC_API_KEY[/bold] to .env")
-    console.print("  2. Set [bold]AUTHOR_NAME[/bold] in .env")
+    console.print("  1. Add your API key and [bold]AUTHOR_NAME[/bold] to .env")
+    console.print("  2. Set [bold]RESUME_FILE[/bold] in .env (used by build and generate)")
     console.print()
-    console.print("  [bold]If you have existing material[/bold] (cover letter, resume, LinkedIn bio):")
-    console.print("    uv run coverletter seed              # paste material, extract paragraphs")
+    console.print("  [bold]If you have existing material[/bold] (resume, old cover letters, LinkedIn):")
+    console.print("    uv run coverletter seed                     # paste material, extract paragraphs")
     console.print()
-    console.print("  [bold]If you're starting from scratch:[/bold]")
-    console.print("    uv run coverletter build --about \"your experience\"")
+    console.print("  [bold]If you have a job description and want to see what's missing:[/bold]")
+    console.print("    uv run coverletter build --jd jd.txt        # gap analysis + targeted Q&A")
+    console.print("    uv run coverletter build --about \"project\"  # build one paragraph manually")
     console.print()
-    console.print("  Then build your profile (do this once before generating letters):")
+    console.print("  [bold]Build your profile[/bold] (do once before generating letters):")
     console.print("    uv run coverletter profile --model opus")
     console.print()
-    console.print("  Then generate your first letter:")
+    console.print("  [bold]Generate your first letter:[/bold]")
     console.print("    uv run coverletter\n")
 
 
@@ -3188,6 +3346,7 @@ def build_outline_command(
             model=use_model,
             company=company_name,
             voyage_api_key=cfg.voyage_api_key or "",
+            embed_model=cfg.embed_model,
         )
 
     # Write output
@@ -3508,7 +3667,8 @@ def record_outcome(ctx: click.Context, company: str, result: str, notes: str | N
 def show_claims(ctx: click.Context) -> None:
     """Show extraction status per paragraph — how many claims and anchors each has."""
     from coverletter.db import open_db, db_path
-    conn = open_db(db_path(ctx.obj["paragraphs"]))
+    cfg = load_config(ctx.obj.get("paragraphs") if ctx.obj else None)
+    conn = open_db(db_path(cfg.paragraphs_files))
 
     rows = conn.execute(
         """
