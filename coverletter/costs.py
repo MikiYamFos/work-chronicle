@@ -15,6 +15,12 @@ MODEL_ALIASES: dict[str, str] = {
     "gpt-4o": "openai/gpt-4o",
     "gpt-4o-mini": "openai/gpt-4o-mini",
     "o3-mini": "openai/o3-mini",
+    # BGE-M3 (local, no cost)
+    "bge-m3": "bge-m3/BAAI/bge-m3",
+    # Cohere aliases
+    "command-r": "cohere/command-r",
+    "command-r-plus": "cohere/command-r-plus",
+    "command-a": "cohere/command-a",
 }
 
 # Prices per million tokens (input, output).
@@ -36,6 +42,12 @@ _PRICES: dict[str, tuple[float, float]] = {
     "gpt-4o": (2.50, 10.00),
     "gpt-4o-mini": (0.15, 0.60),
     "o3-mini": (1.10, 4.40),
+    # Cohere — https://cohere.com/pricing
+    "command-r": (0.15, 0.60),
+    "command-r-plus": (2.50, 10.00),
+    "command-a": (2.50, 10.00),
+    "embed-v4.0": (0.10, 0.10),            # embeddings — input only
+    "rerank-v3.5": (0.00, 0.00),           # billed per search, not tokens
 }
 
 

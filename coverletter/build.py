@@ -115,6 +115,11 @@ IMPORTANT NUANCES:
   treat the raw facts as things you already know — do not re-ask them. \
   Target your questions specifically at the MISSING angles listed. \
   Use the raw facts as grounding so your questions are concrete, not generic.
+- If the context includes a RESUME BLOCK: treat every bullet and role in it as \
+  established fact — do not ask the person to re-explain what it already states. \
+  Use it to anchor your questions: if the resume says they built X at Company Y, \
+  ask about the specific constraint or consequence, not what they built. \
+  The resume tells you WHAT; your job is to surface the HOW, WHY, and WHAT CHANGED.
 
 WHEN TO DRAFT: after 2 substantive exchanges, write DRAFT on a line by itself, \
 then write the paragraph immediately after. COUNT YOUR EXCHANGES. If you have asked \
@@ -790,13 +795,17 @@ def _build_initial_context(
     job_description: str | None = None,
     gap_description: str | None = None,
     framing_context: str = "",
+    resume_context: str = "",
     use_tools: bool = True,
 ) -> str:
     """Build initial Q&A context. Framing context (experience notes + angle inventory)
-    is injected first so the agent targets missing angles with grounded questions."""
+    is injected first so the agent targets missing angles with grounded questions.
+    Resume context is injected as established fact — coach must not re-ask what it states."""
     parts: list[str] = []
     if framing_context:
         parts.append(framing_context)
+    if resume_context:
+        parts.append(f"RESUME BLOCK — treat as established fact, do not re-ask:\n{resume_context}")
     if gap_description:
         parts.append(f"JD gap to address: {gap_description}")
     if job_description:

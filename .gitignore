@@ -40,3 +40,4 @@ __pycache__/
 
 # Session memory (internal)
 memory/*
+HANDOFF.md

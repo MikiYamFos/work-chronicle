@@ -555,8 +555,9 @@ def embed_prefilter(
     job_description: str,
     top_n: int,
     voyage_api_key: str,
+    provider=None,
 ) -> list[Paragraph]:
-    """Semantic prefilter using Voyage AI embeddings. Falls back to keyword prefilter on error.
+    """Semantic prefilter. Tries provider-native embeddings first, then Voyage, then BM25.
 
     If the active library fits within top_n, pass everything — no filtering.
     Only filters when the library genuinely exceeds the cap.
@@ -565,28 +566,45 @@ def embed_prefilter(
     if len(candidates) <= top_n:
         return candidates  # small library — model sees everything
     try:
-        import voyageai  # type: ignore
-
-        client = voyageai.Client(api_key=voyage_api_key)
         texts = [
             p.text + (" " + p.meta["angle"].replace("-", " ") if p.meta.get("angle") else "")
             for p in candidates
         ]
-        doc_result = client.embed(texts, model="voyage-3-lite", input_type="document")
-        query_result = client.embed([job_description], model="voyage-3-lite", input_type="query")
-        jd_vec = query_result.embeddings[0]
+        pinned = [p for p in candidates if p.meta.get("tone") in ("opener", "closer")]
+        pinned_set = {p.index for p in pinned}
+        remaining = [p for p in candidates if p.index not in pinned_set]
+        remaining_texts = [
+            p.text + (" " + p.meta["angle"].replace("-", " ") if p.meta.get("angle") else "")
+            for p in remaining
+        ]
+
+        if provider is not None and provider.supports_hybrid():
+            # BGE-M3 path: single call returns hybrid dense+sparse scores
+            raw_scores = provider.hybrid_scores(job_description, remaining_texts) or []
+            base_score_map = {p.index: s for p, s in zip(remaining, raw_scores)}
+        else:
+            # Dense-only path: Voyage or provider-native embed + cosine
+            if provider is not None and provider.supports_embed():
+                doc_vecs = provider.embed(texts, input_type="document")
+                jd_vec = provider.embed([job_description], input_type="query")[0]
+            else:
+                import voyageai  # type: ignore
+
+                client = voyageai.Client(api_key=voyage_api_key)
+                doc_result = client.embed(texts, model="voyage-3-lite", input_type="document")
+                query_result = client.embed([job_description], model="voyage-3-lite", input_type="query")
+                doc_vecs = doc_result.embeddings
+                jd_vec = query_result.embeddings[0]
+
+            embed_map = {p.index: vec for p, vec in zip(candidates, doc_vecs)}
+            base_score_map = {p.index: _cosine(embed_map[p.index], jd_vec) for p in remaining}
 
         # Always include structural paragraphs. Narrative frame paragraphs get a
         # relevance boost but are not pinned — a weak through-line should not
         # appear in every letter just because it's tagged angle=through-line.
-        pinned = [p for p in candidates if p.meta.get("tone") in ("opener", "closer")]
-        pinned_set = {p.index for p in pinned}
-        embed_map = {p.index: vec for p, vec in zip(candidates, doc_result.embeddings)}
-
-        remaining = [p for p in candidates if p.index not in pinned_set]
         score_map = {}
         for p in remaining:
-            score = _cosine(embed_map[p.index], jd_vec)
+            score = base_score_map.get(p.index, 0.0)
             strength_boost = 1.2 if p.meta.get("strength") == "high" else 1.0
             perspective_boost = 1.8 if _is_perspective(p) else 1.0
             raw = score * strength_boost * perspective_boost

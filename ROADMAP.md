@@ -2,6 +2,40 @@
 
 ## Recently shipped
 
+### Provider expansion + gap-driven build mode (May 2026)
+
+**CohereProvider** — generation (`command-r-plus`), embeddings (`embed-v4.0`), and
+reranking (`rerank-v3.5`) on one key. The reranker is a cross-encoder — sees the full
+(query, document) pair, not just vector distance. Wired as Stage 3 in the claim
+retrieval pipeline (`_category_aware_retrieval`). Canadian provider.
+
+**BGEM3Provider** — local hybrid dense+sparse embeddings via `FlagEmbedding`. BGE-M3
+outputs both dense vectors (semantic) and sparse vectors (lexical, BM25-like) from one
+model. `hybrid_scores()` fuses them: `alpha * dense_cosine + (1-alpha) * sparse_dot`.
+Activated via `EMBED_MODEL=bge-m3` — independent of generation provider. No API key.
+Requires `uv add FlagEmbedding` and ~2GB model download on first use.
+
+**Track 1 `embed_prefilter` now fully provider-aware**: BGE-M3 hybrid path, provider-
+native dense path, Voyage, BM25 — in priority order. All three call sites in cli.py
+updated. `EMBED_MODEL` env var selects embedding provider independently.
+
+**Resume threading into build/QA**: `coverletter build --resume` passes the resume to
+the Q&A coach. Coach treats resume bullets as established fact — asks about HOW/WHY/
+WHAT CHANGED, not what the resume already states. Also flows through gap-fill sessions
+during `coverletter generate`.
+
+**Gap-driven build mode** (`coverletter build --jd`): takes a JD, uses the claims DB
+to score which argument categories are covered and which aren't (embed JD → cosine
+against category_embeddings and claim embeddings — no LLM scan of the library). Shows
+covered/gap breakdown. One small LLM call generates a concrete build prompt per gap.
+Walks through targeted Q&A. Syncs new paragraphs to DB after each accepted paragraph.
+
+**`embed_query` moved to `db.py`**: was a private function in `outline.py`. Now public
+in `db.py`. `outline._embed_query` delegates to it. No more cross-module private imports.
+
+**`OPENAI_EMBED_MODEL` env var**: lets OpenAI-compat hosts (Regolo, local) specify
+which embedding model to use. Defaults to `text-embedding-3-small` for OpenAI proper.
+
 ### Gap loop improvements (May 2026)
 
 - **`all` option**: type `all` or `a` at the gap selection prompt to address every actionable gap in sequence, instead of entering numbers individually
@@ -95,37 +129,28 @@ a second key can switch to Mistral or OpenAI for a single-key stack.
 | HuggingFace | Unknown | Unknown | Via OpenAI provider |
 | Ollama | Keep-alive (local, free) | 100% (no API cost) | Not yet implemented |
 
-### Embedding status by provider
+### Embedding + reranking status by provider
 
-| Provider | Embeddings | Model | Price | Status |
-|---|---|---|---|---|
-| Anthropic | Via Voyage (separate key) | voyage-3-lite | $0.06/1M | ✓ Works |
-| Mistral | `mistral-embed` (same key) | mistral-embed | $0.10/1M | ✓ Wired into outline/claim pipeline |
-| OpenAI | `text-embedding-3-small` (same key) | text-embedding-3-small | $0.02/1M | ✓ Wired into outline/claim pipeline |
-| Voyage AI | Standalone embedding service | voyage-3-lite | $0.06/1M | ✓ Works (all providers) |
-| Cohere | `embed-v3` (same key as generation) | embed-v3 | $0.10/1M | Not yet implemented |
-| Ollama | nomic-embed-text (local, free) | nomic-embed-text | Free | Not yet implemented |
-
-**Note**: provider-native embeddings are currently wired into the Track 2 (claim/outline)
-pipeline. Track 1 (paragraph filtering via `embed_prefilter`) still calls Voyage directly
-regardless of provider. This is the remaining gap for full single-key operation on
-Mistral and OpenAI.
+| Provider | Embed (Track 1+2) | Model | Price | Rerank | Status |
+|---|---|---|---|---|---|
+| Anthropic | Via Voyage | voyage-3-lite | $0.06/1M | — | ✓ Works |
+| Mistral | Same key | mistral-embed | $0.10/1M | — | ✓ Both tracks |
+| OpenAI | Same key | text-embedding-3-small | $0.02/1M | — | ✓ Both tracks |
+| Cohere | Same key | embed-v4.0 | $0.10/1M | rerank-v3.5 | ✓ Implemented (untested) |
+| BGE-M3 | Local, hybrid | BAAI/bge-m3 | Free | — | ✓ Both tracks (untested) |
+| Voyage AI | Standalone | voyage-3-lite | $0.06/1M | — | ✓ All providers |
+| Ollama | Local | nomic-embed-text | Free | — | Not yet implemented |
 
 ### What's still needed
 
-**Track 1 `embed_prefilter` via provider**: the classic generate flow re-embeds
-paragraphs via Voyage on every call. Requires opening the DB and provider at the
-`embed_prefilter` call site. Medium-effort refactor.
-
-**Cohere**: Canadian provider that absorbed German Aleph Alpha (April 2026). Offers
-generation (`command-r-plus`) + embeddings (`embed-v3`) on one key. $0.10/1M tokens
-for embeddings. Worth implementing once Ollama is done.
-
 **Ollama**: local inference, nothing leaves the machine, zero API cost. Critical for
-privacy-sensitive users and for making the tool genuinely free. Uses nomic-embed-text
-for embeddings (MTEB 62.39, beats OpenAI ada-002). The most architecturally different
-provider — keep-alive for context instead of stateless API calls. Implement after the
-tool is more mature and can handle degraded model quality gracefully.
+privacy-sensitive users. Uses nomic-embed-text for embeddings. The most architecturally
+different provider — keep-alive for context instead of stateless API calls. Implement
+after the tool is more stable.
+
+**Cohere + BGE-M3 real-world testing**: both providers are implemented but untested
+against real keys / real model downloads. Cohere `stream()` field names may need
+adjustment. BGE-M3 `hybrid_scores()` logic is correct by inspection.
 
 ---
 

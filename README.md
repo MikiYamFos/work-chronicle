@@ -571,15 +571,17 @@ Requires `typst`: `brew install typst`
 ## .env reference
 
 ```bash
-# Provider keys — set the one matching your chosen model
-ANTHROPIC_API_KEY=sk-ant-...         # required for Anthropic models (default)
-MISTRAL_API_KEY=...                  # required for Mistral models
-OPENAI_API_KEY=sk-...                # required for OpenAI models
+# Generation provider — set the key matching your chosen model
+ANTHROPIC_API_KEY=sk-ant-...         # required for Anthropic (default)
+MISTRAL_API_KEY=...                  # required for Mistral
+OPENAI_API_KEY=sk-...                # required for OpenAI
+COHERE_API_KEY=...                   # required for Cohere
 
-VOYAGE_API_KEY=pa-...                # optional — strongly recommended for embedding-based filtering
+# Embeddings — provider-native used automatically; Voyage is the explicit fallback
+VOYAGE_API_KEY=pa-...                # optional — highest retrieval quality
 
 AUTHOR_NAME=Your Name
-RESUME_FILE=/path/to/resume.pdf
+RESUME_FILE=/path/to/resume.pdf      # used by build and generate
 RESUME_TYP_FILE=/path/to/resume.typ
 RESUME_BULLETS_FILE=/path/to/resume_bullets.md
 EXPERIENCES_FILE=/path/to/experiences.md
@@ -588,17 +590,21 @@ OUTPUT_DIR=/path/to/output
 LIBRARY_FILE=/path/to/library.md
 LIBRARY_REFINED_FILE=/path/to/library_refined.md
 
-# Model selection — bare names default to Anthropic; prefix with provider for others
-COVERLETTER_MODEL=claude-sonnet-4-6         # Anthropic (default)
-# COVERLETTER_MODEL=mistral/mistral-large-latest  # Mistral Large (EU sovereign, green energy)
-# COVERLETTER_MODEL=mistral/mistral-small-latest  # Mistral Small (cheaper)
-# COVERLETTER_MODEL=openai/gpt-4o                 # OpenAI GPT-4o
-# COVERLETTER_MODEL=openai/gpt-4o-mini            # OpenAI GPT-4o Mini (cheaper)
+# Model selection — bare names default to Anthropic; prefix selects provider
+COVERLETTER_MODEL=claude-sonnet-4-6              # Anthropic (default)
+# COVERLETTER_MODEL=mistral/mistral-large-latest # Mistral (EU sovereign, green energy)
+# COVERLETTER_MODEL=mistral/mistral-small-latest # Mistral Small
+# COVERLETTER_MODEL=openai/gpt-4o               # OpenAI GPT-4o
+# COVERLETTER_MODEL=openai/gpt-4o-mini          # OpenAI GPT-4o Mini
+# COVERLETTER_MODEL=cohere/command-r-plus        # Cohere (Canadian, embed + rerank on one key)
 
-# For OpenAI-compatible providers (Regolo.ai, Hugging Face Inference, etc.)
-# Set OPENAI_BASE_URL to the provider's endpoint and OPENAI_API_KEY to your token there.
+# Embedding model override (independent of generation provider)
+# EMBED_MODEL=bge-m3                # local BGE-M3 hybrid dense+sparse (uv add FlagEmbedding)
+# OPENAI_EMBED_MODEL=text-embedding-3-small  # embedding model for OpenAI-compat hosts
+
+# For OpenAI-compatible providers (Regolo.ai, Hugging Face Inference, local servers)
 # OPENAI_BASE_URL=https://api.regolo.ai/v1       # Regolo.ai (Italian, green, zero retention)
-# OPENAI_BASE_URL=https://router.huggingface.co  # Hugging Face Inference (open-source models)
+# OPENAI_BASE_URL=https://router.huggingface.co  # Hugging Face Inference
 
 COVERLETTER_TOP_N=100               # paragraphs passed to the model per generation
 ```
@@ -614,7 +620,7 @@ COVERLETTER_TOP_N=100               # paragraphs passed to the model per generat
 | `profile` (G option) | ~$0.01 | ~$0.05 | ~$0.10–0.25 |
 | `build` (Q&A session) | ~$0.01 | ~$0.03–0.05 | — |
 
-Prompt caching is active on all Anthropic calls. The library is cached after the first call in a session — subsequent generation, revision, and alignment calls read from cache at ~10% of input cost. Mistral does not currently have explicit prefix caching via the API; full context is sent on each call.
+Prompt caching is active on Anthropic (90% discount via cache_control) and Mistral (90% via cache_key parameter). OpenAI automatic prefix caching gives ~50% discount when prompts are structured correctly. Cohere caching behavior is unknown — not explicitly configured.
 
 ### Anthropic
 

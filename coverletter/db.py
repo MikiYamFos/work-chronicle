@@ -366,6 +366,31 @@ def _cosine(a: list[float], b: list[float]) -> float:
     return dot / (na * nb) if na and nb else 0.0
 
 
+def embed_query(
+    text: str,
+    voyage_api_key: str,
+    provider: "object | None" = None,
+) -> "list[float] | None":
+    """Embed a query string. Tries provider-native embeddings first, then Voyage, then None."""
+    if provider is not None:
+        from coverletter.provider import Provider as ProviderBase
+        if isinstance(provider, ProviderBase) and provider.supports_embed():
+            result = provider.embed([text], input_type="query")
+            if result:
+                return result[0]
+
+    if voyage_api_key:
+        try:
+            import voyageai  # type: ignore
+            client = voyageai.Client(api_key=voyage_api_key)
+            result = client.embed([text], model="voyage-3-lite", input_type="query")
+            return result.embeddings[0]
+        except Exception:
+            pass
+
+    return None
+
+
 # ---------------------------------------------------------------------------
 # DB lifecycle
 # ---------------------------------------------------------------------------
