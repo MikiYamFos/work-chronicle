@@ -30,6 +30,7 @@ class Config:
     model: str
     top_n: int
     author_name: str
+    embed_model: str = ""  # EMBED_MODEL env var; "bge-m3" → local hybrid embed, "" → use provider's embed
     profile_file: Path = Path("candidate_profile.toml")
     experiences_file: Path = Path("experiences.md")
 
@@ -89,6 +90,15 @@ def load_config(
                 "  OPENAI_API_KEY=sk-...\n\n"
                 "Or export it in your shell before running coverletter.\n"
             )
+    elif provider_name == "cohere":
+        api_key = os.environ.get("COHERE_API_KEY", "")
+        if not api_key:
+            raise SystemExit(
+                "\nCOHERE_API_KEY is not set.\n"
+                "Add it to a .env file in the project directory:\n\n"
+                "  COHERE_API_KEY=...\n\n"
+                "Or export it in your shell before running coverletter.\n"
+            )
     else:
         api_key = os.environ.get("ANTHROPIC_API_KEY", "")
         if not api_key:
@@ -112,6 +122,7 @@ def load_config(
     output_dir = Path(output_override) if output_override else Path(os.environ.get("OUTPUT_DIR", str(DEFAULT_OUTPUT_DIR)))
     top_n = int(os.environ.get("COVERLETTER_TOP_N", DEFAULT_TOP_N))
     author_name = os.environ.get("AUTHOR_NAME", "")
+    embed_model = os.environ.get("EMBED_MODEL", "").strip().lower()
 
     profile_file = Path(
         os.environ.get("CANDIDATE_PROFILE_FILE", "candidate_profile.toml")
@@ -136,6 +147,7 @@ def load_config(
         model=model,
         top_n=top_n,
         author_name=author_name,
+        embed_model=embed_model,
         profile_file=profile_file,
         experiences_file=experiences_file,
     )

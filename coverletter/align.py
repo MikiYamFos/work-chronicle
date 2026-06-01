@@ -452,3 +452,147 @@ def alignment_report(
         )
 
     return result
+
+
+# ---------------------------------------------------------------------------
+# Library-only gap analysis (no letter required — for cold build mode)
+# ---------------------------------------------------------------------------
+
+# Coverage threshold: category cosine score below this → treat as a gap candidate.
+_CATEGORY_GAP_THRESHOLD = 0.30
+# Claim coverage threshold: highest claim score below this → no claim covers the category.
+_CLAIM_COVERAGE_THRESHOLD = 0.35
+
+_BUILD_PROMPT_SYSTEM = """\
+You are a cover letter coach. For each argument category listed below that is a gap, write one
+concrete, specific question or prompt the candidate can answer to build a paragraph for it.
+
+Return ONLY valid JSON — a dict mapping category_name to build_prompt string:
+{"category_name": "build_prompt", ...}
+
+Rules:
+- The prompt must be specific to the category and JD context — not generic ("tell me about your experience").
+- Anchor to what the JD is actually asking for: "What pipeline did you build that handles real-time event data?"
+- One sentence max per prompt.
+"""
+
+
+@dataclass
+class LibraryGapResult:
+    covered: list[dict]   # [{"requirement": str, "best_score": float, "best_claim": str}]
+    gaps: list[dict]      # [{"requirement": str, "build_prompt": str}]
+    no_db: bool = False   # True when DB/embeddings unavailable — caller should tell user
+
+    @property
+    def gap_requirements(self) -> list[str]:
+        return [g["requirement"] for g in self.gaps]
+
+    @property
+    def gap_prompts(self) -> dict[str, str]:
+        return {g["requirement"]: g.get("build_prompt", "") for g in self.gaps}
+
+
+def library_gap_analysis(
+    jd: str,
+    api_key: str,
+    model: str,
+    conn: "sqlite3.Connection | None" = None,
+    voyage_api_key: str = "",
+    embed_provider: "object | None" = None,
+) -> "LibraryGapResult":
+    """Analyze JD coverage using the claims DB — no LLM scan of the full library.
+
+    Steps:
+    1. Embed the JD using provider-native or Voyage embeddings.
+    2. Score against category_embeddings (already in DB) — zero cost beyond one embed call.
+    3. For weak categories, check best matching claim score from claims table.
+    4. Covered = strong category score OR a claim that scores above threshold.
+       Gap = category is weak AND no claim covers it.
+    5. One targeted LLM call to generate a concrete build_prompt per gap category.
+
+    Falls back to BM25 paragraph matching if no DB or no embeddings.
+    """
+    import json, re as _re, sqlite3
+    from coverletter.provider import get_provider
+    from coverletter.db import embed_query, _cosine
+
+    provider = get_provider(model, api_key)
+    effective_embed = embed_provider or provider
+
+    # --- Embed the JD ---
+    jd_embedding = embed_query(jd, voyage_api_key, effective_embed)
+
+    covered: list[dict] = []
+    gaps: list[dict] = []
+
+    if conn is not None and jd_embedding is not None:
+        # --- DB path: category + claim scoring ---
+        from coverletter.db import get_category_embeddings, score_jd_against_categories
+
+        category_embeddings = get_category_embeddings(conn)
+        if not category_embeddings:
+            return LibraryGapResult(covered=[], gaps=[], no_db=True)
+
+        cat_scores = score_jd_against_categories(jd_embedding, category_embeddings)
+
+        # Load all claim embeddings once
+        rows = conn.execute(
+            "SELECT id, text, argument_categories, embedding FROM claims WHERE embedding IS NOT NULL"
+        ).fetchall()
+        claim_rows = []
+        for row in rows:
+            try:
+                emb = json.loads(row["embedding"])
+                claim_rows.append({
+                    "id": row["id"],
+                    "text": row["text"],
+                    "cats": json.loads(row["argument_categories"]) if row["argument_categories"] else [],
+                    "emb": emb,
+                })
+            except Exception:
+                pass
+
+        gap_categories: list[str] = []
+        for cat_name, cat_score in cat_scores:
+            cat_claims = [c for c in claim_rows if cat_name in c["cats"]]
+            best_claim_score = max(
+                (_cosine(jd_embedding, c["emb"]) for c in cat_claims),
+                default=0.0,
+            )
+            best_claim_text = ""
+            if cat_claims:
+                best_claim_text = max(cat_claims, key=lambda c: _cosine(jd_embedding, c["emb"]))["text"]
+
+            if cat_score >= _CATEGORY_GAP_THRESHOLD or best_claim_score >= _CLAIM_COVERAGE_THRESHOLD:
+                covered.append({
+                    "requirement": cat_name,
+                    "best_score": round(best_claim_score, 3),
+                    "best_claim": best_claim_text[:120] if best_claim_text else "",
+                })
+            else:
+                gap_categories.append(cat_name)
+
+        # Generate build prompts for gap categories in one small LLM call
+        if gap_categories:
+            gap_list = "\n".join(f"- {c}" for c in gap_categories)
+            content = (
+                f"=== JOB DESCRIPTION ===\n{jd.strip()[:800]}\n\n"
+                f"=== GAP CATEGORIES (not covered by the candidate's library) ===\n{gap_list}"
+            )
+            raw = provider.complete(_BUILD_PROMPT_SYSTEM, content, max_tokens=512)
+            raw = _re.sub(r"^```(?:json)?\s*", "", raw.strip())
+            raw = _re.sub(r"\s*```$", "", raw)
+            try:
+                prompts: dict[str, str] = json.loads(raw)
+            except Exception:
+                prompts = {}
+            for cat_name in gap_categories:
+                gaps.append({
+                    "requirement": cat_name,
+                    "build_prompt": prompts.get(cat_name, ""),
+                })
+
+        return LibraryGapResult(covered=covered, gaps=gaps)
+
+    # No DB or no embeddings — caller should prompt user to run sync + extract.
+    return LibraryGapResult(covered=[], gaps=[], no_db=True)
