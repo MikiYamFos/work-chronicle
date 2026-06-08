@@ -4,7 +4,7 @@ Engineers ship constantly. Projects stack up. Two years later you remember you b
 
 The gap between "what I actually did" and "what I can articulate I did to an outsider" is enormous for most engineers. That gap costs you in interviews, in cover letters, in performance reviews, in any moment where you need someone who wasn't there to understand the value of your work.
 
-I built this tool because I was writing a lot of cover letters and kept losing the pivotal details of my own work. Generic LLM is almost perfectly wrong for the task of writing cover letters — it flattens your story, over-polishes your voice, loses the facts, and produces something that sounds like a cover letter while destroying the evidence that would actually make it compelling.
+I built this tool because I was writing cover letters and preparing for interviews and felt like I kept losing the small yet pivotal details of my own work. Generic LLM is almost perfectly wrong for the task of writing cover letters — it flattens your story, over-polishes your voice, loses the facts, and produces something that sounds like a cover letter while destroying the evidence that would actually make it compelling.
 
 This tool does the opposite. Your paragraph library contains your specific experiences in your own words — the ownership claims, the technical decisions, the evidence that makes those claims credible. The letter is assembled from that material. The model writes sentences grounded in your library rather than inventing generic ones. Library quality directly determines letter quality — a thin library produces a thin letter, a specific library produces a specific letter.
 

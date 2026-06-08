@@ -179,12 +179,13 @@ def extract_from_material(
         items = json.loads(candidate)
         result = []
         for item in items:
-            if not item.get("text", "").strip():
+            raw_text = item.get("text", "").strip()
+            if not raw_text:
                 continue
-            # Validate and auto-fix paragraph — rejects injected superlatives,
-            # evaluative spin, em-dashes, banned words, and source infidelity
-            text, para_warnings = validate_and_fix_paragraph(
-                item["text"], material, api_key, model,
+            # Layer 2: LLM judge + fixer — produces refined text
+            # Layer 1: raw_text is preserved separately and never overwritten
+            fixed_text, para_warnings = validate_and_fix_paragraph(
+                raw_text, material, api_key, model,
                 check_writing_rules=False,
             )
             # Filter augmentation questions through the deterministic judge
@@ -196,7 +197,8 @@ def extract_from_material(
                 "angle": item.get("angle", ""),
                 "strength": item.get("strength", "medium"),
                 "via": item.get("via", "seed-letter"),
-                "text": text,
+                "text": raw_text,        # Layer 1 — verbatim extraction
+                "text_fixed": fixed_text, # Layer 2 — LLM-validated/fixed
                 "augmentations": clean_augs,
                 "_warnings": para_warnings,
             })

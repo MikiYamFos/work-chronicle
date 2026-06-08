@@ -1218,10 +1218,24 @@ def build_library(ctx: click.Context, paragraphs: str | None, about: str | None)
         if another in ("n", "no"):
             break
 
+        console.print("[dim]Copy your next topic or material to your clipboard, then press Enter. Just press Enter to exit.[/dim]")
         _flush_stdin()
-        topic = input("What next? (Enter to exit): ").strip()
+        try:
+            sentinel = input()
+        except (KeyboardInterrupt, EOFError):
+            break
+        if sentinel.strip().lower() in ("done", "exit", "quit"):
+            break
+        topic = _read_from_clipboard().strip()
+        if not topic:
+            # Nothing on clipboard — use whatever they typed as the topic
+            topic = sentinel.strip()
         if not topic:
             break
+        try:
+            sys.stdin = open("/dev/tty", "r")
+        except OSError:
+            _flush_stdin()
 
 
 @main.command("reflect")
@@ -2598,69 +2612,6 @@ def seed_library(ctx: click.Context, input_file: str | None, paragraphs: str | N
         "tags them by role and angle, and flags what Q&A would make each stronger.[/dim]\n"
     )
 
-    # --- Read input ---
-    material = ""
-    if input_file:
-        path = Path(input_file)
-        if not path.exists():
-            console.print(f"[red]File not found:[/red] {input_file}")
-            return
-        suffix = path.suffix.lower()
-        if suffix == ".pdf":
-            try:
-                from pypdf import PdfReader
-                reader = PdfReader(str(path))
-                material = "\n".join(page.extract_text() or "" for page in reader.pages)
-            except Exception as e:
-                console.print(f"[red]Could not read PDF:[/red] {e}")
-                return
-        elif suffix == ".odt":
-            try:
-                from odf.opendocument import load as odf_load
-                from odf.text import P
-                doc = odf_load(str(path))
-                paragraphs_odt = doc.contentxml().decode("utf-8", errors="ignore")
-                # Extract plain text from all <text:p> elements
-                import re as _re
-                material = "\n".join(
-                    _re.sub(r"<[^>]+>", "", p)
-                    for p in _re.findall(r"<text:p[^>]*>(.*?)</text:p>", paragraphs_odt, _re.DOTALL)
-                ).strip()
-            except Exception as e:
-                console.print(f"[red]Could not read ODT:[/red] {e}")
-                return
-        else:
-            material = path.read_text(encoding="utf-8")
-        console.print(f"[dim]Read {len(material):,} chars from {path.name}[/dim]\n")
-    else:
-        console.print("[dim]Copy your material to your clipboard, then press Enter.[/dim]\n")
-        _flush_stdin()
-        try:
-            input()
-        except (KeyboardInterrupt, EOFError):
-            return
-        material = _read_from_clipboard().strip()
-        try:
-            sys.stdin = open("/dev/tty", "r")
-        except OSError:
-            _flush_stdin()
-
-    if not material:
-        console.print("[red]No material provided.[/red]")
-        return
-
-    # --- Extract ---
-    console.print()
-    with Live(Spinner("dots", text="Extracting paragraphs..."), refresh_per_second=10, console=console):
-        try:
-            extracted = extract_from_material(material, cfg.api_key, cfg.model)
-        except RuntimeError as e:
-            console.print(f"\n[red]Extraction failed:[/red]\n{e}\n")
-            return
-
-    console.print(f"[dim]{running_total()}[/dim]\n")
-    console.print(f"[bold]{len(extracted)} paragraph(s) extracted.[/bold] Review each below.\n")
-
     # --- Checkpoint ---
     checkpoint_path = Path(".seed_checkpoint.json")
 
@@ -2673,137 +2624,234 @@ def seed_library(ctx: click.Context, input_file: str | None, paragraphs: str | N
     def _clear_checkpoint() -> None:
         checkpoint_path.unlink(missing_ok=True)
 
-    # --- Review loop ---
-    # Load existing role types from library so user can file into them
-    try:
-        existing_roles = [r for r in available_roles(load_paragraphs(cfg.paragraphs_files)) if r != "General"]
-    except Exception:
-        existing_roles = []
-
     def _confirm_role(extracted_role: str) -> str:
         """Let user confirm or override the role the model inferred. Press Enter to accept."""
         raw = input(f"Role [{extracted_role}]: ").strip()
         return raw if raw else extracted_role
 
-    accepted: list[dict] = []
-    start_index = 0
+    all_session_accepted: list[dict] = []
+    round_num = 0
 
-    # Check for a checkpoint from a previous crashed session
-    if checkpoint_path.exists():
-        try:
-            ckpt = json.loads(checkpoint_path.read_text(encoding="utf-8"))
-            ckpt_accepted = ckpt.get("accepted", [])
-            ckpt_next = ckpt.get("next_index", 0)
-            if ckpt_accepted and ckpt_next < len(extracted):
-                console.print(f"[yellow]Found checkpoint: {len(ckpt_accepted)} paragraph(s) already accepted, resuming at [{ckpt_next + 1}/{len(extracted)}][/yellow]")
-                _flush_stdin()
-                resume = input("Resume from checkpoint? [Y/n]: ").strip().lower()
-                if resume not in ("n", "no"):
-                    accepted = ckpt_accepted
-                    start_index = ckpt_next
-                    console.print(f"[dim]Resuming at paragraph {start_index + 1}[/dim]\n")
-                else:
-                    _clear_checkpoint()
-        except Exception:
-            _clear_checkpoint()
+    while True:
+        round_num += 1
 
-    for i, p in enumerate(extracted[start_index:], start_index + 1):
-        strength_color = {"high": "green", "medium": "yellow", "low": "red"}.get(p["strength"], "white")
-        console.print(Rule(
-            f"[bold][{i}/{len(extracted)}] {p['role']} / {p['section']}[/bold]  "
-            f"[{strength_color}]{p['angle']} · {p['strength']}[/{strength_color}]",
-            style="cyan"
-        ))
-        console.print()
-        console.print(p["text"])
-        console.print()
-        has_warnings = bool(p.get("_warnings"))
-        if has_warnings:
-            for w in p["_warnings"]:
-                console.print(f"[yellow]⚠ {w}[/yellow]")
-            console.print("[yellow]This paragraph has issues the auto-fix could not resolve. Edit before accepting.[/yellow]\n")
-        if p["augmentations"]:
-            console.print("[dim]Strengthen later with[/dim] [bold]uv run clio build[/bold][dim]:[/dim]")
-            for aug in p["augmentations"]:
-                console.print(f"  [dim]→ {aug}[/dim]")
-            console.print()
-
-        _flush_stdin()
-        if has_warnings:
-            prompt_str = "[E]dit  [S]kip: "
-            valid_choices = {"e", "edit", "s", "skip"}
+        # --- Read input ---
+        material = ""
+        if input_file and round_num == 1:
+            path = Path(input_file)
+            if not path.exists():
+                console.print(f"[red]File not found:[/red] {input_file}")
+                return
+            suffix = path.suffix.lower()
+            if suffix == ".pdf":
+                try:
+                    from pypdf import PdfReader
+                    reader = PdfReader(str(path))
+                    material = "\n".join(page.extract_text() or "" for page in reader.pages)
+                except Exception as e:
+                    console.print(f"[red]Could not read PDF:[/red] {e}")
+                    return
+            elif suffix == ".odt":
+                try:
+                    from odf.opendocument import load as odf_load
+                    from odf.text import P
+                    doc = odf_load(str(path))
+                    paragraphs_odt = doc.contentxml().decode("utf-8", errors="ignore")
+                    import re as _re
+                    material = "\n".join(
+                        _re.sub(r"<[^>]+>", "", p)
+                        for p in _re.findall(r"<text:p[^>]*>(.*?)</text:p>", paragraphs_odt, _re.DOTALL)
+                    ).strip()
+                except Exception as e:
+                    console.print(f"[red]Could not read ODT:[/red] {e}")
+                    return
+            else:
+                material = path.read_text(encoding="utf-8")
+            console.print(f"[dim]Read {len(material):,} chars from {path.name}[/dim]\n")
         else:
-            prompt_str = "[A]ccept  [E]dit  [S]kip: "
-            valid_choices = {"a", "accept", "", "e", "edit", "s", "skip"}
-
-        while True:
-            choice = input(prompt_str).strip().lower()
-            if choice not in valid_choices and has_warnings:
-                console.print("[dim]This paragraph must be edited or skipped — it has unfixed issues.[/dim]")
-                continue
-            if choice in ("a", "accept", ""):
-                role_type = _confirm_role(p["role"])
-                p = dict(p, role=role_type)
-                accepted.append(p)
-                _save_checkpoint(accepted, i)
-                console.print(f"[green]→ Accepted under[/green] [bold]{role_type}[/bold]\n")
+            if round_num > 1:
+                console.print("[dim]Copy your next batch of material to your clipboard, then press Enter. Or press Ctrl+C to finish.[/dim]\n")
+            else:
+                console.print("[dim]Copy your material to your clipboard, then press Enter.[/dim]\n")
+            _flush_stdin()
+            try:
+                input()
+            except (KeyboardInterrupt, EOFError):
                 break
-            elif choice in ("e", "edit"):
-                import tempfile, subprocess
-                editor = os.environ.get("EDITOR", "nano")
-                with tempfile.NamedTemporaryFile(
-                    mode="w", suffix=".txt", delete=False, encoding="utf-8"
-                ) as tmp:
-                    tmp.write(p["text"])
-                    tmp_path = tmp.name
-                subprocess.call([editor, tmp_path])
-                edited_text = Path(tmp_path).read_text(encoding="utf-8").strip()
-                Path(tmp_path).unlink(missing_ok=True)
-                if not edited_text or edited_text == p["text"].strip():
-                    console.print("[dim]No changes — skipping.[/dim]\n")
-                    break
+            material = _read_from_clipboard().strip()
+            try:
+                sys.stdin = open("/dev/tty", "r")
+            except OSError:
+                _flush_stdin()
+
+        if not material:
+            if round_num == 1:
+                console.print("[red]No material provided.[/red]")
+                return
+            else:
+                console.print("[dim]Nothing on clipboard — finishing.[/dim]\n")
+                break
+
+        # --- Extract ---
+        console.print()
+        with Live(Spinner("dots", text="Extracting paragraphs..."), refresh_per_second=10, console=console):
+            try:
+                extracted = extract_from_material(material, cfg.api_key, cfg.model)
+            except RuntimeError as e:
+                console.print(f"\n[red]Extraction failed:[/red]\n{e}\n")
+                if round_num == 1:
+                    return
+                break
+
+        console.print(f"[dim]{running_total()}[/dim]\n")
+        console.print(f"[bold]{len(extracted)} paragraph(s) extracted.[/bold] Review each below.\n")
+
+        # --- Review loop ---
+        # Load existing role types from library so user can file into them
+        try:
+            existing_roles = [r for r in available_roles(load_paragraphs(cfg.paragraphs_files)) if r != "General"]
+        except Exception:
+            existing_roles = []
+
+        # Per-round accepted list and checkpoint resume (round 1 only)
+        accepted: list[dict] = []
+        start_index = 0
+
+        if round_num == 1 and checkpoint_path.exists():
+            try:
+                ckpt = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+                ckpt_accepted = ckpt.get("accepted", [])
+                ckpt_next = ckpt.get("next_index", 0)
+                if ckpt_accepted and ckpt_next < len(extracted):
+                    console.print(f"[yellow]Found checkpoint: {len(ckpt_accepted)} paragraph(s) already accepted, resuming at [{ckpt_next + 1}/{len(extracted)}][/yellow]")
+                    _flush_stdin()
+                    resume = input("Resume from checkpoint? [Y/n]: ").strip().lower()
+                    if resume not in ("n", "no"):
+                        accepted = ckpt_accepted
+                        start_index = ckpt_next
+                        console.print(f"[dim]Resuming at paragraph {start_index + 1}[/dim]\n")
+                    else:
+                        _clear_checkpoint()
+            except Exception:
+                _clear_checkpoint()
+
+        for i, p in enumerate(extracted[start_index:], start_index + 1):
+            strength_color = {"high": "green", "medium": "yellow", "low": "red"}.get(p["strength"], "white")
+            console.print(Rule(
+                f"[bold][{i}/{len(extracted)}] {p['role']} / {p['section']}[/bold]  "
+                f"[{strength_color}]{p['angle']} · {p['strength']}[/{strength_color}]",
+                style="cyan"
+            ))
+            console.print()
+            console.print(p["text"])
+            console.print()
+            has_warnings = bool(p.get("_warnings"))
+            if has_warnings:
+                for w in p["_warnings"]:
+                    console.print(f"[yellow]⚠ {w}[/yellow]")
+                console.print("[yellow]This paragraph has issues the auto-fix could not resolve. Edit before accepting.[/yellow]\n")
+            if p["augmentations"]:
+                console.print("[dim]Strengthen later with[/dim] [bold]uv run clio build[/bold][dim]:[/dim]")
+                for aug in p["augmentations"]:
+                    console.print(f"  [dim]→ {aug}[/dim]")
                 console.print()
-                console.print("[bold]Edited paragraph:[/bold]")
-                console.print(edited_text)
-                console.print()
-                confirm = input("[A]ccept edit  [R]edo  [S]kip: ").strip().lower()
-                if confirm in ("s", "skip"):
-                    console.print("[dim]→ Skipped.[/dim]\n")
-                    break
-                elif confirm in ("r", "redo"):
+
+            _flush_stdin()
+            if has_warnings:
+                prompt_str = "[E]dit  [S]kip: "
+                valid_choices = {"e", "edit", "s", "skip"}
+            else:
+                prompt_str = "[A]ccept  [E]dit  [S]kip: "
+                valid_choices = {"a", "accept", "", "e", "edit", "s", "skip"}
+
+            while True:
+                choice = input(prompt_str).strip().lower()
+                if choice not in valid_choices and has_warnings:
+                    console.print("[dim]This paragraph must be edited or skipped — it has unfixed issues.[/dim]")
                     continue
-                else:
-                    p = dict(p, text=edited_text)
+                if choice in ("a", "accept", ""):
                     role_type = _confirm_role(p["role"])
                     p = dict(p, role=role_type)
                     accepted.append(p)
                     _save_checkpoint(accepted, i)
-                    console.print(f"[green]→ Accepted (edited) under[/green] [bold]{role_type}[/bold]\n")
+                    console.print(f"[green]→ Accepted under[/green] [bold]{role_type}[/bold]\n")
                     break
-            elif choice in ("s", "skip"):
-                console.print("[dim]→ Skipped.[/dim]\n")
-                break
+                elif choice in ("e", "edit"):
+                    import tempfile, subprocess
+                    editor = os.environ.get("EDITOR", "nano")
+                    with tempfile.NamedTemporaryFile(
+                        mode="w", suffix=".txt", delete=False, encoding="utf-8"
+                    ) as tmp:
+                        tmp.write(p["text"])
+                        tmp_path = tmp.name
+                    subprocess.call([editor, tmp_path])
+                    edited_text = Path(tmp_path).read_text(encoding="utf-8").strip()
+                    Path(tmp_path).unlink(missing_ok=True)
+                    if not edited_text or edited_text == p["text"].strip():
+                        console.print("[dim]No changes — skipping.[/dim]\n")
+                        break
+                    console.print()
+                    console.print("[bold]Edited paragraph:[/bold]")
+                    console.print(edited_text)
+                    console.print()
+                    confirm = input("[A]ccept edit  [R]edo  [S]kip: ").strip().lower()
+                    if confirm in ("s", "skip"):
+                        console.print("[dim]→ Skipped.[/dim]\n")
+                        break
+                    elif confirm in ("r", "redo"):
+                        continue
+                    else:
+                        p = dict(p, text=edited_text)
+                        role_type = _confirm_role(p["role"])
+                        p = dict(p, role=role_type)
+                        accepted.append(p)
+                        _save_checkpoint(accepted, i)
+                        console.print(f"[green]→ Accepted (edited) under[/green] [bold]{role_type}[/bold]\n")
+                        break
+                elif choice in ("s", "skip"):
+                    console.print("[dim]→ Skipped.[/dim]\n")
+                    break
 
-    if not accepted:
+        # --- Save this round: Layer 1 (raw) → library.md, Layer 2 (fixed) → library_refined.md ---
+        if accepted:
+            from coverletter.seed import append_paragraphs_to_file, upsert_experience_targets
+            lib_dir = cfg.paragraphs_files[-1].parent
+            raw_target = cfg.paragraphs_files[-1]          # library.md
+            refined_target = lib_dir / "library_refined.md" # library_refined.md
+
+            # Build raw and fixed variants
+            raw_paragraphs = [dict(p, text=p["text"]) for p in accepted]
+            fixed_paragraphs = [dict(p, text=p.get("text_fixed", p["text"])) for p in accepted]
+
+            console.print(Rule(style="green"))
+            console.print(f"\n[bold]{len(accepted)} paragraph(s) accepted.[/bold]")
+            console.print(f"  Layer 1 (raw)     → [cyan]{raw_target}[/cyan]")
+            console.print(f"  Layer 2 (refined) → [cyan]{refined_target}[/cyan]\n")
+            append_paragraphs_to_file(raw_target, raw_paragraphs)
+            append_paragraphs_to_file(refined_target, fixed_paragraphs)
+            _clear_checkpoint()
+            console.print("[green]Saved.[/green]\n")
+            all_session_accepted.extend(accepted)
+        else:
+            console.print("[yellow]No paragraphs accepted this round.[/yellow]\n")
+            _clear_checkpoint()
+
+        # --- Ask to continue ---
+        _flush_stdin()
+        more = input("Add more material? [Y/n]: ").strip().lower()
+        if more in ("n", "no"):
+            break
+        console.print()
+
+    # --- End of session: augmentation summary and profile offer ---
+    if not all_session_accepted:
         console.print("[yellow]No paragraphs accepted. Nothing saved.[/yellow]\n")
-        _clear_checkpoint()
         return
 
-    # --- Save ---
-    from coverletter.seed import append_paragraphs_to_file, upsert_experience_targets
-    # Seed always writes to the base layer — raw extractions, not strengthened.
-    # Build writes to library_refined.md (priority layer) after Q&A strengthening.
-    target = cfg.paragraphs_files[-1]
-    console.print(Rule(style="green"))
-    console.print(f"\n[bold]{len(accepted)} paragraph(s) accepted.[/bold] Saving to [cyan]{target}[/cyan]...\n")
-    append_paragraphs_to_file(target, accepted)
-    _clear_checkpoint()
-    console.print("[green]Saved.[/green]\n")
-
     # Write augmentation questions into experiences.md so coverletter build picks them up
-    augs_written = 0
-    for p in accepted:
+    for p in all_session_accepted:
         if p.get("augmentations"):
+            from coverletter.seed import upsert_experience_targets
             upsert_experience_targets(
                 cfg.experiences_file,
                 name=p["section"],
@@ -2811,10 +2859,9 @@ def seed_library(ctx: click.Context, input_file: str | None, paragraphs: str | N
                 angle=p.get("angle", ""),
                 augmentations=p["augmentations"],
             )
-            augs_written += 1
 
     # Summarise augmentations across all accepted paragraphs
-    all_augs = [(p.get("company", p["role"]), p["section"], aug) for p in accepted for aug in p.get("augmentations", [])]
+    all_augs = [(p.get("company", p["role"]), p["section"], aug) for p in all_session_accepted for aug in p.get("augmentations", [])]
     if all_augs:
         console.print("[bold]Q&A agenda saved to experiences.md — run[/bold] [cyan]uv run clio build --about \"[experience]\"[/cyan] [bold]to fill these gaps:[/bold]")
         for company, section, aug in all_augs:
@@ -2845,6 +2892,133 @@ def seed_library(ctx: click.Context, input_file: str | None, paragraphs: str | N
                         console.print(f"    • {item}")
             console.print()
             console.print(f"[dim]Run [bold]uv run clio profile[/bold] to review and save.[/dim]\n")
+
+
+@main.command("edit")
+@click.option("--paragraphs", "-p", default=None, help="Path to paragraphs file")
+@click.option("--model", "-m", default=None, help="Claude model to use")
+@click.pass_context
+def edit_library(ctx: click.Context, paragraphs: str | None, model: str | None) -> None:
+    """Line-edit and approve paragraphs into library_approved.md (Layer 3).
+
+    Loads paragraphs from library_refined.md (Layer 2) and library.md (Layer 1).
+    For each paragraph you edit and approve, the result is saved to library_approved.md.
+    Only manually approved paragraphs land here — this is the highest-priority source
+    for generation.
+    """
+    from coverletter.seed import append_paragraphs_to_file
+
+    paragraphs = paragraphs or (ctx.obj or {}).get("paragraphs")
+    cfg = load_config(paragraphs, model_override=model)
+
+    lib_dir = cfg.paragraphs_files[-1].parent
+    approved_file = lib_dir / "library_approved.md"
+
+    # Load from Layer 2 first, fall back to Layer 1
+    source_files = [f for f in [lib_dir / "library_refined.md", cfg.paragraphs_files[-1]] if f.exists()]
+    if not source_files:
+        console.print("[red]No library files found to edit.[/red]")
+        return
+
+    all_paragraphs = load_paragraphs(source_files)
+    if not all_paragraphs:
+        console.print("[yellow]No paragraphs found in library files.[/yellow]")
+        return
+
+    console.print(f"\n[bold blue]Library Editor[/bold blue]  [dim]→ {approved_file.name}[/dim]\n")
+    console.print(
+        f"[dim]{len(all_paragraphs)} paragraph(s) to review. "
+        f"Edit each in $EDITOR, then approve to save to {approved_file.name}.[/dim]\n"
+    )
+
+    approved: list[dict] = []
+
+    for i, p in enumerate(all_paragraphs, 1):
+        from rich.rule import Rule
+        strength_color = {"high": "green", "medium": "yellow", "low": "red"}.get(
+            getattr(p, "strength", "medium"), "white"
+        )
+        role = getattr(p, "role", "General")
+        section = getattr(p, "section", "Untitled")
+        angle = getattr(p, "angle", "")
+        strength = getattr(p, "strength", "medium")
+        text = getattr(p, "text", "")
+
+        console.print(Rule(
+            f"[bold][{i}/{len(all_paragraphs)}] {role} / {section}[/bold]  "
+            f"[{strength_color}]{angle} · {strength}[/{strength_color}]",
+            style="cyan"
+        ))
+        console.print()
+        console.print(text)
+        console.print()
+
+        _flush_stdin()
+        prompt_str = "[A]pprove as-is  [E]dit then approve  [S]kip: "
+        valid_choices = {"a", "approve", "", "e", "edit", "s", "skip"}
+
+        while True:
+            choice = input(prompt_str).strip().lower()
+            if choice not in valid_choices:
+                continue
+            if choice in ("a", "approve", ""):
+                approved.append({
+                    "role": role, "section": section, "angle": angle,
+                    "strength": strength, "via": getattr(p, "via", "edit"),
+                    "text": text, "augmentations": [],
+                })
+                console.print("[green]→ Approved.[/green]\n")
+                break
+            elif choice in ("e", "edit"):
+                import tempfile, subprocess
+                editor = os.environ.get("EDITOR", "nano")
+                with tempfile.NamedTemporaryFile(
+                    mode="w", suffix=".txt", delete=False, encoding="utf-8"
+                ) as tmp:
+                    tmp.write(text)
+                    tmp_path = tmp.name
+                subprocess.call([editor, tmp_path])
+                edited_text = Path(tmp_path).read_text(encoding="utf-8").strip()
+                Path(tmp_path).unlink(missing_ok=True)
+                if not edited_text or edited_text == text.strip():
+                    console.print("[dim]No changes — approving as-is.[/dim]\n")
+                    approved.append({
+                        "role": role, "section": section, "angle": angle,
+                        "strength": strength, "via": getattr(p, "via", "edit"),
+                        "text": text, "augmentations": [],
+                    })
+                    break
+                console.print()
+                console.print("[bold]Edited paragraph:[/bold]")
+                console.print(edited_text)
+                console.print()
+                confirm = input("[A]pprove  [R]edo  [S]kip: ").strip().lower()
+                if confirm in ("s", "skip"):
+                    console.print("[dim]→ Skipped.[/dim]\n")
+                    break
+                elif confirm in ("r", "redo"):
+                    continue
+                else:
+                    approved.append({
+                        "role": role, "section": section, "angle": angle,
+                        "strength": strength, "via": "edit",
+                        "text": edited_text, "augmentations": [],
+                    })
+                    console.print("[green]→ Approved (edited).[/green]\n")
+                    break
+            elif choice in ("s", "skip"):
+                console.print("[dim]→ Skipped.[/dim]\n")
+                break
+
+    if not approved:
+        console.print("[yellow]No paragraphs approved. Nothing saved.[/yellow]\n")
+        return
+
+    from rich.rule import Rule
+    console.print(Rule(style="green"))
+    console.print(f"\n[bold]{len(approved)} paragraph(s) approved.[/bold] Saving to [cyan]{approved_file}[/cyan]...\n")
+    append_paragraphs_to_file(approved_file, approved)
+    console.print("[green]Saved to library_approved.md (Layer 3).[/green]\n")
 
 
 @main.command("sync")
