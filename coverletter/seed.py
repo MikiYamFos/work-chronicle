@@ -310,8 +310,6 @@ def append_paragraphs_to_file(
     paragraphs: list[dict],
 ) -> None:
     """Append accepted paragraphs to the library file under correct headers."""
-    import textwrap
-
     if path.exists():
         existing = path.read_text(encoding="utf-8")
     else:
@@ -339,9 +337,9 @@ def append_paragraphs_to_file(
             if p.get("angle"):
                 meta_parts.append(f"angle={p['angle']}")
             meta_line = f"<!-- meta: {', '.join(meta_parts)} -->\n" if meta_parts else ""
-            wrapped = textwrap.fill(p["text"].replace("\n", " "), width=90)
+            text = p["text"].replace("\n", " ").strip()
             lines.append(f"\n{h3}\n")
-            lines.append(meta_line + wrapped)
+            lines.append(meta_line + text)
 
     lines.append("")
     path.write_text("\n".join(lines), encoding="utf-8")

@@ -2019,39 +2019,46 @@ def blurb(
 
 
 @main.command("init")
-def init() -> None:
-    """Scaffold .env, library.md, and experiences.md in the current directory."""
-    from pathlib import Path
+@click.pass_context
+def init(ctx: click.Context) -> None:
+    """Interactive setup — scaffold files, configure keys, and start building your library."""
+    import re as _re
 
     env_path = Path(".env")
     paragraphs_path = Path("library.md")
     experiences_path = Path("experiences.md")
+    angles_path = Path("custom_angles.toml")
+    categories_path = Path("custom_categories.toml")
     created: list[str] = []
     skipped: list[str] = []
 
+    console.print("\n[bold blue]clio setup[/bold blue]\n")
+
+    # ── 1. Create files ──────────────────────────────────────────────────────
+
+    fresh_env = False
     if env_path.exists():
         skipped.append(".env")
     else:
         env_path.write_text(
-            "# Cover Letter Generator — configuration\n"
+            "# clio — configuration\n"
             "# Get your key at https://console.anthropic.com\n"
-            "ANTHROPIC_API_KEY=sk-ant-...\n\n"
+            "ANTHROPIC_API_KEY=\n\n"
             "# Optional: Voyage AI for semantic paragraph matching (better than keyword)\n"
             "# Get your key at https://www.voyageai.com\n"
-            "# VOYAGE_API_KEY=pa-...\n\n"
+            "VOYAGE_API_KEY=\n\n"
             "# Your name as it appears on the sign-off\n"
-            "AUTHOR_NAME=Your Name\n\n"
+            "AUTHOR_NAME=\n\n"
             "# Absolute path to your resume PDF (or .md / .txt)\n"
-            "# RESUME_FILE=/path/to/your/resume.pdf\n\n"
+            "RESUME_FILE=\n\n"
             "# Where to save generated letters (defaults to ./output)\n"
-            "# OUTPUT_DIR=/path/to/output\n\n"
+            "# OUTPUT_DIR=\n\n"
             "# Override the model (defaults to claude-sonnet-4-6)\n"
-            "# COVERLETTER_MODEL=claude-opus-4-7\n\n"
-            "# How many paragraphs to pass to the model (default 20)\n"
-            "# COVERLETTER_TOP_N=20\n",
+            "# COVERLETTER_MODEL=claude-opus-4-5\n",
             encoding="utf-8",
         )
         created.append(".env")
+        fresh_env = True
 
     if paragraphs_path.exists():
         skipped.append("library.md")
@@ -2062,62 +2069,24 @@ def init() -> None:
             "  -----------------------------------------------------------------------\n"
             "  STRUCTURE\n"
             "  * ## Role Name    -> groups paragraphs for a specific role type\n"
-            "  * ## General      -> included in every generation regardless of role\n"
-            "  * ### Section     -> paragraph type (Opening, Technical, Why This Role...)\n"
+            "  * ## General      -> paragraphs included regardless of role\n"
+            "  * ### Section     -> experience or project name, with company context\n"
+            "                       e.g. ### BritBox / Watch Duration Pipeline\n"
             "  * Paragraphs separated by blank lines within each section\n"
             "  * Optional meta comment above each paragraph:\n"
-            "      <!-- meta: tone=opener, strength=high -->\n"
-            "      <!-- meta: tech=python,spark, strength=high -->\n"
+            "      <!-- meta: strength=high, via=build, angle=production-ownership -->\n"
             "  * Valid meta keys: tone (opener|closer), strength (high|medium|low),\n"
-            "                     tech (comma-separated list)\n"
+            "                     via (seed|build|reflect), angle (see clio help)\n"
             "\n"
             "  WORKFLOW\n"
-            "  1. Add your source paragraphs below -- written in your own voice\n"
-            "  2. Run: coverletter\n"
-            "  3. Select a role, paste a job description, get a letter\n"
-            "  4. After every application, add what worked\n"
+            "  1. Run: uv run clio seed <resume-or-letter>  -- bootstrap from existing material\n"
+            "  2. Run: uv run clio build                    -- grow library through Q&A\n"
+            "  3. Run: uv run clio sync                     -- load paragraphs into DB\n"
+            "  4. Run: uv run clio generate                 -- generate a letter\n"
             "  -----------------------------------------------------------------------\n"
             "-->\n"
             "\n"
-            "# My Cover Letter Paragraphs\n"
-            "\n"
-            "## General\n"
-            "\n"
-            "### Opening\n"
-            "\n"
-            "<!-- meta: tone=opener, strength=high -->\n"
-            "Write an opening paragraph here that describes who you are and what kind of\n"
-            "work you do. Make a concrete claim. Do not start with \"I am excited to apply.\"\n"
-            "\n"
-            "### Strengths\n"
-            "\n"
-            "<!-- meta: strength=high -->\n"
-            "Write a paragraph about a specific strength here, with an example or evidence.\n"
-            "\n"
-            "### Closing\n"
-            "\n"
-            "<!-- meta: tone=closer, strength=high -->\n"
-            "Write a closing paragraph here. Thank the reader and express genuine interest\n"
-            "in speaking further. Be specific, not generic.\n"
-            "\n"
-            "## Your Role Type\n"
-            "\n"
-            "### Opening\n"
-            "\n"
-            "<!-- meta: tone=opener, strength=high -->\n"
-            "Write a role-specific opening paragraph here.\n"
-            "\n"
-            "### Technical\n"
-            "\n"
-            "<!-- meta: tech=your,tools,here, strength=high -->\n"
-            "Write a technical paragraph here about a specific project or system you built.\n"
-            "Concrete situation, specific problem, what you did, why it was hard, what changed.\n"
-            "\n"
-            "### Why This Role\n"
-            "\n"
-            "<!-- meta: tone=closer, strength=high -->\n"
-            "Write a paragraph about why this type of role or organization appeals to you.\n"
-            "Specific connection, not generic enthusiasm.\n",
+            "# My Cover Letter Paragraphs\n",
             encoding="utf-8",
         )
         created.append("library.md")
@@ -2127,35 +2096,30 @@ def init() -> None:
     else:
         experiences_path.write_text(
             "# Experience Register\n"
-            "#\n"
-            "# Stores raw facts and desired angle framings per experience.\n"
-            "# Used to inject targeted context into Q&A sessions so the agent\n"
-            "# asks about gaps instead of re-asking what's already written.\n"
-            "#\n"
-            "# Format:\n"
-            "#\n"
-            "# ## Experience Name\n"
-            "# company: Company Name\n"
-            "# years: 2021–2023\n"
-            "# angles: production-ownership, system-design, business-impact\n"
-            "#\n"
-            "# Raw facts about this experience (things the Q&A agent already knows).\n"
-            "# Write these as bullet points or short sentences.\n"
-            "#\n"
-            "# qa_targets:\n"
-            "# - What downstream decisions depended directly on the output?\n"
-            "# - What broke or became unreliable when it failed?\n"
-            "#\n"
-            "# Angles to use:\n"
-            "#   production-ownership, system-design, business-impact, data-model,\n"
-            "#   cross-functional, scope-opener, domain-expertise, reliability,\n"
-            "#   leverage, through-line, ownership, architecture, strategic-vision,\n"
-            "#   financial-complexity\n",
+            "# Populated automatically by clio build and clio seed.\n"
+            "# Each entry stores raw facts and Q&A targets per experience.\n",
             encoding="utf-8",
         )
         created.append("experiences.md")
 
-    console.print()
+    for toml_path, label, comments in [
+        (angles_path, "custom_angles.toml",
+         "# Personal angle overrides — gitignored.\n"
+         "# Baseline is in the clio source (coverletter/db.py: CANONICAL_ANGLES).\n"
+         "# Uncomment and edit to override specific angles.\n"
+         "# Format: [angles.angle_name]  description = \"your override\"\n"),
+        (categories_path, "custom_categories.toml",
+         "# Personal category overrides — gitignored.\n"
+         "# Baseline is in coverletter/evals/argument_categories.json.\n"
+         "# Uncomment and edit to override specific categories.\n"
+         "# Format: [categories.category_name]  description = \"your override\"\n"),
+    ]:
+        if toml_path.exists():
+            skipped.append(label)
+        else:
+            toml_path.write_text(comments, encoding="utf-8")
+            created.append(label)
+
     if created:
         console.print("[bold green]Created:[/bold green]")
         for f in created:
@@ -2164,23 +2128,83 @@ def init() -> None:
         console.print("[dim]Already exists (skipped):[/dim]")
         for f in skipped:
             console.print(f"  [dim]{f}[/dim]")
+    console.print()
+
+    # ── 2. Collect API keys and author name ───────────────────────────────────
+
+    env_text = env_path.read_text(encoding="utf-8")
+
+    def _get_env_val(key: str) -> str:
+        m = _re.search(rf"^{key}=(.*)$", env_text, _re.MULTILINE)
+        return m.group(1).strip() if m else ""
+
+    def _set_env_val(key: str, value: str) -> None:
+        nonlocal env_text
+        env_text = _re.sub(
+            rf"^{key}=.*$", f"{key}={value}", env_text, flags=_re.MULTILINE
+        )
+        env_path.write_text(env_text, encoding="utf-8")
+
+    needs_setup: list[tuple[str, str, str]] = []
+    if not _get_env_val("ANTHROPIC_API_KEY"):
+        needs_setup.append(("ANTHROPIC_API_KEY", "Anthropic API key (https://console.anthropic.com)", "sk-ant-"))
+    if not _get_env_val("AUTHOR_NAME"):
+        needs_setup.append(("AUTHOR_NAME", "Your full name (used on letter sign-offs)", ""))
+    if not _get_env_val("RESUME_FILE"):
+        needs_setup.append(("RESUME_FILE", "Path to your resume PDF (optional — press Enter to skip)", ""))
+
+    if needs_setup:
+        console.print("[bold]Let's configure your keys.[/bold] These go into .env\n")
+        _flush_stdin()
+        for key, prompt_text, hint in needs_setup:
+            hint_str = f" [dim](e.g. {hint})[/dim]" if hint else ""
+            console.print(f"  {prompt_text}{hint_str}")
+            val = input(f"  {key}: ").strip()
+            if val:
+                _set_env_val(key, val)
+                console.print(f"  [green]✓ saved[/green]\n")
+            else:
+                console.print(f"  [dim]skipped — edit .env to set {key} later[/dim]\n")
+
+    # Reload dotenv so the rest of init can use the keys we just wrote
+    from dotenv import load_dotenv
+    load_dotenv(override=True)
+
+    # ── 3. Offer to start building the library now ────────────────────────────
+
+    console.print("[bold]Your library is empty. Let's get some material in.[/bold]\n")
+    console.print("  [A] I have a resume, cover letter, or LinkedIn export to seed from")
+    console.print("  [B] I want to start a Q&A session to write a paragraph from scratch")
+    console.print("  [S] Skip — I'll run clio seed or clio build manually later\n")
+    _flush_stdin()
+    choice = input("Choice [A/B/S]: ").strip().lower()
+
+    if choice == "a":
+        console.print()
+        seed_file = input("Path to file (or press Enter to paste from clipboard): ").strip()
+        console.print()
+        try:
+            ctx.invoke(seed_library, input_file=seed_file or None)
+        except Exception as e:
+            console.print(f"[red]seed failed:[/red] {e}")
+    elif choice == "b":
+        console.print()
+        try:
+            ctx.invoke(build_library)
+        except Exception as e:
+            console.print(f"[red]build failed:[/red] {e}")
+
+    # ── 4. What's next ────────────────────────────────────────────────────────
 
     console.print()
-    console.print("[bold]Next steps:[/bold]")
-    console.print("  1. Add your [bold]ANTHROPIC_API_KEY[/bold] to .env")
-    console.print("  2. Set [bold]AUTHOR_NAME[/bold] in .env")
+    console.print("[bold]What's next:[/bold]")
+    console.print("  [cyan]uv run clio build[/cyan]         — add more paragraphs through Q&A")
+    console.print("  [cyan]uv run clio profile[/cyan]       — capture your goals and working style")
+    console.print("  [cyan]uv run clio sync[/cyan]          — load paragraphs into the DB")
+    console.print("  [cyan]uv run clio extract[/cyan]       — extract claims (needed for outline and interview)")
+    console.print("  [cyan]uv run clio generate[/cyan]      — generate a letter")
     console.print()
-    console.print("  [bold]If you have existing material[/bold] (cover letter, resume, LinkedIn bio):")
-    console.print("    uv run clio seed              # paste material, extract paragraphs")
-    console.print()
-    console.print("  [bold]If you're starting from scratch:[/bold]")
-    console.print("    uv run clio build --about \"your experience\"")
-    console.print()
-    console.print("  Then build your profile (do this once before generating letters):")
-    console.print("    uv run clio profile --model opus")
-    console.print()
-    console.print("  Then generate your first letter:")
-    console.print("    uv run clio\n")
+    console.print("[dim]Run [bold]uv run clio onboard[/bold] at any time to check setup status.[/dim]\n")
 
 
 @main.command("profile")

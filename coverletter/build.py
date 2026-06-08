@@ -1,7 +1,6 @@
 from __future__ import annotations
 import re as _re
 import json
-import textwrap
 from pathlib import Path
 
 import anthropic
@@ -726,7 +725,7 @@ def append_to_library(
     """Append a new paragraph to the priority library file under the correct headers."""
     meta_parts = ", ".join(f"{k}={v}" for k, v in meta.items())
     meta_line = f"<!-- meta: {meta_parts} -->\n" if meta_parts else ""
-    wrapped = textwrap.fill(text.replace("\n", " "), width=90)
+    text = text.replace("\n", " ").strip()
 
     if path.exists():
         existing = path.read_text(encoding="utf-8")
@@ -737,11 +736,11 @@ def append_to_library(
     h3 = f"### {section}"
 
     if h2 in existing and h3 in existing:
-        entry = f"\n{meta_line}{wrapped}\n"
+        entry = f"\n{meta_line}{text}\n"
     elif h2 in existing:
-        entry = f"\n{h3}\n\n{meta_line}{wrapped}\n"
+        entry = f"\n{h3}\n\n{meta_line}{text}\n"
     else:
-        entry = f"\n{h2}\n\n{h3}\n\n{meta_line}{wrapped}\n"
+        entry = f"\n{h2}\n\n{h3}\n\n{meta_line}{text}\n"
 
     if path.exists():
         with path.open("a", encoding="utf-8") as f:
