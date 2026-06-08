@@ -54,8 +54,10 @@ def _resolve_paragraphs_files(override: str | None) -> list[Path]:
     lib_dir = base.parent
     files: list[Path] = []
 
-    approved = Path(os.environ.get("LIBRARY_APPROVED_FILE", "")) or lib_dir / "library_approved.md"
-    refined = Path(os.environ.get("LIBRARY_REFINED_FILE", "")) or lib_dir / "library_refined.md"
+    _approved_env = os.environ.get("LIBRARY_APPROVED_FILE", "")
+    approved = Path(_approved_env) if _approved_env else lib_dir / "library_approved.md"
+    _refined_env = os.environ.get("LIBRARY_REFINED_FILE", "")
+    refined = Path(_refined_env) if _refined_env else lib_dir / "library_refined.md"
 
     if approved.exists():
         files.append(approved)

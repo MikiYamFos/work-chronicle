@@ -2208,7 +2208,22 @@ def init(ctx: click.Context) -> None:
         except Exception as e:
             console.print(f"[red]build failed:[/red] {e}")
 
-    # ── 4. What's next ────────────────────────────────────────────────────────
+    # ── 4. Profile ────────────────────────────────────────────────────────────
+
+    cfg_check = load_config()
+    if not cfg_check.profile_file.exists():
+        console.print()
+        console.print("[bold]Next: build your candidate profile.[/bold]")
+        console.print("[dim]This captures your goals, working style, and values. It drives the letter thesis and alignment report.[/dim]\n")
+        _flush_stdin()
+        run_profile = input("Build your profile now? [Y/n]: ").strip().lower()
+        if run_profile not in ("n", "no"):
+            try:
+                ctx.invoke(build_profile)
+            except Exception as e:
+                console.print(f"[red]profile failed:[/red] {e}")
+
+    # ── 5. What's next ────────────────────────────────────────────────────────
 
     console.print()
     console.print("[bold]What's next:[/bold]")
@@ -2868,30 +2883,7 @@ def seed_library(ctx: click.Context, input_file: str | None, paragraphs: str | N
             console.print(f"  [dim]{company} / {section}:[/dim] {aug}")
         console.print()
 
-    # Offer profile generation
-    if not cfg.profile_file.exists():
-        console.print("[dim]No candidate profile found.[/dim]")
-        _flush_stdin()
-        run_profile = input("Generate profile from this library now? [Y/n]: ").strip().lower()
-        if run_profile not in ("n", "no"):
-            from coverletter.profile import load_profile, write_profile, suggest_from_library
-            all_paragraphs = load_paragraphs(cfg.paragraphs_files)
-            console.print()
-            with Live(Spinner("dots", text="Generating profile suggestions..."), refresh_per_second=10, console=console):
-                try:
-                    suggestions = suggest_from_library(all_paragraphs, cfg.api_key, cfg.model)
-                except RuntimeError as e:
-                    console.print(f"\n[red]Profile generation failed:[/red] {e}\n")
-                    return
-            console.print(f"[dim]{running_total()}[/dim]\n")
-            console.print("[bold]Profile suggestions:[/bold]\n")
-            for section, items in suggestions.items():
-                if items:
-                    console.print(f"  [cyan]{section}:[/cyan]")
-                    for item in items:
-                        console.print(f"    • {item}")
-            console.print()
-            console.print(f"[dim]Run [bold]uv run clio profile[/bold] to review and save.[/dim]\n")
+    console.print("[dim]Run [bold]uv run clio profile[/bold] when you've finished seeding to build your candidate profile.[/dim]\n")
 
 
 @main.command("edit")
