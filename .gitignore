@@ -2,6 +2,10 @@
 .env
 .env.*
 
+# Personal angle/category customizations — templates are committed, personal files are not
+custom_angles.toml
+custom_categories.toml
+
 # Personal data — not for public repo
 library.db
 paragraphs.md

@@ -109,6 +109,9 @@ BANNED STRUCTURES:
   - Any sentence that starts with the word "That"
   - Fake-contrast ("This was not about X, it was about Y")
   - Generic bridge openers: "That experience fits," "This role aligns,"
+  - "I have been the [role/person/engineer]" — no one writes this way. Never use it.
+  - "career-long pattern of X" — vague filler. Name the actual thing, not the pattern.
+  - "building for the next engineer/person" — AI filler. Cut it.
     "What stands out," "The clearest connection," "This is the kind of work"
   - A paragraph that ends with a list
   - More than one list in the entire letter

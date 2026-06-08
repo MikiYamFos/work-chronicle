@@ -1,7 +1,9 @@
-# Cover Letter Generator — Workflow Reference
+# clio — Workflow Reference
 
 This document describes what the system does and how to use it. It covers what works,
 what is partial, and what is not built. It does not describe aspirations as if implemented.
+
+Run `clio help` for a quick command reference organized by workflow.
 
 ---
 
@@ -12,11 +14,11 @@ what is partial, and what is not built. It does not describe aspirations as if i
 | `library.md` | Your raw paragraphs. Write here first. Never rewritten by the tool. |
 | `library_rebuilt.md` | Paragraphs built through the correct workflow: raw → coaching → your edits → approved. |
 | `library_salvaged.md` | Paragraphs recovered from damaged material via the diff tool. Same status as `library_rebuilt.md` once approved. |
-| `library.db` | SQLite database. Populated by `coverletter sync`. Holds paragraphs, claims, evidence, embeddings. |
+| `library.db` | SQLite database. Populated by `clio sync`. Holds paragraphs, claims, evidence, embeddings. |
 | `candidate_profile.toml` | Your goals, working style, values, seniority signals. |
 
 **The write path going forward:**
-Raw text → `library.md` → diff tool (draft + coaching + your edits) → `library_rebuilt.md` → `coverletter sync` → `coverletter extract` → DB
+Raw text → `library.md` → diff tool (draft + coaching + your edits) → `library_rebuilt.md` → `clio sync` → `clio extract` → DB
 
 ### Triage files — cleanup work only, not the ongoing path
 
@@ -33,20 +35,19 @@ This is ongoing work, not a one-time setup. Every time you have new material —
 that just shipped, a decision you made, something you want to be able to say — you come
 back here.
 
-### `coverletter init`
+### `clio init`
 
-First-time setup only. Creates `.coverletter.yaml` and empty library files. Run once.
+First-time setup only. Creates `.env` and empty library files. Run once.
 
-### `coverletter profile`
+### `clio profile`
 
 Captures your goals, values, working style, and seniority signals into
-`.coverletter_profile.yaml`. Used in alignment reporting, thesis generation, and blurb
-generation. Profiles are versioned — re-running archives the previous one. If your goals
-have shifted, the tool detects the diff and runs a brief Q&A before saving.
+`candidate_profile.toml`. Used in alignment reporting, thesis generation, and blurb
+generation. Profiles are versioned — re-running archives the previous one.
 
 Profile sections: `goals`, `values`, `working_style`, `avoid`, `seniority_signals`.
 
-### `coverletter jd`
+### `clio jd`
 
 Manage saved job descriptions. JDs are saved automatically when you paste one during
 `generate` or `blurb`. They are saved after cleaning — boilerplate is stripped before
@@ -54,15 +55,15 @@ storage so the file matches what gets embedded. JD embeddings and company values
 cached in the DB so the same JD is never re-embedded across multiple runs.
 
 ```bash
-coverletter jd list                  # show saved JDs with date, size, preview
-coverletter jd rename <old> <new>    # rename a saved JD
-coverletter jd replace <name>        # paste new JD from clipboard; clears DB cache
+clio jd list                  # show saved JDs with date, size, preview
+clio jd rename <old> <new>    # rename a saved JD
+clio jd replace <name>        # paste new JD from clipboard; clears DB cache
 ```
 
-`jd replace` shows the current content briefly, reads new JD from clipboard, cleans it,
-overwrites the file, and deletes the cache entry so the next run re-embeds from scratch.
+`jd replace` logs the change to the `jd_versions` table with a hash and change summary,
+so you can track how a JD evolved and whether your coverage improved across versions.
 
-### `coverletter build`
+### `clio build`
 
 The core library-building tool. Runs a focused Q&A session that draws out specific details
 and drafts a paragraph. Two modes:
@@ -73,68 +74,59 @@ to capture.
 **Gap-driven mode** (`--jd`): takes a job description and uses the claims DB to identify
 which argument categories are covered and which are not. Shows covered categories with the
 best-matching claim, shows gaps with a concrete starting question for each, then lets you
-pick which gaps to address. Each gap session feeds the Q&A coach the gap requirement and
-starting angle so it begins from a specific, grounded place rather than cold.
+pick which gaps to address.
 
 ```bash
-coverletter build                          # manual — prompts for topic
-coverletter build --jd /path/to/jd.txt    # gap-driven — analyzes library first
-coverletter build --jd "JD text..."       # gap-driven — inline text
+clio build                          # manual — prompts for topic
+clio build --jd /path/to/jd.txt    # gap-driven — analyzes library first
 ```
 
-`--jd` gap analysis uses DB embeddings, not an LLM scan of the library. It requires
-`coverletter sync` and `coverletter extract` to have been run first.
+`--jd` gap analysis requires `clio sync` and `clio extract` to have been run first.
 
 Pass `--resume` to make the coach aware of your resume. Resume bullets are injected as
 established fact — the coach does not re-ask what the resume states; it asks about
 constraints, consequences, and decisions not captured there.
 
 ```bash
-coverletter build --resume ~/resume.pdf --jd jd.txt
+clio build --resume ~/resume.pdf --jd jd.txt
 ```
 
-The build agent searches the library before asking anything, so it does not re-ask about
-things already documented. One question per turn. Type `e` to open `$EDITOR` for a long
-answer.
+**How the Q&A session works:**
 
-**The draft is strictly constrained**: it must lift your actual sentences, must not invent
-openers or closers not present in the source, and must not paraphrase or substitute
-polished language for your register.
+The session opens with a static prompt — no model call, no cost. After your response,
+two free checks run before spending any tokens:
 
-After each accepted paragraph in `--jd` mode, the DB syncs automatically so subsequent
-gap sessions in the same run see updated coverage.
+1. **Metadata check** — if you described a specific project but employment context is
+   unclear (personal vs employer, which company), a boilerplate question fires at zero cost.
 
-### `coverletter reflect`
+2. **Model follow-up** — one question per turn. The question type matches the gap:
+   competence gaps ask what was built; production gaps ask about constraints and ownership;
+   impact gaps ask what became possible.
+
+The Q&A agent uses `search_library` to check what's already documented before asking —
+it will not re-ask about things already written.
+
+**Entering long answers**: press Enter for new lines, Enter twice to submit.
+
+**At any point**: type `draft` to force a draft. Type `done` to exit without saving.
+
+### `clio reflect`
 
 Captures perspective material — through-lines, pivots, reframes, and synthesis paragraphs.
 These are not evidence paragraphs — they are your voice connecting your arc.
 
-Q&A is angle-specific: a through-line session asks about what has been consistent across
-your whole arc. A pivot session asks about the specific moment of change and the reason.
-
 Perspective paragraphs are pinned during prefilter (never filtered out by relevance
 scoring) and labeled `[NARRATIVE FRAME]` in the generation context.
 
-### `coverletter intake`
-
-Two modes: `--mission` (capture why a company's purpose resonates) and `--evidence`
-(capture what was built or owned at a specific role). Both run focused Q&A and draft
-paragraphs.
-
-### `coverletter seed`
+### `clio seed`
 
 For bootstrapping from existing material — a resume, LinkedIn export, old cover letters.
-Reads the file and extracts initial paragraphs via light Q&A. Paragraphs from `seed` tend
-to be thinner than paragraphs built through the full `build` loop and need further
-development.
+Reads the file and extracts initial paragraphs via light Q&A.
 
-### `coverletter sync`
+### `clio sync`
 
 Reads all configured `.md` files and upserts paragraphs into the SQLite DB. Run this any
 time you edit the markdown files directly or add new paragraphs.
-
-Sync also computes Voyage AI embeddings (`--embed` flag) and angle classifications
-(`--angles` flag).
 
 ### Library diff tool (Streamlit)
 
@@ -143,37 +135,59 @@ uv run streamlit run coverletter/library_diff.py
 ```
 
 For correcting `library_refined.md` paragraphs that were damaged by Claude rewriting.
-Shows three sources side by side — raw, damaged, and story notes — and lets you decide
-what goes into `library_salvaged.md`.
+Shows three sources side by side — raw, damaged, and story notes.
 
-**Two coaching buttons**: "Check what the draft got wrong" (Level 1 — finds where Claude
-corrupted your words) and "Check my edited version" (Level 2 — checks for weak openers,
-AI constructs, passive claims before you save).
+---
 
-**Action buttons**: Use raw & next / Use damaged & next / Save edit & next / Skip / Exclude.
+## Resume extraction
+
+Your resume is automatically indexed into the claims DB the first time any command that
+uses it runs. This happens silently — one line prints when indexing occurs:
+
+```
+  Indexing resume... 24 claims indexed (v1)
+```
+
+Resume claims are stored with `source='resume'` alongside library claims
+(`source='library'`). This distinction matters in two places:
+
+- **Interview prep** — `[RESUME]` means it's already on paper; `[LIBRARY]` means it
+  needs to come out verbally; `[GAP]` means you have no strong material.
+- **Gap analysis** — the tool can distinguish what the interviewer has already read vs.
+  what you need to surface in conversation.
+
+### `clio resume-extract`
+
+Force a fresh extraction — use after a major resume overhaul or to revert to a
+re-extracted state.
+
+```bash
+clio resume-extract          # shows last extraction info, prompts to confirm
+clio resume-extract --force  # re-extracts without prompting
+```
+
+Version history is preserved in `resume_extractions` table. Each extraction gets a version
+number and timestamp.
 
 ---
 
 ## Extracting claims
 
-Claims are extracted from your library paragraphs and stored in the DB. This is what
-powers the argument-driven generation flow. You do not need to do this before generating
-with the classic flow, but you do need it before `coverletter outline`.
+Claims are extracted from your library paragraphs and stored in the DB. This powers the
+argument-driven generation flow and interview prep. You do not need this before generating
+with the classic flow, but you need it before `clio outline` and `clio interview`.
 
-### `coverletter extract --dry-run`
+### `clio extract --dry-run`
 
 Extracts claims from all pending paragraphs. For each paragraph, pulls:
-- **Claims** — atomic assertions in five types: ownership/decision, approach/method,
-  disposition/character, motivation/orientation, personal project
+- **Claims** — atomic assertions: ownership/decision, approach/method, disposition/character, motivation, personal project
 - **Support items** — evidence that makes claims believable
-- **Sub-details** — technical specifics nested under support items, preserved near-verbatim
-- **Conclusions** — insights that emerge from the claims (only if explicit in the paragraph)
-
-The judge runs on every claim concurrently. Paragraphs run concurrently against each other.
+- **Sub-details** — technical specifics, preserved near-verbatim
+- **Conclusions** — insights that emerge from the claims
 
 In `--dry-run` mode, nothing writes to the DB. Results go to `extractions_review.json`.
 
-### `coverletter extract` (without `--dry-run`)
+### `clio extract` (without `--dry-run`)
 
 Same extraction and judging; passing claims insert directly into the DB. Requires a gold
 standard with at least 5 approved and 5 rejected examples before it will run.
@@ -184,29 +198,15 @@ standard with at least 5 approved and 5 rejected examples before it will run.
 uv run streamlit run coverletter/label_evals.py
 ```
 
-Review extracted claims after a dry-run. For each claim: source paragraph (editable),
-claim text, judge pass/fail with reason, contexts, and support hierarchy.
+Review extracted claims after a dry-run. Approve inserts to DB immediately. Reject with a
+failure category. Gold standard checkbox marks a claim as a reference example for the judge.
 
-**Approve** inserts the claim to the DB immediately. **Reject** with a failure category.
-**Gold standard checkbox** marks a claim as a reference example for the judge.
+Session position saves on every action — reopen and it picks up where you left off.
 
-**Session resumption**: cursor position saves on every action. Reopen and it picks up where
-you left off.
-
-**End-of-session re-extract**: when all claims are labeled, a button appears to re-extract
-paragraphs you edited. New claims go into a judge queue in the JSON.
-
-**Gold standard candidates**: surfaces at end of session. Both approved and rejected claims
-with clear failure categories appear as candidates. Mark unambiguous cases only.
-
-### `coverletter claims`
+### `clio claims`
 
 Zero-cost view of claim coverage across the library. Shows claim count, anchor count, and
-argument categories per paragraph. Run this to see which paragraphs still need extraction.
-
-```
-coverletter claims
-```
+argument categories per paragraph.
 
 ### Judge calibration
 
@@ -215,207 +215,164 @@ uv run python coverletter/evals/align_judge.py
 ```
 
 Checks judge accuracy against your gold standard. Reports accuracy, precision, and recall.
-Shows all disagreements with the judge's reasoning.
+If alignment is below target, offers to draft a targeted patch to `_JUDGE_SYSTEM`.
 
-If alignment is below target, the script offers to draft a targeted patch to `_JUDGE_SYSTEM`
-in `extract.py` via a Haiku call. Review the draft before applying it — the script does
-not edit the file automatically.
-
-**Alignment targets**: recall ≥ 89% (catching bad claims), accuracy ≥ 80%.
+**Alignment targets**: recall ≥ 89%, accuracy ≥ 80%.
 
 ```
 uv run python coverletter/evals/run_evals.py
 ```
 
-Measures overall pipeline quality as the percentage of claims the judge approves across
-the full library. Use this to compare the effect of prompt changes.
+Measures overall pipeline quality as the percentage of claims the judge approves. Use this
+to compare the effect of prompt changes across runs.
 
 ---
 
 ## Job description processing
 
-Every JD is processed before it touches anything — embedding, LLM calls, or caching.
+Every JD is cleaned before use — `clean_jd()` strips EEO, disability disclosure, and
+legal boilerplate. Company values and mission content are explicitly not stripped.
 
-### Cleaning
+JD embeddings are cached by content hash. Once embedded, subsequent runs on the same JD
+return the cached vector immediately.
 
-`clean_jd()` in `coverletter/jd.py` strips EEO, disability disclosure, and legal
-boilerplate before the JD is used. Strategy: tail truncation when boilerplate appears
-at the end with nothing substantive after it; paragraph-level stripping for scattered
-boilerplate. Company values and mission content are explicitly not stripped.
+When a JD is replaced via `clio jd replace`, the change is logged to `jd_versions` with
+the old and new hash and a change summary. This lets you track coverage improvement over
+time as a JD evolves.
 
-JDs are saved to `jds/` in their cleaned form. If you paste a JD with an EEO section,
-the file stores the cleaned version — what you see is what gets used.
+---
 
-### Company values extraction
+## Generating letters
 
-If the JD contains a company values statement, mission, or cultural principles, they are
-extracted via a cheap LLM call and cached in the DB alongside the JD embedding. Extracted
-values are injected into the generation context and the argument-beacon prompt with an
-explicit instruction: show alignment through what you've actually done, don't echo values
-back as assertions.
-
-Returns `None` silently if no values content is found — the flow works identically
-whether or not the JD contains values.
-
-### Embedding cache
-
-JD embeddings are stored in `jd_embedding_cache` keyed by content hash. Once a JD has
-been embedded, subsequent runs (generate → blurb → outline → build --jd on the same JD)
-return the cached vector immediately. Company values are stored in the same cache row.
-
-## Writing a letter
-
-Two paths. Both are fully working. Use the argument-driven path when you have a populated
-claim library. Use the classic path for speed, or when the claim library is thin.
+Two paths. Use the argument-driven path when you have a populated claim library.
+Use the classic path for speed, or when the claim library is thin.
 
 ### Argument-driven path
 
-#### Step 1 — `coverletter outline`
+#### Step 1 — `clio outline`
 
 ```
-coverletter outline jd.txt --company "Acme Corp"
+clio outline jd.txt --company "Acme Corp"
 ```
 
-Generates a thesis from the JD, then pauses and lets you edit the thesis before grouping
-runs — this is where you steer the argument. Then retrieves claims from the DB using
-up to three-stage retrieval:
-
-1. Score argument categories against the JD embedding — filter to relevant categories.
-2. Rank claims within relevant categories by embedding similarity (or BGE-M3 hybrid
-   dense+sparse if `EMBED_MODEL=bge-m3`).
-3. Optional Cohere reranker pass over the selected claim set — cross-encoder sees the full
-   (JD, claim) pair jointly for precision on terminology-sensitive requirements.
+Generates a thesis, retrieves claims via up to three-stage retrieval:
+1. Score argument categories against the JD embedding
+2. Rank claims within relevant categories by embedding similarity
+3. Optional Cohere reranker pass for precision
 
 Groups claims into argument-driven paragraph blocks and writes an editable markdown outline.
+Prints any JD requirements no claim covers (gaps recorded in analytics DB).
 
-After writing, prints any JD requirements that no claim covers (gaps). These are also
-recorded in the analytics DB for cross-application tracking.
+**Edit the outline before generating.** Reorder blocks, drop weak claims, adjust framing.
 
-**Edit the outline before generating.** The outline is the steering point — reorder blocks,
-drop weak claims, adjust the thesis framing, add notes to claims.
-
-#### Step 2 — Edit the outline
-
-Open the generated `acme_corp_outline.md`. The format:
-
-```markdown
-## paragraph label
-*Addresses: JD requirement*
-
-- **Claim:** At Acme, I owned the VideoViewEvents pipeline [Acme]
-  - support item text
-    - sub-detail text
-
-*Conclusion: insight text*
-```
-
-You can reorder paragraph blocks, remove claims, add notes below a claim, and change the
-`Addresses:` line to be more specific. Do not change the `**Claim:**` prefix or anchor
-phrase formatting — those are parsed.
-
-#### Step 3 — `coverletter generate --from-outline`
+#### Step 2 — `clio generate --from-outline`
 
 ```
-coverletter generate --from-outline acme_corp_outline.md jd.txt
+clio generate --from-outline acme_corp_outline.md jd.txt
 ```
 
-Reads the edited outline, reconstructs claim/support/conclusion structure, and generates
-a letter grounded in that structure. Anchor phrases from the outline appear in the letter
-verbatim. Construction rules (first-sentence anchoring, banned words, em-dashes) are
-applied here.
-
-After generation:
-1. Verification — LLM pass for invented facts and banned constructs
-2. Alignment report — which outline blocks made it into the letter (by anchor phrase match)
-   vs. were dropped
-3. Revision loop — free text feedback to revise; accept or reject each revision
-
-After saving, marks which claims reached the letter in the analytics DB and updates the
-application outcome to "applied".
+Reads the edited outline and generates a letter grounded in that structure. Anchor phrases
+from the outline appear in the letter verbatim.
 
 ### Classic path
 
-#### `coverletter generate`
+#### `clio generate`
 
-Takes a JD (file, clipboard, or typed), selects paragraphs from the library using semantic
-embeddings (BM25 keyword fallback), and streams a letter. Perspective paragraphs are always
-included. Layer-0 paragraphs supersede layer-1 for the same section.
+Takes a JD, selects paragraphs from the library using semantic embeddings (BM25 fallback),
+and streams a letter.
 
-**Embedding provider priority**: provider-native embeddings (Mistral, OpenAI, Cohere) if
-available, then Voyage, then BM25. Set `EMBED_MODEL=bge-m3` to use local BGE-M3 hybrid
-dense+sparse scoring regardless of generation provider.
-
-After the letter streams:
-1. Verification — LLM pass for invented facts and banned constructs; deterministic verbatim check
-2. Alignment report — JD requirements covered, gaps, seniority signal gaps, goal alignment,
-   library coverage detection
+After the letter:
+1. Verification — LLM pass for invented facts and banned constructs
+2. Alignment report — JD requirements covered, gaps, seniority signal gaps, goal alignment
 3. Thesis — one sentence stating what the letter argues
 
-**Gap coverage**: gaps are checked against the claims DB using embedding cosine similarity.
-Gaps where a claim already scores above threshold are dimmed and labeled `[in library]` —
-they pull in automatically on regeneration. This is semantic coverage, not keyword matching.
-
-**Revision loop**: enter a gap number to Q&A and add a paragraph; `r` + feedback to revise
-inline; `g` for the full gap loop; `s` to save; `q` to quit.
-
-After saving, if a `.typ` resume file is configured, the tool offers to generate a tailored
-resume.
+**Gap coverage**: gaps are checked against the claims DB. Gaps with a claim above threshold
+are dimmed and labeled `[in library]`.
 
 ### After generating
 
-#### `coverletter pdf`
+#### `clio pdf`
 
-Converts a saved letter markdown to PDF using Typst. Requires Typst to be installed.
+Converts a saved letter markdown to PDF using Typst.
 
-#### `coverletter resume`
+#### `clio resume`
 
-Generates a tailored resume by selecting bullet options per company. Also offered
-automatically after `coverletter generate` saves a letter.
+Generates a tailored resume by selecting bullet options per company.
+
+---
+
+## Interview prep
+
+### `clio interview`
+
+```bash
+clio interview jd.txt --company "Acme Corp"          # full briefing
+clio interview jd.txt --company "Acme Corp" --summary # one-page version
+```
+
+Prompts for an optional recruiter or HR note (paste and double-Enter, or Enter to skip).
+Saved to `output/YYYY-MM-DD_Company_interview.md`.
+
+**The agent uses three tools** to gather your material per theme before writing:
+- `search_library` — searches your paragraph library
+- `get_claims` — searches the claims DB, both `source='library'` and `source='resume'`
+- `get_experience_facts` — looks up your experience register for a named employer or project
+
+**Full briefing sections:**
+1. **Role snapshot** — what the role is actually about (not a restatement)
+2. **What they're probing for** — themes ranked by signal strength; recruiter signals called out separately
+3. **Your coverage** — per theme: `[RESUME]` (on paper), `[LIBRARY]` (needs to come out verbally), `[GAP]` (thin or no material)
+4. **Likely questions** — 4-6 questions with "Lead with:" notes pointing to your best material
+
+The `[LIBRARY]` tag is the grounding layer — material the interviewer cannot see that you
+need to proactively surface in conversation.
+
+**`--summary`** produces a shorter version: role snapshot + key themes + one strongest
+match per theme. Fast to read before a call.
 
 ---
 
 ## Short-form applications
 
-### `coverletter blurb`
+### `clio blurb`
 
 For application prompts that are not full cover letters — biographical summaries, "why
 this role" questions, behavioral prompts, approach questions.
 
 Two-input flow: JD first (paragraph selection), then the specific application prompt.
-The model uses `working_style` + `values` as the argument spine, library paragraphs as
-evidence.
-
-When the application prompt contains a character or word limit, the model compresses the
-argument rather than the voice — evidence sentences get cut before biographical language.
-
-Revision loop retains rejected drafts in conversation history.
 
 ---
 
 ## Analytics and tracking
 
-These commands are useful after you have run several applications.
+### `clio outcome <company> <result>`
 
-### `coverletter outcome <company> <result>`
-
-Record the result of an application. Fuzzy-matches against recorded applications by
-company name.
+Record the result of an application.
 
 ```
-coverletter outcome "Acme Corp" interview
-coverletter outcome "Acme Corp" rejected
+clio outcome "Acme Corp" interview
+clio outcome "Acme Corp" rejected
 ```
 
 Results: `interview`, `rejected`, `offer`, `ghosted`, or any string.
 
-### `coverletter analytics`
+### `clio analytics`
 
-Cross-application analysis: category coverage rates, recurring JD gaps (grouped by
-requirement text across companies), highest-use claims, never-used claims (after 3+
-applications), JD similarity between past applications.
+Cross-application analysis: category coverage rates, recurring JD gaps, highest-use claims,
+never-used claims (after 3+ applications).
 
-Run this after several applications to see what your letter is consistently missing and
-which claims are doing the most work.
+### `clio log`
+
+Shows LLM call history from `~/.coverletter/runs.jsonl`. Every API call is logged with
+timestamp, caller label, model, token counts, cache hit/miss, and estimated cost.
+
+```bash
+clio log                   # last 20 calls + last 10 session summaries
+clio log --tail 50         # last 50 calls
+clio log --sessions 5      # last 5 sessions only
+```
+
+Use this to understand what a run actually cost and which code paths are making calls.
 
 ---
 
@@ -429,37 +386,36 @@ which claims are doing the most work.
 | Cohere | ✓ | unknown | embed-v4.0 ✓ | — | rerank-v3.5 ✓ |
 | BGE-M3 | embed-only | local | dense ✓ | hybrid dense+sparse ✓ | — |
 
-Set via `COVERLETTER_MODEL` (or `--model`). Set `EMBED_MODEL=bge-m3` to use BGE-M3 for
-embeddings independent of the generation provider. BGE-M3 requires `uv add FlagEmbedding`
-and downloads BAAI/bge-m3 (~2GB) on first use.
-
-For OpenAI-compatible hosts (Regolo, local inference servers), set `OPENAI_EMBED_MODEL`
-to the embedding model the server expects. Defaults to `text-embedding-3-small` for
-OpenAI proper.
-
-Cohere's reranker runs as a Stage 3 pass over the already-filtered claim set in the
-outline pipeline. It sees (query, document) pairs jointly — more precise than embedding
-cosine similarity for terminology-sensitive matching.
+Set via `COVERLETTER_MODEL` (or `--model`). Set `EMBED_MODEL=bge-m3` for local hybrid
+embeddings. BGE-M3 requires `uv add FlagEmbedding` (~2GB download on first use).
 
 ---
 
 ## What is not built
 
 **Coaching pass — Level 3 narrative awareness**. The current letter-level coaching pass
-(`coach.py:analyze_letter`) evaluates sentences in isolation. It does not know what kind
-of paragraph it is reading or what the letter as a whole is arguing.
+evaluates sentences in isolation. It does not know what kind of paragraph it is reading
+or what the letter as a whole is arguing.
 
-**`build --jd` gap analysis requires populated claims DB**. The gap analysis scores the JD
-against argument categories and claims in the DB. If no `coverletter extract` has been run,
-it returns no results with a clear message. Classic `coverletter build` (manual mode) works
+**`build --jd` gap analysis requires populated claims DB**. If no `clio extract` has been
+run, gap analysis returns no results with a clear message. Classic `clio build` works
 without the DB.
 
 **BGE-M3 hybrid scoring requires FlagEmbedding**. Dense-only BGE-M3 works via any
-OpenAI-compatible local server (set `OPENAI_BASE_URL`). Hybrid dense+sparse requires
-`uv add FlagEmbedding` and a local model download (~2GB).
+OpenAI-compatible local server. Hybrid requires `uv add FlagEmbedding` and a local
+model download.
 
 **Cohere generation and streaming untested against real keys**. The provider is implemented
-but has not been run against a real Cohere API key. Stream event field names may need
-adjustment.
+but has not been verified against a live Cohere API key.
 
 **Ollama** — not yet implemented.
+
+**Thesis correction memory**: each correction to the thesis replaces the previous one.
+Accumulated correction history is not passed through regeneration turns.
+
+**Positioning notes**: accepted thesis corrections are not saved for reuse across runs.
+Planned: `positioning/` directory of role-type → argument framing notes.
+
+**JD improvement metrics**: `jd_versions` logs changes but does not yet compute a coverage
+delta (did your library coverage of this JD improve after adding paragraphs?). Planned as
+part of `clio analytics`.

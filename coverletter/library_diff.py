@@ -40,8 +40,20 @@ def _parse_library(path: Path) -> list[Para]:
     current_section = "General"
     lines = content.splitlines(keepends=True)
     i = 0
+    in_block_comment = False
     while i < len(lines):
         line = lines[i]
+        stripped = line.strip()
+        # Skip block comments (<!-- ... -->) — these are file headers/notes, not paragraphs
+        if stripped.startswith("<!--") and "-->" not in stripped:
+            in_block_comment = True
+            i += 1
+            continue
+        if in_block_comment:
+            if stripped == "-->":
+                in_block_comment = False
+            i += 1
+            continue
         if re.match(r"^## ", line):
             current_role = line.strip().lstrip("#").strip()
             i += 1
@@ -202,16 +214,10 @@ with st.sidebar:
 
     st.divider()
     import os as _os
+    from pathlib import Path as _Path
     from dotenv import load_dotenv as _load_dotenv
-    _load_dotenv()
-    _default_key = _os.getenv("ANTHROPIC_API_KEY", "")
-    coach_api_key = st.text_input(
-        "Anthropic API key (for coaching)",
-        type="password",
-        value=st.session_state.get("diff_api_key", _default_key),
-    )
-    if coach_api_key:
-        st.session_state["diff_api_key"] = coach_api_key
+    _load_dotenv(_Path(__file__).parent.parent / ".env")
+    coach_api_key = _os.getenv("ANTHROPIC_API_KEY", "")
     coach_model = st.selectbox(
         "Coach model",
         ["claude-haiku-4-5-20251001", "claude-sonnet-4-5-20251022"],
@@ -266,11 +272,64 @@ if not raw_paras and not damaged_paras:
     st.error("No paragraphs found. Check file paths in sidebar.")
     st.stop()
 
-# Build damaged lookup by (role, section)
+# Build damaged lookup — first try exact (role, section) match, then fall back
+# to text similarity. Section names diverge between library.md and library_refined.md
+# so pure header matching misses most pairs.
 damaged_lookup: dict[tuple[str, str], list[Para]] = {}
 for p in damaged_paras:
     key = (p.role.lower().strip(), p.section.lower().strip())
     damaged_lookup.setdefault(key, []).append(p)
+
+
+_MATCH_STOP = {
+    "the", "and", "for", "that", "this", "with", "have", "from", "they",
+    "been", "were", "which", "when", "their", "what", "will", "your",
+    "would", "could", "about", "there", "then", "than", "just", "very",
+    "into", "also", "data", "work", "built", "build",
+}
+
+
+def _text_words(text: str) -> set[str]:
+    return {w for w in re.findall(r"[a-z]{4,}", text.lower()) if w not in _MATCH_STOP}
+
+
+def _find_damaged_matches(para: Para, damaged_paras: list[Para]) -> tuple[list[Para], str]:
+    """Return (matched_paragraphs, confidence) where confidence is 'exact', 'strong', 'weak', or 'none'.
+
+    First tries exact (role, section) header match. Falls back to text overlap.
+    Short paragraphs require proportionally higher overlap to avoid false positives.
+    """
+    key = (para.role.lower().strip(), para.section.lower().strip())
+    exact = damaged_lookup.get(key, [])
+    if exact:
+        return exact, "exact"
+
+    raw_words = _text_words(para.text)
+    if len(raw_words) < 5:
+        return [], "none"
+
+    scored = []
+    for dp in damaged_paras:
+        dp_words = _text_words(dp.text)
+        overlap = len(raw_words & dp_words)
+        shorter = min(len(raw_words), len(dp_words))
+        pct = overlap / shorter if shorter else 0
+        scored.append((pct, overlap, dp))
+
+    scored.sort(key=lambda x: (-x[0], -x[1]))
+    if not scored:
+        return [], "none"
+
+    best_pct, best_overlap, _ = scored[0]
+    # Require stronger signal for short paragraphs (fewer unique words = more noise)
+    min_pct = 0.40 if len(raw_words) < 15 else 0.30
+    min_overlap = 8 if len(raw_words) < 15 else 6
+
+    if best_pct >= min_pct or best_overlap >= min_overlap:
+        confidence = "strong" if best_pct >= 0.5 or best_overlap >= 12 else "weak"
+        return [dp for _, __, dp in scored[:2]], confidence
+
+    return [], "none"
 
 # Work from raw paragraphs as the canonical list
 all_paras = raw_paras if raw_paras else damaged_paras
@@ -352,43 +411,60 @@ st.divider()
 # Three-source display
 # ---------------------------------------------------------------------------
 
-key = (para.role.lower().strip(), para.section.lower().strip())
-damaged_matches = damaged_lookup.get(key, [])
+damaged_matches, match_confidence = _find_damaged_matches(para, damaged_paras)
 relevant_notes = _relevant_notes(para, notes)
 
-col_raw, col_damaged, col_notes = st.columns(3)
+col_raw, col_damaged, col_edit = st.columns(3)
 
 with col_raw:
-    st.subheader("📄 Raw — library.md")
+    st.subheader("📄 Raw")
     st.caption("Your words. Source of truth.")
     st.text_area(
         "raw",
         value=para.text,
-        height=280,
+        height=340,
         key=f"raw_{flat_idx}",
         disabled=True,
         label_visibility="collapsed",
     )
 
 with col_damaged:
-    st.subheader("⚠️ Damaged — library_refined.md")
-    st.caption("Claude-corrupted. Reference only.")
+    st.subheader("⚠️ Damaged")
+    if match_confidence == "exact":
+        st.caption("Exact section match.")
+    elif match_confidence == "strong":
+        st.caption("Strong text match — likely the same paragraph.")
+    elif match_confidence == "weak":
+        st.caption("⚠️ Weak match — may not be the same paragraph. Verify before using.")
+    else:
+        st.caption("No match found in library_refined.md.")
+
     if damaged_matches:
         for di, dp in enumerate(damaged_matches):
             st.text_area(
                 f"damaged_{di}",
                 value=dp.text,
-                height=280,
+                height=340,
                 key=f"dam_{flat_idx}_{di}",
                 disabled=True,
                 label_visibility="collapsed",
             )
     else:
-        st.info("No matching section in library_refined.md.")
+        st.info("This paragraph has no counterpart in library_refined.md. Approve the raw version or skip.")
 
-with col_notes:
-    st.subheader("📓 Story notes")
-    st.caption("Abandoned material that may be relevant.")
+with col_edit:
+    st.subheader("✏️ Your version")
+    st.caption("Edit here → library_salvaged.md")
+    edited = st.text_area(
+        "edit",
+        value=para.text,
+        height=340,
+        key=f"edit_{flat_idx}",
+        label_visibility="collapsed",
+    )
+    st.caption(f"Meta: `{para.meta_raw}`")
+
+with st.expander("📓 Story notes — abandoned material that may be relevant"):
     if relevant_notes:
         for ni, note in enumerate(relevant_notes):
             with st.expander(note.heading, expanded=(ni == 0)):
@@ -397,29 +473,16 @@ with col_notes:
         st.info("No relevant story notes found for this section.")
 
 # ---------------------------------------------------------------------------
-# Edit area — what goes to library_salvaged.md
-# ---------------------------------------------------------------------------
-
-st.divider()
-st.subheader("✏️ Your version — goes to library_salvaged.md")
-st.caption("Edit here. Use raw as base, pull from damaged or notes what's worth keeping.")
-
-edited = st.text_area(
-    "edit",
-    value=para.text,
-    height=220,
-    key=f"edit_{flat_idx}",
-    label_visibility="collapsed",
-)
-st.caption(f"Meta: `{para.meta_raw}`")
-
-# ---------------------------------------------------------------------------
 # Coaching buttons — manual trigger, not automatic
 # ---------------------------------------------------------------------------
 
 st.divider()
 c1, c2 = st.columns(2)
-api_key = st.session_state.get("diff_api_key", "")
+import os as _os2
+from pathlib import Path as _Path2
+from dotenv import load_dotenv as _load_dotenv2
+_load_dotenv2(_Path2(__file__).parent.parent / ".env")
+api_key = _os2.getenv("ANTHROPIC_API_KEY", "")
 model = st.session_state.get("coach_model_sel", "claude-haiku-4-5-20251001")
 
 with c1:
@@ -429,8 +492,6 @@ with c1:
         "Finds where Claude swapped your words for worse ones, added sentences you never wrote, "
         "or dropped things you said. Run this before editing if you want to know what got corrupted."
     )
-    if not api_key:
-        st.warning("Add Anthropic API key in sidebar to enable coaching.")
     if st.button("🔍 Check what the draft got wrong", width="stretch", disabled=not api_key):
         damaged_text = damaged_matches[0].text if damaged_matches else edited
         with st.spinner("Comparing draft against your raw text..."):
@@ -470,8 +531,6 @@ with c2:
         "or a main claim sentence written in passive voice. "
         "Run this after you've edited, before you save."
     )
-    if not api_key:
-        st.warning("Add Anthropic API key in sidebar to enable coaching.")
     if st.button("🔍 Check my edited version", width="stretch", disabled=not api_key):
         with st.spinner("Checking your paragraph..."):
             from coverletter.coach import analyze_library_paragraph
@@ -548,19 +607,113 @@ with b5:
         st.rerun()
 
 # ---------------------------------------------------------------------------
-# Paragraphs in damaged not matched in raw
+# Orphaned damaged paragraphs — in library_refined.md with no raw counterpart
 # ---------------------------------------------------------------------------
 
-with st.expander("📋 Paragraphs in library_refined.md with no match in library.md"):
-    raw_keys = {(p.role.lower().strip(), p.section.lower().strip()) for p in raw_paras}
-    unmatched = [p for p in damaged_paras
-                 if (p.role.lower().strip(), p.section.lower().strip()) not in raw_keys]
-    if unmatched:
-        for up in unmatched:
-            st.markdown(f"**{up.role} / {up.section}**")
-            st.text(up.text[:200] + ("..." if len(up.text) > 200 else ""))
-            if st.button(f"Add to output ↑", key=f"add_{up.role}_{up.section}_{up.meta_raw[:20]}"):
-                st.session_state.salvaged_paras.append(up)
-                st.rerun()
+st.divider()
+st.subheader("📋 Orphaned: library_refined.md paragraphs with no raw match")
+st.caption(
+    "These exist in library_refined.md but have no counterpart in library.md. "
+    "Claude may have invented them, reorganized content under a new section, or they may contain "
+    "useful material. Review each — keep what's worth saving, discard the rest."
+)
+
+# Use text-based matching to find truly orphaned damaged paragraphs
+# A damaged paragraph is orphaned if no raw paragraph has strong overlap with it
+def _is_orphaned(dp: Para, raw_paras: list[Para]) -> bool:
+    dp_words = _text_words(dp.text)
+    if len(dp_words) < 5:
+        return True
+    for rp in raw_paras:
+        rp_words = _text_words(rp.text)
+        overlap = len(dp_words & rp_words)
+        shorter = min(len(dp_words), len(rp_words))
+        pct = overlap / shorter if shorter else 0
+        if pct >= 0.30 or overlap >= 8:
+            return False
+    return True
+
+orphaned = [p for p in damaged_paras if _is_orphaned(p, raw_paras)]
+
+if not orphaned:
+    st.info("No orphaned paragraphs — all content in library_refined.md matches something in library.md.")
+else:
+    st.caption(f"{len(orphaned)} orphaned paragraph(s) to review.")
+
+    if "orphan_cursor" not in st.session_state:
+        st.session_state.orphan_cursor = 0
+    if "orphan_reviewed" not in st.session_state:
+        st.session_state.orphan_reviewed = set()
+
+    orphan_pending = [i for i in range(len(orphaned)) if i not in st.session_state.orphan_reviewed]
+
+    if not orphan_pending:
+        st.success("All orphaned paragraphs reviewed.")
     else:
-        st.caption("All sections in library_refined.md have a match in library.md.")
+        oc = st.session_state.orphan_cursor
+        if oc >= len(orphan_pending):
+            oc = 0
+            st.session_state.orphan_cursor = 0
+        oi = orphan_pending[oc]
+        op = orphaned[oi]
+
+        on1, on2, on3 = st.columns([1, 4, 1])
+        with on1:
+            if st.button("← Prev", key="o_prev") and oc > 0:
+                st.session_state.orphan_cursor -= 1
+                st.rerun()
+        with on2:
+            st.markdown(
+                f"<center><b>{oc + 1} / {len(orphan_pending)} remaining — "
+                f"{op.role} / {op.section}</b></center>",
+                unsafe_allow_html=True,
+            )
+        with on3:
+            if st.button("Next →", key="o_next") and oc < len(orphan_pending) - 1:
+                st.session_state.orphan_cursor += 1
+                st.rerun()
+
+        ocol1, ocol2 = st.columns(2)
+        with ocol1:
+            st.caption("Damaged content — no raw counterpart")
+            st.text_area(
+                "orphan_source",
+                value=op.text,
+                height=280,
+                key=f"osrc_{oi}",
+                disabled=True,
+                label_visibility="collapsed",
+            )
+            st.caption(f"Meta: `{op.meta_raw}`")
+
+        with ocol2:
+            st.caption("Edit before saving (or leave as-is)")
+            orphan_edited = st.text_area(
+                "orphan_edit",
+                value=op.text,
+                height=280,
+                key=f"oedit_{oi}",
+                label_visibility="collapsed",
+            )
+
+        ob1, ob2, ob3 = st.columns(3)
+        with ob1:
+            if st.button("✅ Keep & next", key="o_keep", width="stretch"):
+                st.session_state.salvaged_paras.append(
+                    Para(op.role, op.section, op.meta_raw, orphan_edited)
+                )
+                st.session_state.orphan_reviewed.add(oi)
+                if oc < len(orphan_pending) - 1:
+                    st.session_state.orphan_cursor += 1
+                st.rerun()
+        with ob2:
+            if st.button("🗑️ Discard & next", key="o_discard", width="stretch"):
+                st.session_state.orphan_reviewed.add(oi)
+                if oc < len(orphan_pending) - 1:
+                    st.session_state.orphan_cursor += 1
+                st.rerun()
+        with ob3:
+            if st.button("⏭ Skip", key="o_skip", width="stretch"):
+                if oc < len(orphan_pending) - 1:
+                    st.session_state.orphan_cursor += 1
+                st.rerun()

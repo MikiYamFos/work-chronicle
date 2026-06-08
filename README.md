@@ -20,7 +20,7 @@ This tool works for anyone — not just engineers. If you're working through a c
 - **[uv](https://docs.astral.sh/uv/getting-started/installation/)** — `curl -LsSf https://astral.sh/uv/install.sh | sh`
 - **An API key** — Anthropic is the default; Mistral, OpenAI, and Cohere also supported. See [.env reference](#env-reference).
 
-No other install needed. `uv run coverletter` handles all dependencies on first run.
+No other install needed. `uv run clio` handles all dependencies on first run.
 
 ---
 
@@ -38,7 +38,7 @@ The **claim-evidence layer** solves this. It extracts atomic assertions from you
 
 **Conclusions** are synthesized insights that emerge from a group of claims.
 
-When you run `coverletter outline`, the tool scores argument categories against the JD, retrieves the most relevant claims for each category, groups them into argument-driven paragraph blocks, and writes an editable outline. You edit the outline — reorder blocks, drop weak claims, adjust notes — then generate a letter grounded in that structure.
+When you run `clio outline`, the tool scores argument categories against the JD, retrieves the most relevant claims for each category, groups them into argument-driven paragraph blocks, and writes an editable outline. You edit the outline — reorder blocks, drop weak claims, adjust notes — then generate a letter grounded in that structure.
 
 ### The gold standard
 
@@ -55,7 +55,7 @@ You build the gold standard during your first labeling session. You don't need i
 ### 1. Initialize
 
 ```bash
-uv run coverletter init
+uv run clio init
 ```
 
 Creates a `.env` file with comments explaining every option, and an empty `library.md`. Open `.env` and add your API key. Shows a "what to do next" guide after creating files.
@@ -67,8 +67,8 @@ Your paragraph library is where your career documentation lives. Every letter is
 **If you have existing material** (a cover letter, resume, LinkedIn bio, raw notes):
 
 ```bash
-uv run coverletter seed                    # paste text
-uv run coverletter seed --file resume.txt  # or point it at a file
+uv run clio seed                    # paste text
+uv run clio seed --file resume.txt  # or point it at a file
 ```
 
 The tool reads your material and groups sentences into distinct experience paragraphs — using your exact words, no rewriting or paraphrasing. For each extracted paragraph you choose: **[A]ccept**, **[E]dit**, or **[S]kip**.
@@ -76,15 +76,15 @@ The tool reads your material and groups sentences into distinct experience parag
 **If you have a job description and want to know what's missing from your library:**
 
 ```bash
-uv run coverletter build --jd /path/to/jd.txt
+uv run clio build --jd /path/to/jd.txt
 ```
 
-Analyzes the JD against your claims DB, shows what's covered and what's missing, then walks you through filling each gap with targeted Q&A. Requires the DB to be populated first (`coverletter sync` + `coverletter extract`). Pass `--resume` to give the coach your resume as context — it won't re-ask what the resume already says, it asks about what's behind the bullets.
+Analyzes the JD against your claims DB, shows what's covered and what's missing, then walks you through filling each gap with targeted Q&A. Requires the DB to be populated first (`clio sync` + `clio extract`). Pass `--resume` to give the coach your resume as context — it won't re-ask what the resume already says, it asks about what's behind the bullets.
 
 **If you're starting from scratch** and want to write a paragraph for a specific experience:
 
 ```bash
-uv run coverletter build
+uv run clio build
 ```
 
 The tool asks what you want to write about, searches your library to see what's already there, and runs a focused conversation to draw out the specific details — what you owned, what you decided, what made it hard, who depended on it. It drafts a paragraph from your answers using your actual words and phrasing, not polished rewrites of them.
@@ -92,7 +92,7 @@ The tool asks what you want to write about, searches your library to see what's 
 ### 3. Build your candidate profile
 
 ```bash
-uv run coverletter profile --model opus   # run once; opus is worth it for this
+uv run clio profile --model opus   # run once; opus is worth it for this
 ```
 
 When prompted, press **G** to have the tool read your library and draft profile sections for you, or **E** to edit what's already there.
@@ -116,14 +116,14 @@ Re-running `profile` archives the previous version automatically — your goal h
 ### 4. Build your claim-evidence library
 
 ```bash
-uv run coverletter onboard            # shows your setup checklist and next step
-uv run coverletter sync               # sync library to DB, compute embeddings
-uv run coverletter extract --dry-run  # extract claims, write review file
+uv run clio onboard            # shows your setup checklist and next step
+uv run clio sync               # sync library to DB, compute embeddings
+uv run clio extract --dry-run  # extract claims, write review file
 uv run streamlit run coverletter/label_evals.py  # review claims, build gold standard
-uv run coverletter extract            # insert approved claims into DB
+uv run clio extract            # insert approved claims into DB
 ```
 
-`coverletter onboard` checks your readiness at each step and tells you exactly what to do next.
+`clio onboard` checks your readiness at each step and tells you exactly what to do next.
 
 During the Streamlit labeling session: the app shows you the source paragraph, the extracted claim, the judge's verdict with reasoning, and the full evidence hierarchy. **Approve** (inserts to DB immediately), **Reject** with a failure category, or check **Save as gold standard example** on clear unambiguous cases. You need at least 5 approved and 5 rejected gold standard examples before full extraction runs. Session position saves on every action — reopen and it picks up where you left off.
 
@@ -132,15 +132,15 @@ During the Streamlit labeling session: the app shows you the source paragraph, t
 **Argument-driven flow (recommended once claims are extracted):**
 
 ```bash
-uv run coverletter outline <jd_file> --company Acme   # build editable outline
+uv run clio outline <jd_file> --company Acme   # build editable outline
 # edit the outline — reorder paragraphs, drop irrelevant claims, add notes
-uv run coverletter generate --from-outline acme_outline.md <jd_file>
+uv run clio generate --from-outline acme_outline.md <jd_file>
 ```
 
 **Classic flow (works without claims):**
 
 ```bash
-uv run coverletter
+uv run clio
 ```
 
 Paste the job description, enter the company name, and the tool runs the full flow: generates a letter, shows what's covered and what's missing, offers to fill gaps through Q&A, then lets you revise before saving.
@@ -153,22 +153,22 @@ Paste the job description, enter the company name, and the tool runs the full fl
 
 | Command | What it does |
 |---|---|
-| `uv run coverletter init` | First-time setup — creates `.env` and empty `library.md` |
-| `uv run coverletter onboard` | Setup checklist — shows readiness status and next command at each step |
-| `uv run coverletter seed` | Extract paragraphs from existing material (cover letters, resume, notes) |
-| `uv run coverletter build` | Focused Q&A to draw out and document a specific experience |
-| `uv run coverletter build --jd <file>` | Gap-driven mode — analyzes JD against library, Q&A targets gaps |
-| `uv run coverletter reflect` | Capture perspective material — through-lines, pivots, reframes, syntheses |
-| `uv run coverletter sync` | Sync library markdown to SQLite DB, compute embeddings |
-| `uv run coverletter profile` | Build or update your candidate profile |
+| `uv run clio init` | First-time setup — creates `.env` and empty `library.md` |
+| `uv run clio onboard` | Setup checklist — shows readiness status and next command at each step |
+| `uv run clio seed` | Extract paragraphs from existing material (cover letters, resume, notes) |
+| `uv run clio build` | Focused Q&A to draw out and document a specific experience |
+| `uv run clio build --jd <file>` | Gap-driven mode — analyzes JD against library, Q&A targets gaps |
+| `uv run clio reflect` | Capture perspective material — through-lines, pivots, reframes, syntheses |
+| `uv run clio sync` | Sync library markdown to SQLite DB, compute embeddings |
+| `uv run clio profile` | Build or update your candidate profile |
 
 ### Job description management
 
 | Command | What it does |
 |---|---|
-| `uv run coverletter jd list` | List saved JDs with date, size, and preview |
-| `uv run coverletter jd rename <old> <new>` | Rename a saved JD |
-| `uv run coverletter jd replace <name>` | Replace a saved JD from clipboard; clears DB cache |
+| `uv run clio jd list` | List saved JDs with date, size, and preview |
+| `uv run clio jd rename <old> <new>` | Rename a saved JD |
+| `uv run clio jd replace <name>` | Replace a saved JD from clipboard; clears DB cache |
 
 JDs are saved automatically when you paste one during `generate` or `blurb`. They are saved after cleaning — EEO/disability disclosure boilerplate is stripped before storage and before the JD is embedded. The JD embedding is cached so the same JD is not re-embedded across `generate`, `outline`, `blurb`, and `build --jd` runs.
 
@@ -176,28 +176,45 @@ JDs are saved automatically when you paste one during `generate` or `blurb`. The
 
 | Command | What it does |
 |---|---|
-| `uv run coverletter extract --dry-run` | Extract claims from library, write review files |
-| `uv run coverletter extract` | Extract, judge, and insert claims into DB (requires gold standard) |
+| `uv run clio extract --dry-run` | Extract claims from library, write review files |
+| `uv run clio extract` | Extract, judge, and insert claims into DB (requires gold standard) |
 | `uv run streamlit run coverletter/label_evals.py` | Review extracted claims — approve/reject, build gold standard |
-| `uv run coverletter claims` | Show claim count, anchor count, and argument categories per paragraph |
-| `uv run coverletter outline <jd>` | Build editable outline from DB — three-stage retrieval, gaps shown after |
-| `uv run coverletter generate --from-outline <outline> <jd>` | Generate letter from edited outline |
+| `uv run clio claims` | Show claim count, anchor count, and argument categories per paragraph |
+| `uv run clio outline <jd>` | Build editable outline from DB — three-stage retrieval, gaps shown after |
+| `uv run clio generate --from-outline <outline> <jd>` | Generate letter from edited outline |
+
+### Interview prep
+
+| Command | What it does |
+|---|---|
+| `uv run clio interview <jd_file>` | Full interview prep briefing — role snapshot, themes, coverage analysis, likely questions |
+| `uv run clio interview <jd_file> --summary` | Short one-page version — fast to read before a call |
+| `uv run clio resume-extract` | Manually re-extract resume claims (runs automatically on hash change) |
+
+The interview command prompts for an optional recruiter or HR note (paste and double-Enter to submit). The briefing is saved to `output/YYYY-MM-DD_Company_interview.md`.
+
+Each coverage item is marked `[RESUME]` (on paper and visible to the interviewer), `[LIBRARY]` (in your library but not on resume — needs to come out verbally), or `[GAP]` (thin or no material). The `[LIBRARY]` distinction is the grounding layer: what you need to proactively say because the interviewer can't see it yet.
+
+The agent uses three tools to gather your material per theme: `search_library` (paragraph library), `get_claims` (claims DB — resume and library sources), and `get_experience_facts` (experience register).
 
 ### Letter generation
 
 | Command | What it does |
 |---|---|
-| `uv run coverletter` | Generate a cover letter — classic paragraph-assembly flow |
-| `uv run coverletter blurb` | Answer a short application prompt — "about me", behavioral, motivation |
-| `uv run coverletter show-library` | Show library stats and experience coverage |
-| `uv run coverletter resume` | Generate a tailored resume PDF alongside a letter |
+| `uv run clio` | Generate a cover letter — classic paragraph-assembly flow |
+| `uv run clio blurb` | Answer a short application prompt — "about me", behavioral, motivation |
+| `uv run clio show-library` | Show library stats and experience coverage |
+| `uv run clio resume` | Generate a tailored resume PDF alongside a letter |
 
 ### Analytics and tracking
 
 | Command | What it does |
 |---|---|
-| `uv run coverletter outcome <company> <result>` | Record application result (interview / rejected / offer / ghosted) |
-| `uv run coverletter analytics` | Cross-application patterns — coverage rates, recurring gaps, claim usage |
+| `uv run clio outcome <company> <result>` | Record application result (interview / rejected / offer / ghosted) |
+| `uv run clio analytics` | Cross-application patterns — coverage rates, recurring gaps, claim usage |
+| `uv run clio log` | Show LLM call log — token counts, cost per call, and cost per session |
+
+The log is stored at `~/.coverletter/runs.jsonl` — one JSON line per API call, with timestamp, caller label, model, token counts, and estimated cost. Survives crashes and accumulates across sessions. Use `--tail N` to show the last N calls and `--sessions N` to show session summaries.
 
 ### Evaluation (development tools)
 
@@ -209,20 +226,20 @@ JDs are saved automatically when you paste one during `generate` or `blurb`. The
 Most commands work without flags — they'll ask you what they need. Flags are shortcuts for when you already know the answer.
 
 ```bash
-uv run coverletter --model haiku              # cheaper, faster
-uv run coverletter profile --model opus       # worth it for one-time profile generation
-uv run coverletter --fast                     # skip thesis and alignment
-uv run coverletter --role "Senior Data Engineer"
-uv run coverletter seed --file resume.txt
+uv run clio --model haiku              # cheaper, faster
+uv run clio profile --model opus       # worth it for one-time profile generation
+uv run clio --fast                     # skip thesis and alignment
+uv run clio --role "Senior Data Engineer"
+uv run clio seed --file resume.txt
 ```
 
 Model aliases: `haiku` → `claude-haiku-4-5-20251001`, `sonnet` → `claude-sonnet-4-6`, `opus` → `claude-opus-4-7`.
 
 ---
 
-## Full letter flow (what `uv run coverletter` does, step by step)
+## Full letter flow (what `uv run clio` does, step by step)
 
-> Requires a candidate profile — run `uv run coverletter profile` first.
+> Requires a candidate profile — run `uv run clio profile` first.
 
 ### 1. Startup
 
@@ -280,7 +297,7 @@ Seniority Signal Gaps:
 
 Goal fit: Partially — role offers platform scope but sits in a central DE team.
 
-Narrative frame: No through-line in library. Run: uv run coverletter reflect
+Narrative frame: No through-line in library. Run: uv run clio reflect
 ```
 
 **JD Gaps** are requirements the letter doesn't address. Keep in mind the letter supplements your resume — it covers what your resume doesn't highlight.
@@ -352,7 +369,7 @@ The library is split across several markdown files with distinct roles. The tool
 | File | What goes here | Priority |
 |---|---|---|
 | `library.md` | Your raw paragraphs — written directly, Q&A answers, anything you typed. Never rewritten by the tool. | Base |
-| `library_refined.md` | Paragraphs built through `coverletter build` and approved. Takes priority over `library.md` for the same section. | High |
+| `library_refined.md` | Paragraphs built through `clio build` and approved. Takes priority over `library.md` for the same section. | High |
 | `library_salvaged.md` | Paragraphs corrected via the diff tool — reviewed against raw source and approved. | High |
 | `library_rebuilt.md` | Paragraphs built from scratch through the correct workflow. | High |
 | `story_notes.md` | Raw material from conversations that hasn't been turned into paragraphs yet. Surfaced in the diff tool but not used in generation. | — |
@@ -411,16 +428,16 @@ qa_targets:
 - What broke or became unreliable when the vendor pipeline failed?
 ```
 
-`qa_targets` are written automatically by `coverletter seed`. The next time you run `coverletter build` for this experience, those questions drive the Q&A.
+`qa_targets` are written automatically by `clio seed`. The next time you run `clio build` for this experience, those questions drive the Q&A.
 
 ---
 
-## Capturing perspective paragraphs (`coverletter reflect`)
+## Capturing perspective paragraphs (`clio reflect`)
 
 Evidence paragraphs prove specific claims. Perspective paragraphs make the argument about who you are and why your arc makes you right for this role.
 
 ```bash
-uv run coverletter reflect
+uv run clio reflect
 ```
 
 | Angle | What it captures |
@@ -434,10 +451,10 @@ Once perspective paragraphs are in your library, they're pinned in prefilter (ne
 
 ---
 
-## Short application prompts (`coverletter blurb`)
+## Short application prompts (`clio blurb`)
 
 ```bash
-uv run coverletter blurb
+uv run clio blurb
 ```
 
 Two inputs: job description first (used to select paragraphs), then the specific prompt. JD boilerplate is cleaned automatically. Company values from the JD inform the framing.
@@ -471,7 +488,7 @@ Up to 400 words depending on prompt type. Revision loop retains rejected drafts 
 ## Resume builder
 
 ```bash
-uv run coverletter resume --company Google
+uv run clio resume --company Google
 ```
 
 For each company in your `resume.typ` that has alternative bullets in `resume_bullets.md`, the tool shows your options and lets you pick per experience.

@@ -113,9 +113,6 @@ GAPS
 One line per gap. Only real gaps — things the JD explicitly requires or prefers that the letter
 does not address.
 Format: ✗ [requirement] — [why it matters for this role]
-If a gap is addressed by a paragraph in the library above (even if not used in the current letter),
-append: (library: [N]) using the exact paragraph index. Only tag it if a specific paragraph
-genuinely covers that requirement — not just shares vocabulary with it.
 {seniority_gaps_section}{goal_alignment_section}
 Do not add encouragement, filler, or any sections beyond these {num_sections}.
 """
@@ -231,13 +228,17 @@ def generate_thesis(
         candidate_goals_section = ""
 
     correction_section = (
-        f"\n=== CANDIDATE CORRECTION ===\n{correction}\n"
-        "Revise the thesis to address this correction while keeping it grounded in the letter.\n"
+        f"\n=== CANDIDATE CORRECTION — PRIMARY INSTRUCTION ===\n{correction}\n"
+        "The candidate has told you what is wrong or missing. Your revised thesis MUST use "
+        "their specific language and include every point they raised. Do not rewrite from "
+        "scratch. Do not ignore any part of the correction. Their words take priority over "
+        "the rules below.\n"
         if correction else ""
     )
 
     correction_rule = (
-        "- Address the candidate's correction above."
+        "- THE CANDIDATE CORRECTION above overrides everything else. Include every point "
+        "they named, using their language where possible."
         if correction else
         "- If there is genuine tension between the letter's angle and the JD, name it briefly."
     )
