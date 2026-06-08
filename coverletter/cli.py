@@ -2715,20 +2715,19 @@ def seed_library(ctx: click.Context, input_file: str | None, paragraphs: str | N
                 console.print(f"[green]→ Accepted under[/green] [bold]{role_type}[/bold]\n")
                 break
             elif choice in ("e", "edit"):
-                console.print("[dim]Type replacement paragraph. Blank line when done.[/dim]\n")
-                edit_lines = []
-                try:
-                    while True:
-                        line = input("> ")
-                        if not line.strip():
-                            break
-                        edit_lines.append(line)
-                except EOFError:
-                    pass
-                if not edit_lines:
-                    console.print("[dim]No edit entered — skipping.[/dim]\n")
+                import tempfile, subprocess
+                editor = os.environ.get("EDITOR", "nano")
+                with tempfile.NamedTemporaryFile(
+                    mode="w", suffix=".txt", delete=False, encoding="utf-8"
+                ) as tmp:
+                    tmp.write(p["text"])
+                    tmp_path = tmp.name
+                subprocess.call([editor, tmp_path])
+                edited_text = Path(tmp_path).read_text(encoding="utf-8").strip()
+                Path(tmp_path).unlink(missing_ok=True)
+                if not edited_text or edited_text == p["text"].strip():
+                    console.print("[dim]No changes — skipping.[/dim]\n")
                     break
-                edited_text = " ".join(edit_lines)
                 console.print()
                 console.print("[bold]Edited paragraph:[/bold]")
                 console.print(edited_text)
