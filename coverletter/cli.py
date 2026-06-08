@@ -2661,6 +2661,18 @@ def seed_library(ctx: click.Context, input_file: str | None, paragraphs: str | N
     console.print(f"[dim]{running_total()}[/dim]\n")
     console.print(f"[bold]{len(extracted)} paragraph(s) extracted.[/bold] Review each below.\n")
 
+    # --- Checkpoint ---
+    checkpoint_path = Path(".seed_checkpoint.json")
+
+    def _save_checkpoint(accepted_so_far: list[dict], next_index: int) -> None:
+        checkpoint_path.write_text(
+            json.dumps({"accepted": accepted_so_far, "next_index": next_index}, indent=2),
+            encoding="utf-8",
+        )
+
+    def _clear_checkpoint() -> None:
+        checkpoint_path.unlink(missing_ok=True)
+
     # --- Review loop ---
     # Load existing role types from library so user can file into them
     try:
@@ -2674,7 +2686,28 @@ def seed_library(ctx: click.Context, input_file: str | None, paragraphs: str | N
         return raw if raw else extracted_role
 
     accepted: list[dict] = []
-    for i, p in enumerate(extracted, 1):
+    start_index = 0
+
+    # Check for a checkpoint from a previous crashed session
+    if checkpoint_path.exists():
+        try:
+            ckpt = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+            ckpt_accepted = ckpt.get("accepted", [])
+            ckpt_next = ckpt.get("next_index", 0)
+            if ckpt_accepted and ckpt_next < len(extracted):
+                console.print(f"[yellow]Found checkpoint: {len(ckpt_accepted)} paragraph(s) already accepted, resuming at [{ckpt_next + 1}/{len(extracted)}][/yellow]")
+                _flush_stdin()
+                resume = input("Resume from checkpoint? [Y/n]: ").strip().lower()
+                if resume not in ("n", "no"):
+                    accepted = ckpt_accepted
+                    start_index = ckpt_next
+                    console.print(f"[dim]Resuming at paragraph {start_index + 1}[/dim]\n")
+                else:
+                    _clear_checkpoint()
+        except Exception:
+            _clear_checkpoint()
+
+    for i, p in enumerate(extracted[start_index:], start_index + 1):
         strength_color = {"high": "green", "medium": "yellow", "low": "red"}.get(p["strength"], "white")
         console.print(Rule(
             f"[bold][{i}/{len(extracted)}] {p['role']} / {p['section']}[/bold]  "
@@ -2712,6 +2745,7 @@ def seed_library(ctx: click.Context, input_file: str | None, paragraphs: str | N
                 role_type = _confirm_role(p["role"])
                 p = dict(p, role=role_type)
                 accepted.append(p)
+                _save_checkpoint(accepted, i)
                 console.print(f"[green]→ Accepted under[/green] [bold]{role_type}[/bold]\n")
                 break
             elif choice in ("e", "edit"):
@@ -2742,8 +2776,9 @@ def seed_library(ctx: click.Context, input_file: str | None, paragraphs: str | N
                     p = dict(p, text=edited_text)
                     role_type = _confirm_role(p["role"])
                     p = dict(p, role=role_type)
-                    console.print(f"[green]→ Accepted (edited) under[/green] [bold]{role_type}[/bold]\n")
                     accepted.append(p)
+                    _save_checkpoint(accepted, i)
+                    console.print(f"[green]→ Accepted (edited) under[/green] [bold]{role_type}[/bold]\n")
                     break
             elif choice in ("s", "skip"):
                 console.print("[dim]→ Skipped.[/dim]\n")
@@ -2751,6 +2786,7 @@ def seed_library(ctx: click.Context, input_file: str | None, paragraphs: str | N
 
     if not accepted:
         console.print("[yellow]No paragraphs accepted. Nothing saved.[/yellow]\n")
+        _clear_checkpoint()
         return
 
     # --- Save ---
@@ -2761,6 +2797,7 @@ def seed_library(ctx: click.Context, input_file: str | None, paragraphs: str | N
     console.print(Rule(style="green"))
     console.print(f"\n[bold]{len(accepted)} paragraph(s) accepted.[/bold] Saving to [cyan]{target}[/cyan]...\n")
     append_paragraphs_to_file(target, accepted)
+    _clear_checkpoint()
     console.print("[green]Saved.[/green]\n")
 
     # Write augmentation questions into experiences.md so coverletter build picks them up

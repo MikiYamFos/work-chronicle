@@ -24,6 +24,7 @@ coverletter/evals/eval_results.json
 coverletter/evals/eval_results.csv
 extractions_review.json
 extractions_review.md
+.seed_checkpoint.json
 library_rebuilt.md
 library_salvaged.md
 
