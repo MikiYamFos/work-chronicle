@@ -41,9 +41,9 @@ def _resolve_paragraphs_files(override: str | None) -> list[Path]:
     """
     Return an ordered list of paragraph files (highest priority first).
 
-    Priority layer: LIBRARY_REFINED_FILE env var, or auto-detected library_refined.md
-                    alongside the base file.
-    Base layer:     --paragraphs flag, LIBRARY_FILE env var, or library.md in cwd.
+    Layer 3 (approved): library_approved.md — manually line-edited and approved
+    Layer 2 (refined):  library_refined.md  — LLM-fixed seed output + build drafts
+    Layer 1 (raw):      library.md          — verbatim seed extractions
     """
     base = Path(override) if override else (
         Path(os.environ["LIBRARY_FILE"]) if os.environ.get("LIBRARY_FILE")
@@ -51,15 +51,19 @@ def _resolve_paragraphs_files(override: str | None) -> list[Path]:
               else DEFAULT_LIBRARY_FILE)
     )
 
-    priority_env = os.environ.get("LIBRARY_REFINED_FILE")
-    if priority_env:
-        return [Path(priority_env), base]
+    lib_dir = base.parent
+    files: list[Path] = []
 
-    auto = base.parent / "library_refined.md"
-    if auto.exists():
-        return [auto, base]
+    approved = Path(os.environ.get("LIBRARY_APPROVED_FILE", "")) or lib_dir / "library_approved.md"
+    refined = Path(os.environ.get("LIBRARY_REFINED_FILE", "")) or lib_dir / "library_refined.md"
 
-    return [base]
+    if approved.exists():
+        files.append(approved)
+    if refined.exists():
+        files.append(refined)
+    files.append(base)
+
+    return files
 
 
 def load_config(

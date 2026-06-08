@@ -515,3 +515,9 @@ def library_gap_analysis(
 
     # No DB or no embeddings — caller should prompt user to run sync + extract.
     return LibraryGapResult(covered=[], gaps=[], no_db=True)
+
+
+def has_library_coverage(gap: str) -> bool:
+    """Stub — semantic gap coverage check against claims DB not yet wired into gap loop.
+    Returns False so all gaps show as actionable until DB connection is threaded through."""
+    return False

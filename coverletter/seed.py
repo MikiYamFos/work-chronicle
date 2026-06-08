@@ -29,6 +29,10 @@ WHAT YOU MAY NOT DO:
 - Paraphrase or rephrase any sentence
 - Add any word, phrase, or claim not in the source
 - "Improve" the writing in any way — that is not your job
+- Produce a paragraph for an experience when the source has no prose sentences about it.
+  If an employer or project appears in a header or list but has no actual sentences,
+  omit it entirely. Do NOT write placeholder text, refusal statements, or meta-commentary
+  about missing content. Simply do not include that experience in the output array.
 
 The strength rating reflects what is actually in the source:
 - high: concrete claims with specifics, clear stakes, evidence
@@ -66,24 +70,41 @@ STRENGTH GUIDE:
 
 AUGMENTATIONS — write 1–3 targeted questions per paragraph that would make the
 argument significantly stronger. These questions will drive a Q&A session, so they
-must be answerable from memory and surface something argumentatively useful.
+must be answerable from memory and generate a specific story or decision, not a
+reflection or a hypothetical.
 
-GOOD questions ask about:
-  - The hardest or most consequential decision made ("What was the specific technical
-    constraint that made this harder than a standard pipeline build?")
-  - What broke, failed, or was at stake ("What happened to downstream reporting or
-    decisions before this existed or when it failed?")
-  - Who depended on it and what they could or couldn't do without it
-  - What changed after it shipped ("What did the team gain access to that they
-    didn't have before?")
-  - Scope and ownership expressed as consequence, not inventory count
+A good question names a gap — something the paragraph claims but doesn't prove —
+and asks for the concrete moment that would prove it. The question should be
+answerable by saying "yes, here's what happened" and then telling a story.
 
-BAD questions (never ask these):
-  - "How many X did you build?" — inventory counts the person may not recall and
-    that prove nothing about ownership or impact
-  - "What percentage improvement?" — false precision; ask for the observable outcome
-  - "Can you add more detail?" — too vague to act on
-  - "What did you learn?" — produces generic, unhelpful answers
+GOOD questions:
+  - Ask what the person had to figure out that no one told them how to do
+    ("When you built the consent pipeline at UNITE HERE, what data handling
+    problem did you have to solve that wasn't in any spec or requirement?")
+  - Ask about a real decision that had a real alternative
+    ("When the Evergent fix came in broken, what did you do — escalate, work around
+    it, or fix it yourself, and why?")
+  - Ask what the person saw that others didn't
+    ("What did you notice about the materialized views that the VP didn't —
+    specifically what was wrong with the logic?")
+  - Ask who else was in the room and what the dynamic was
+    ("Who else was involved when you flagged the churn discrepancy, and what happened
+    when you raised it?")
+
+BAD questions (never write these):
+  - Consequence hypotheticals: "What would have happened if X" or "What would have
+    broken without it" — produces speculation, not stories
+  - Superlative framing: "What was the most consequential / hardest / most complex X"
+    — forces mental ranking before the person can answer; kills specificity
+  - Binary forks: "Did you do A or B?" — answers itself, eliminates the story
+  - Interrogating stated facts: asking "what specifically did you do" about something
+    already described — produces restatement, not new material
+  - Decontextualized jargon: quoting a phrase from the paragraph as the question premise
+    without explaining what it means in context
+  - "How many X did you build?" — inventory counts prove nothing about ownership
+  - "What percentage improvement?" — false precision
+  - "Can you add more detail?" — too vague
+  - "What did you learn?" — produces generic answers
   - Any question the person could only answer by checking records they no longer have
 
 The "role" field is the JOB TITLE this paragraph is relevant to — the actual role you would
@@ -158,12 +179,14 @@ def extract_from_material(
         items = json.loads(candidate)
         result = []
         for item in items:
-            if not item.get("text", "").strip():
+            raw_text = item.get("text", "").strip()
+            if not raw_text:
                 continue
-            # Validate and auto-fix paragraph — rejects injected superlatives,
-            # evaluative spin, em-dashes, banned words, and source infidelity
-            text, para_warnings = validate_and_fix_paragraph(
-                item["text"], material, api_key, model
+            # Layer 2: LLM judge + fixer — produces refined text
+            # Layer 1: raw_text is preserved separately and never overwritten
+            fixed_text, para_warnings = validate_and_fix_paragraph(
+                raw_text, material, api_key, model,
+                check_writing_rules=False,
             )
             # Filter augmentation questions through the deterministic judge
             raw_augs = item.get("augmentations", [])
@@ -174,7 +197,8 @@ def extract_from_material(
                 "angle": item.get("angle", ""),
                 "strength": item.get("strength", "medium"),
                 "via": item.get("via", "seed-letter"),
-                "text": text,
+                "text": raw_text,        # Layer 1 — verbatim extraction
+                "text_fixed": fixed_text, # Layer 2 — LLM-validated/fixed
                 "augmentations": clean_augs,
                 "_warnings": para_warnings,
             })
@@ -267,8 +291,6 @@ def append_paragraphs_to_file(
     paragraphs: list[dict],
 ) -> None:
     """Append accepted paragraphs to the library file under correct headers."""
-    import textwrap
-
     if path.exists():
         existing = path.read_text(encoding="utf-8")
     else:
@@ -296,9 +318,9 @@ def append_paragraphs_to_file(
             if p.get("angle"):
                 meta_parts.append(f"angle={p['angle']}")
             meta_line = f"<!-- meta: {', '.join(meta_parts)} -->\n" if meta_parts else ""
-            wrapped = textwrap.fill(p["text"].replace("\n", " "), width=90)
+            text = p["text"].replace("\n", " ").strip()
             lines.append(f"\n{h3}\n")
-            lines.append(meta_line + wrapped)
+            lines.append(meta_line + text)
 
     lines.append("")
     path.write_text("\n".join(lines), encoding="utf-8")

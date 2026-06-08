@@ -8,7 +8,7 @@ from rich.spinner import Spinner
 from rich.table import Table
 from rich.live import Live
 
-from coverletter.align import AlignmentResult, alignment_report, generate_argument, generate_thesis
+from coverletter.align import AlignmentResult, alignment_report, generate_argument, generate_thesis, has_library_coverage
 from coverletter.profile import CandidateProfile, load_profile
 from coverletter.costs import running_total
 from coverletter.coach import WeakSentence, analyze_letter, get_context, rewrite_sentence
@@ -53,7 +53,6 @@ def _display_jd(text: str) -> None:
 
 def _save_jd(text: str, jds_dir: "Path") -> None:
     import datetime
-    from coverletter.jd import clean_jd
     jds_dir.mkdir(parents=True, exist_ok=True)
     default = datetime.date.today().isoformat()
     console.print(f"\nSave JD as [dim](press Enter for {default})[/dim]: ", end="")
@@ -62,6 +61,7 @@ def _save_jd(text: str, jds_dir: "Path") -> None:
         label = input().strip() or default
     except (KeyboardInterrupt, EOFError):
         return
+    # Sanitize to safe filename
     safe = "".join(c if c.isalnum() or c in "-_" else "-" for c in label).strip("-")
     if not safe:
         safe = default
@@ -70,24 +70,8 @@ def _save_jd(text: str, jds_dir: "Path") -> None:
     while fname.exists():
         fname = jds_dir / f"{safe}_{counter}.txt"
         counter += 1
-    cleaned = clean_jd(text)
-    fname.write_text(cleaned, encoding="utf-8")
+    fname.write_text(text, encoding="utf-8")
     console.print(f"[dim]Saved → {fname}[/dim]")
-    # Log initial version — DB may not exist yet at this point, so best-effort only
-    try:
-        import hashlib
-        from coverletter.db import open_db
-        _db_candidates = list(jds_dir.parent.glob("*.db"))
-        if _db_candidates:
-            _vc = open_db(_db_candidates[0])
-            _vc.execute(
-                "INSERT INTO jd_versions (jd_name, file_hash, change_summary) VALUES (?, ?, ?)",
-                (safe, hashlib.sha256(cleaned.encode()).hexdigest()[:16], "Initial save"),
-            )
-            _vc.commit()
-            _vc.close()
-    except Exception:
-        pass
 
 
 def read_job_description(
@@ -111,42 +95,15 @@ def read_job_description(
         console.print(prompt)
     else:
         console.print(
-            "\n[bold]Copy the job description to your clipboard, then press Enter.[/bold]"
-            "  [dim]Type 'library' to load a saved JD.[/dim]\n"
+            "\n[bold]Copy the full job description to your clipboard, then press Enter.[/bold]\n"
+            "[dim]The text will be displayed for confirmation.[/dim]\n"
         )
 
     try:
         _flush_stdin()
-        choice = input().strip().lower()
+        input()
     except (KeyboardInterrupt, EOFError):
         raise SystemExit("\nCancelled.")
-
-    if choice in ("library", "lib") and jds_dir is not None:
-        jds_path = Path(jds_dir)
-        saved = sorted(jds_path.glob("*.txt"), key=lambda f: f.stat().st_mtime, reverse=True) if jds_path.exists() else []
-        if saved:
-            console.print()
-            for i, f in enumerate(saved[:9], 1):
-                preview = f.read_text(encoding="utf-8")[:60].replace("\n", " ").strip()
-                console.print(f"  [cyan]{i}[/cyan]. [bold]{f.stem}[/bold]  [dim]{preview}…[/dim]")
-            _flush_stdin()
-            try:
-                pick = input("\nNumber to load, or Enter to paste instead: ").strip()
-            except (KeyboardInterrupt, EOFError):
-                raise SystemExit("\nCancelled.")
-            if pick.isdigit() and 1 <= int(pick) <= len(saved[:9]):
-                text = saved[int(pick) - 1].read_text(encoding="utf-8").strip()
-                console.print(f"[dim]Loaded: {saved[int(pick) - 1].name}[/dim]")
-                return text
-        else:
-            console.print("[dim]No saved JDs yet.[/dim]")
-        # Fall through to clipboard paste
-        console.print("[bold]Copy the job description to your clipboard, then press Enter.[/bold]\n")
-        try:
-            _flush_stdin()
-            input()
-        except (KeyboardInterrupt, EOFError):
-            raise SystemExit("\nCancelled.")
 
     text = _read_from_clipboard().strip()
     if not text:
@@ -219,56 +176,28 @@ def _find_template(output_dir: "Path", name: str) -> "Path | None":
 
 
 def _read_multiline(prompt: str = "> ") -> str:
-    """Read multiline input via prompt_toolkit (no line-length limit, paste-safe).
+    """Read multiline input. Uses prompt_toolkit (no line-length limit, paste-safe).
 
-    Enter adds a newline. Enter twice or Ctrl-D submits. Ctrl-C cancels.
-    Falls back to double-Enter via input() if prompt_toolkit fails.
+    Enter adds a newline. Ctrl-D or Meta-Enter submits. Ctrl-C cancels.
+    Falls back to double-Enter if prompt_toolkit is unavailable.
     """
     console.print(
         f"[dim]{prompt}Press Enter for new lines. Enter twice or Ctrl-D to submit.[/dim]"
     )
+    lines: list[str] = []
     try:
-        from prompt_toolkit import prompt as pt_prompt
-        from prompt_toolkit.key_binding import KeyBindings
-
-        kb = KeyBindings()
-
-        @kb.add("enter")
-        def _enter(event):
-            buf = event.current_buffer
-            # Double-Enter submits: if last line is already empty, submit
-            if buf.text.endswith("\n") or buf.text == "":
-                buf.validate_and_handle()
-            else:
-                buf.insert_text("\n")
-
-        @kb.add("c-d")
-        def _submit_eof(event):
-            event.current_buffer.validate_and_handle()
-
-        text = pt_prompt(
-            "> ",
-            multiline=True,
-            key_bindings=kb,
-            prompt_continuation="  ",
-        )
-        return text.strip()
-    except Exception:
-        # Fallback: double-Enter via input()
-        lines: list[str] = []
-        try:
-            while True:
-                line = input()
-                if line == "" and lines and lines[-1] == "":
-                    lines.pop()
-                    break
-                lines.append(line)
-        except EOFError:
-            pass
-        except KeyboardInterrupt:
-            console.print("\n[dim]Cancelled.[/dim]")
-            raise
-        return "\n".join(lines).strip()
+        while True:
+            line = input()
+            if line == "" and lines and lines[-1] == "":
+                lines.pop()
+                break
+            lines.append(line)
+    except EOFError:
+        pass
+    except KeyboardInterrupt:
+        console.print("\n[dim]Cancelled.[/dim]")
+        raise
+    return "\n".join(lines).strip()
 
 
 def _show_alignment(report: "AlignmentResult") -> None:
@@ -301,9 +230,6 @@ def _gap_loop(
     cfg: "Config",
     job_description: str,
     seniority_gaps: "list[str] | None" = None,
-    resume_text: str = "",
-    conn: "object | None" = None,
-    embed_provider: "object | None" = None,
 ) -> int:
     """Show all gaps at once, let user pick which to address. Returns count of paragraphs saved."""
     import re
@@ -314,23 +240,13 @@ def _gap_loop(
     if not all_gaps:
         return 0
 
-    # Check which gaps have matching claims in the DB (semantic coverage check)
-    jd_gap_texts = [g for g, _ in all_gaps]
-    if conn is not None:
-        from coverletter.db import gap_library_coverage
-        db_covered_indices = gap_library_coverage(
-            conn, jd_gap_texts, cfg.voyage_api_key or "", embed_provider
-        )
-    else:
-        db_covered_indices = set()
-
     # Separate library-covered (already have material, just need regen) from truly missing
     actionable: list[tuple[int, str, str]] = []
     covered_by_library: list[int] = []
 
     console.print(f"[bold]{len(all_gaps)} gap(s):[/bold]\n")
     for i, (gap, kind) in enumerate(all_gaps, 1):
-        if (i - 1) in db_covered_indices:
+        if has_library_coverage(gap):
             console.print(f"  [dim]{i}. [in library] {gap}[/dim]")
             covered_by_library.append(i)
         elif kind == "Seniority":
@@ -341,7 +257,7 @@ def _gap_loop(
             actionable.append((i, gap, kind))
 
     if covered_by_library:
-        console.print(f"\n[dim]Gaps {', '.join(str(n) for n in covered_by_library)} already have library material — they'll be pulled in on regen.[/dim]")
+        console.print(f"\n[dim]Gaps {', '.join(str(n) for n in covered_by_library)} already have library paragraphs — they'll be pulled in on regen.[/dim]")
 
     if not actionable:
         console.print("[dim]No actionable gaps — all have library coverage.[/dim]")
@@ -371,9 +287,6 @@ def _gap_loop(
         else:
             console.print(f"\n[bold]Gap {i}:[/bold] {gap}")
 
-        # Default: use library search. Only suppress if user explicitly rejects a match.
-        _skip_search = False
-
         # Guard against duplicate saves: search the current library for this gap
         # before starting Q&A. If we find a strong match, show it and let the user
         # confirm it doesn't already cover the gap. This catches the common case of
@@ -390,21 +303,12 @@ def _gap_loop(
                 if confirm == "y":
                     console.print("[dim]Skipped.[/dim]")
                     continue
-                # User said no — suppress library search so coach doesn't ask about
-                # the paragraph they just rejected
-                _skip_search = True
-            else:
-                _skip_search = False
 
-        import re as _re
-        clean_gap = _re.sub(r"\s*\(library:\s*\[\d+\]\)", "", gap).strip()
         try:
             result = _qa_session(
-                clean_gap, all_paragraphs, priority_file, cfg,
-                job_description=job_description, gap_description=clean_gap,
+                gap, all_paragraphs, priority_file, cfg,
+                job_description=job_description, gap_description=gap,
                 voyage_api_key=cfg.voyage_api_key,
-                resume_text=resume_text,
-                skip_library_search=_skip_search,
             )
         except KeyboardInterrupt:
             console.print("\n[dim]Stopped. Any paragraphs saved above are in the library.[/dim]")
@@ -446,7 +350,8 @@ def _coaching_pass(
         console.print(f"[bold cyan]{i}/{len(issues)}[/bold cyan]  [yellow]{item.issue}[/yellow]")
         console.print(Panel(item.sentence, border_style="dim"))
 
-        user_input = _read_multiline()
+        _flush_stdin()
+        user_input = input("> ").strip()
 
         if not user_input:
             console.print("[dim]→ Kept.[/dim]\n")
@@ -506,39 +411,6 @@ def _is_question_response(text: str) -> bool:
 
 
 MAX_VERIFY_ATTEMPTS = 4
-
-
-def _outline_alignment_report(outline: dict, letter_text: str) -> None:
-    """Print which outline blocks made it into the letter vs. were dropped."""
-    letter_lower = letter_text.lower()
-    covered: list[str] = []
-    dropped: list[str] = []
-
-    for para in outline.get("paragraphs", []):
-        label = para.get("label", "unlabeled")
-        claims = para.get("claims", [])
-        # A block is considered present if at least one anchor phrase appears in the letter
-        anchors = [a for c in claims for a in c.get("anchors", [])]
-        if anchors:
-            hit = any(a.lower() in letter_lower for a in anchors)
-        else:
-            # No anchors — fall back to checking claim text fragments
-            hit = any(
-                len(c.get("text", "")) > 20 and c["text"][:30].lower() in letter_lower
-                for c in claims
-            )
-        (covered if hit else dropped).append(label)
-
-    if covered:
-        console.print("[bold]Outline coverage:[/bold]")
-        for label in covered:
-            console.print(f"  [green]✓[/green] {label}")
-    if dropped:
-        for label in dropped:
-            console.print(f"  [yellow]–[/yellow] {label} [dim](not detected in letter)[/dim]")
-    if not covered and not dropped:
-        console.print("[dim]No outline blocks to check.[/dim]")
-    console.print()
 
 
 def _run_verification(
@@ -756,31 +628,20 @@ def main(
     job_description = read_job_description(
         jds_dir=cfg.paragraphs_files[0].parent / "jds",
     )
-    from coverletter.jd import clean_jd
-    job_description = clean_jd(job_description)
 
     _flush_stdin()
     company = input("\nCompany name (for filename, optional): ").strip()
 
     notes: str | None = None
     if template_text:
-        console.print("\n[dim]Application notes (paragraphs to include, phrasing to emphasize — optional, Enter twice to skip):[/dim]")
-        raw_notes = _read_multiline()
+        _flush_stdin()
+        raw_notes = input(
+            "\nApplication notes (paragraphs to include, phrasing to emphasize — optional, Enter to skip): "
+        ).strip()
         notes = raw_notes or None
 
-    from coverletter.provider import get_embed_provider as _get_ep, get_provider as _get_provider
-    from coverletter.db import open_db, db_path, get_or_embed_jd, get_or_company_values
-    _provider = _get_provider(cfg.model, cfg.api_key)
-    _embed_provider = _get_ep(cfg.embed_model) or _provider
-    _db = db_path(cfg.paragraphs_files)
-    _conn = open_db(_db) if _db.exists() else None
-    if _conn:
-        from coverletter.resume_extract import maybe_extract_resume
-        maybe_extract_resume(cfg, _conn)
-    _cached_jd_vec = get_or_embed_jd(_conn, job_description, cfg.voyage_api_key or "", _embed_provider) if _conn else None
-    _company_values = get_or_company_values(_conn, job_description, cfg.api_key, cfg.model) if _conn else None
-    if cfg.voyage_api_key or _embed_provider.supports_embed() or _embed_provider.supports_hybrid():
-        filtered = embed_prefilter(role_paragraphs, job_description, cfg.top_n, cfg.voyage_api_key or "", _embed_provider, jd_vec=_cached_jd_vec)
+    if cfg.voyage_api_key:
+        filtered = embed_prefilter(role_paragraphs, job_description, cfg.top_n, cfg.voyage_api_key)
     else:
         filtered = prefilter(role_paragraphs, job_description, cfg.top_n)
 
@@ -801,8 +662,7 @@ def main(
         with Live(Spinner("dots", text="Deriving argument target..."), refresh_per_second=10, console=console):
             try:
                 provisional_argument = generate_argument(
-                    job_description, cfg.api_key, cfg.model, profile=profile,
-                    company_values=_company_values,
+                    job_description, cfg.api_key, cfg.model, profile=profile
                 )
             except Exception:
                 provisional_argument = None
@@ -886,7 +746,6 @@ def main(
         template=template_text, notes=notes,
         angle_evidence=angle_evidence,
         argument=provisional_argument,
-        company_values=_company_values,
     )
 
     # Build conversation history — enables revision loop
@@ -921,15 +780,11 @@ def main(
         console.print(Panel(f"[bold]Letter thesis:[/bold] {thesis}", border_style="cyan", title="Argument"))
         _flush_stdin()
         thesis_ok = input("Accept this argument? [Y / type a correction]: ").strip()
-        thesis_corrections: list[str] = []
         while thesis_ok.lower() not in ("", "y", "yes"):
-            thesis_corrections.append(thesis_ok)
-            accumulated = "\n\n".join(
-                f"Correction {i+1}: {c}" for i, c in enumerate(thesis_corrections)
-            )
+            correction = thesis_ok
             console.print(f"[dim]Regenerating...[/dim]")
             with Live(Spinner("dots", text="Revising thesis..."), refresh_per_second=10, console=console):
-                thesis = generate_thesis(job_description, letter_text, cfg.api_key, cfg.model, profile=profile, correction=accumulated)
+                thesis = generate_thesis(job_description, letter_text, cfg.api_key, cfg.model, profile=profile, correction=correction)
             console.print(f"[dim]{running_total()}[/dim]")
             console.print(Panel(f"[bold]Letter thesis:[/bold] {thesis}", border_style="cyan", title="Argument"))
             _flush_stdin()
@@ -950,9 +805,6 @@ def main(
             new_paragraphs_saved = _gap_loop(
                 report.gaps, all_paragraphs, gap_priority_file, cfg, job_description,
                 seniority_gaps=report.seniority_gaps,
-                resume_text=resume_text or "",
-                conn=_conn,
-                embed_provider=_embed_provider,
             )
 
         # Regenerate if new paragraphs were saved
@@ -962,8 +814,8 @@ def main(
             if regen in ("", "y", "yes"):
                 all_paragraphs = load_paragraphs(cfg.paragraphs_files)
                 role_paragraphs = filter_by_role(all_paragraphs, role) if role else all_paragraphs
-                if cfg.voyage_api_key or _embed_provider.supports_embed() or _embed_provider.supports_hybrid():
-                    filtered = embed_prefilter(role_paragraphs, job_description, cfg.top_n, cfg.voyage_api_key or "", _embed_provider, jd_vec=_cached_jd_vec)
+                if cfg.voyage_api_key:
+                    filtered = embed_prefilter(role_paragraphs, job_description, cfg.top_n, cfg.voyage_api_key)
                 else:
                     filtered = prefilter(role_paragraphs, job_description, cfg.top_n)
                 corrections = load_corrections(corrections_file)
@@ -1018,7 +870,6 @@ def main(
                     resume=resume_text or None, template=template_text, notes=notes,
                     angle_evidence=regen_angle_evidence,
                     argument=provisional_argument,
-                    company_values=_company_values,
                 )
                 messages = [{"role": "user", "content": user_message}]
                 console.print()
@@ -1068,7 +919,8 @@ def main(
         if _rejection_note:
             console.print(f"[dim]Previous rejection: {_rejection_note}[/dim]")
         console.print("[dim]Enter a paragraph number to target it, free text for global feedback, or Enter to finish:[/dim]")
-        feedback = _read_multiline()
+        _flush_stdin()
+        feedback = input("> ").strip()
 
         if not feedback:
             break
@@ -1085,8 +937,7 @@ def main(
                 console.print()
                 console.print(Panel(target_para, border_style="cyan", title=f"Paragraph {para_idx + 1}"))
                 _flush_stdin()
-                console.print("[dim]How to revise this paragraph (Enter twice to cancel):[/dim]")
-                targeted = _read_multiline()
+                targeted = input("How to revise this paragraph (or Enter to cancel): ").strip()
                 if not targeted:
                     continue
                 feedback = targeted
@@ -1180,21 +1031,14 @@ def _qa_session(
     job_description: str | None = None,
     gap_description: str | None = None,
     voyage_api_key: str = "",
-    resume_text: str = "",
-    skip_library_search: bool = False,
 ) -> str | None:
-    """Interactive Q&A session. Returns accepted paragraph text or None.
-
-    skip_library_search: when True, suppress the initial library search that seeds
-    the coach's first question. Use when the user has already seen a library match
-    and explicitly chosen to build something new instead.
-    """
+    """Interactive Q&A session. Returns accepted paragraph text or None."""
     from rich.panel import Panel
     from coverletter.build import _build_initial_context, qa_turn, force_draft, append_to_library
     from coverletter.experiences import load_experiences, find_experience, coverage_context
 
     experiences = load_experiences(cfg.experiences_file)
-    exp = find_experience(experiences, topic) if not skip_library_search else None
+    exp = find_experience(experiences, topic)
     framing_ctx = coverage_context(exp, all_paragraphs) if exp else ""
 
     if exp and framing_ctx:
@@ -1206,51 +1050,19 @@ def _qa_session(
         if missing:
             console.print(f"[dim]Missing angles: {', '.join(missing)}[/dim]")
 
-    from coverletter.provider import parse_model
-    from coverletter.build import build_system_prompt
-    _use_tools = parse_model(cfg.model)[0] == "anthropic" and not skip_library_search
-    _resume = "" if skip_library_search else resume_text
-    _system = build_system_prompt(
-        use_tools=_use_tools,
-        gap_description=gap_description or "",
-        has_resume=bool(_resume),
-        has_framing=bool(framing_ctx),
-    )
-    context = _build_initial_context(
-        topic, job_description, gap_description,
-        framing_context=framing_ctx,
-        resume_context=_resume,
-        use_tools=_use_tools,
-    )
+    context = _build_initial_context(topic, job_description, gap_description, framing_context=framing_ctx)
     history: list[dict] = [{"role": "user", "content": context}]
 
     console.print(f"\n[bold blue]Building:[/bold blue] {topic}")
     console.print("[dim]Answer the questions. 'draft' to draft now. 'done' to exit.[/dim]\n")
 
-    # When library search is suppressed (user declined a match), get the user's own
-    # framing first — what experience do they want to draw from? That answer seeds
-    # history before the coach runs, so the coach follows the user's lead instead of
-    # anchoring to whatever it finds in the resume or context.
-    if skip_library_search:
-        console.print("[dim]What experience do you want to draw from for this?[/dim]")
-        seed = _read_multiline()
-        if seed and seed.lower() not in ("done", "draft"):
-            history.append({"role": "assistant", "content": "What experience would you like to draw from for this gap?"})
-            history.append({"role": "user", "content": seed})
+    with Live(Spinner("dots", text="Thinking..."), refresh_per_second=10, console=console):
+        pending_draft, question = qa_turn(history, cfg.api_key, cfg.model, all_paragraphs, voyage_api_key=voyage_api_key)
+    console.print(f"[dim]{running_total()}[/dim]")
 
-    # Pass None for all_paragraphs when skip_library_search is set — prevents the
-    # search_library tool from finding and seeding the rejected paragraph
-    _search_paras = None if skip_library_search else all_paragraphs
-
-    # Don't burn an LLM call before the user has typed anything.
-    # Show a static opening so they have something to respond to.
-    # The model runs after their first answer, when it has real content to work with.
-    _opening = f"Tell me about your experience with this — what did you build or own?"
-    console.print(f"[cyan]{_opening}[/cyan]\n")
-    history.append({"role": "assistant", "content": _opening})
-
-    pending_draft: str | None = None
-    question: str = ""
+    if question:
+        console.print(f"[cyan]{question}[/cyan]\n")
+        history.append({"role": "assistant", "content": question})
 
     accepted: str | None = None
     exchange_count = 0
@@ -1285,7 +1097,7 @@ def _qa_session(
                 with Live(Spinner("dots", text="Revising..."), refresh_per_second=10, console=console):
                     # Use qa_turn directly — history already ends with the revision instruction.
                     # force_draft would append a second user message, causing the model to ignore the redirect.
-                    _draft_r, _raw_r = qa_turn(history, cfg.api_key, cfg.model, _search_paras, voyage_api_key=voyage_api_key, use_tools=_use_tools, system=_system)
+                    _draft_r, _raw_r = qa_turn(history, cfg.api_key, cfg.model, all_paragraphs, voyage_api_key=voyage_api_key)
                     pending_draft = _draft_r or _raw_r or ""
 
             elif choice == "k":
@@ -1293,7 +1105,7 @@ def _qa_session(
                 history.append({"role": "user", "content": "Let's keep going — what else do you need?"})
                 pending_draft = None
                 with Live(Spinner("dots", text="Continuing..."), refresh_per_second=10, console=console):
-                    _, question = qa_turn(history, cfg.api_key, cfg.model, _search_paras, voyage_api_key=voyage_api_key, use_tools=_use_tools, system=_system)
+                    _, question = qa_turn(history, cfg.api_key, cfg.model, all_paragraphs, voyage_api_key=voyage_api_key)
                 if question:
                     console.print(f"\n[cyan]{question}[/cyan]\n")
                     history.append({"role": "assistant", "content": question})
@@ -1307,35 +1119,19 @@ def _qa_session(
 
             if user_input.lower() == "draft":
                 with Live(Spinner("dots", text="Drafting..."), refresh_per_second=10, console=console):
-                    pending_draft = force_draft(history, cfg.api_key, cfg.model, all_paragraphs, voyage_api_key=voyage_api_key, system=_system)
+                    pending_draft = force_draft(history, cfg.api_key, cfg.model, all_paragraphs, voyage_api_key=voyage_api_key)
             else:
                 history.append({"role": "user", "content": user_input})
-
-                # Free metadata check — no LLM call. If employment context is unclear
-                # (personal project vs employer, which company), ask before spending tokens.
-                from coverletter.build import needs_metadata_clarification
-                meta_q = needs_metadata_clarification(user_input)
-                if meta_q and exchange_count == 0:
-                    console.print(f"\n[cyan]{meta_q}[/cyan]\n")
-                    history.append({"role": "assistant", "content": meta_q})
-                    meta_answer = _read_multiline()
-                    if meta_answer and meta_answer.lower() not in ("done", "draft"):
-                        history.append({"role": "user", "content": meta_answer})
-
                 exchange_count += 1
                 if exchange_count >= MAX_EXCHANGES:
                     with Live(Spinner("dots", text="Drafting..."), refresh_per_second=10, console=console):
-                        pending_draft = force_draft(history, cfg.api_key, cfg.model, _search_paras, voyage_api_key=voyage_api_key, system=_system)
+                        pending_draft = force_draft(history, cfg.api_key, cfg.model, all_paragraphs, voyage_api_key=voyage_api_key)
                 else:
                     with Live(Spinner("dots", text="Thinking..."), refresh_per_second=10, console=console):
-                        pending_draft, question = qa_turn(history, cfg.api_key, cfg.model, _search_paras, voyage_api_key=voyage_api_key, use_tools=_use_tools, system=_system)
+                        pending_draft, question = qa_turn(history, cfg.api_key, cfg.model, all_paragraphs, voyage_api_key=voyage_api_key)
                     if question:
                         console.print(f"\n[cyan]{question}[/cyan]\n")
                         history.append({"role": "assistant", "content": question})
-                    elif not pending_draft:
-                        # Judge rejected everything — draft from what we have
-                        with Live(Spinner("dots", text="Drafting..."), refresh_per_second=10, console=console):
-                            pending_draft = force_draft(history, cfg.api_key, cfg.model, _search_paras, voyage_api_key=voyage_api_key, system=_system)
 
     if not accepted:
         return None
@@ -1386,20 +1182,12 @@ def _qa_session(
 @main.command("build")
 @click.option("--paragraphs", "-p", default=None, help="Path to paragraphs file")
 @click.option("--about", "-a", default=None, help="What to build a paragraph about")
-@click.option("--resume", "-R", default=None, help="Path to resume file (.pdf, .md, or .txt)")
-@click.option("--jd", "jd_text", default=None, help="Job description text or path to a JD file — drives gap-first build mode")
 @click.pass_context
-def build_library(ctx: click.Context, paragraphs: str | None, about: str | None, resume: str | None, jd_text: str | None) -> None:
-    """Grow your paragraph library through Q&A — add new experiences, projects, or angles.
-
-    With --jd: analyzes the JD against your library, shows what's covered and what's missing,
-    then walks you through filling gaps with targeted Q&A.
-
-    Without --jd: prompts you for a topic and builds one paragraph at a time.
-    """
+def build_library(ctx: click.Context, paragraphs: str | None, about: str | None) -> None:
+    """Grow your paragraph library through Q&A — add new experiences, projects, or angles."""
     from pathlib import Path
     paragraphs = paragraphs or (ctx.obj or {}).get("paragraphs")
-    cfg = load_config(paragraphs, resume_override=resume)
+    cfg = load_config(paragraphs)
     all_paragraphs = load_paragraphs(cfg.paragraphs_files)
     # Build always saves to library_refined.md — the priority layer.
     # Seed saves raw extractions to library.md (base layer).
@@ -1408,137 +1196,8 @@ def build_library(ctx: click.Context, paragraphs: str | None, about: str | None,
     base_file = cfg.paragraphs_files[-1]
     priority_file = base_file.parent / "library_refined.md"
 
-    resume_text = load_resume(cfg.resume_file)
-    if resume_text:
-        console.print(f"Resume: [dim]{cfg.resume_file}[/dim]")
-
     console.print(f"\n[bold blue]Paragraph Builder[/bold blue]  [dim]→ {priority_file.name}[/dim]\n")
 
-    # --- Gap-driven mode: JD provided ---
-    if jd_text:
-        # Accept either raw JD text or a file path
-        jd_path = Path(jd_text)
-        if jd_path.exists():
-            job_description = jd_path.read_text(encoding="utf-8").strip()
-        else:
-            job_description = jd_text.strip()
-
-        from coverletter.jd import clean_jd
-        job_description = clean_jd(job_description)
-
-        if not job_description:
-            console.print("[yellow]JD is empty — exiting.[/yellow]")
-            return
-
-        from coverletter.align import library_gap_analysis
-        from coverletter.db import open_db, db_path
-        from coverletter.provider import get_embed_provider as _get_ep, get_provider as _get_provider
-        _gen_provider = _get_provider(cfg.model, cfg.api_key)
-        _embed_prov = _get_ep(cfg.embed_model) or _gen_provider
-        _db = db_path(cfg.paragraphs_files)
-        if not _db.exists():
-            console.print(
-                "[yellow]No claims DB found.[/yellow] Run [bold]coverletter sync[/bold] then "
-                "[bold]coverletter extract[/bold] to build the DB before using --jd gap analysis."
-            )
-            return
-        _conn = open_db(_db)
-        console.print("[dim]Analyzing your library against the JD...[/dim]")
-        with Live(Spinner("dots", text="Analyzing..."), refresh_per_second=10, console=console):
-            result = library_gap_analysis(
-                job_description, cfg.api_key, cfg.model,
-                conn=_conn,
-                voyage_api_key=cfg.voyage_api_key or "",
-                embed_provider=_embed_prov,
-            )
-        _conn.close()
-
-        if result.no_db:
-            console.print(
-                "[yellow]No embeddings found in DB.[/yellow] Run [bold]coverletter sync[/bold] "
-                "to compute embeddings, then [bold]coverletter extract[/bold] to populate claims."
-            )
-            return
-
-        # Show what's covered
-        if result.covered:
-            console.print(f"\n[bold green]Covered ({len(result.covered)}):[/bold green]")
-            for item in result.covered:
-                console.print(f"  [green]✓[/green] {item['requirement']}")
-                if item.get("best_claim"):
-                    console.print(f"    [dim]{item['best_claim'][:100]}[/dim]")
-        else:
-            console.print("\n[dim]Nothing in your library addresses this JD yet.[/dim]")
-
-        # Show gaps
-        if not result.gaps:
-            console.print("\n[bold green]No gaps — your library covers this JD well.[/bold green]")
-            return
-
-        console.print(f"\n[bold red]Gaps ({len(result.gaps)}):[/bold red]")
-        for i, gap in enumerate(result.gaps, 1):
-            console.print(f"  [red]{i}.[/red] {gap['requirement']}")
-            if gap.get("build_prompt"):
-                console.print(f"    [dim]→ {gap['build_prompt']}[/dim]")
-
-        # Let user pick which gaps to address
-        _flush_stdin()
-        raw = input(
-            f"\nAddress which gaps? (e.g. 1,3 or 'all' or Enter to skip): "
-        ).strip()
-        if not raw:
-            return
-        if raw.lower() in ("all", "a"):
-            selected_indices = set(range(1, len(result.gaps) + 1))
-        else:
-            try:
-                selected_indices = {int(n.strip()) for n in raw.replace(" ", "").split(",") if n.strip().isdigit()}
-            except ValueError:
-                selected_indices = set()
-
-        for i, gap in enumerate(result.gaps, 1):
-            if i not in selected_indices:
-                continue
-            requirement = gap["requirement"]
-            build_prompt = gap.get("build_prompt", "")
-            # Seed the Q&A topic with the gap requirement; the build_prompt goes into the
-            # initial context so the coach starts from a concrete angle rather than cold.
-            seed_topic = requirement
-            if build_prompt:
-                seed_topic = f"{requirement}\n\nStarting angle: {build_prompt}"
-            console.print(f"\n[bold]Gap {i}:[/bold] {requirement}")
-            try:
-                accepted = _qa_session(
-                    seed_topic, all_paragraphs, priority_file, cfg,
-                    job_description=job_description,
-                    gap_description=requirement,
-                    voyage_api_key=cfg.voyage_api_key,
-                    resume_text=resume_text or "",
-                )
-            except KeyboardInterrupt:
-                console.print("\n[dim]Stopped.[/dim]")
-                break
-
-            # Sync newly written paragraph into the DB so subsequent gap
-            # sessions can see it in coverage scoring.
-            if accepted:
-                all_paragraphs = load_paragraphs(cfg.paragraphs_files)
-                try:
-                    from coverletter.db import (
-                        open_db, db_path, sync_from_markdown, compute_embeddings,
-                    )
-                    _sync_db = db_path(cfg.paragraphs_files)
-                    if _sync_db.exists():
-                        _sync_conn = open_db(_sync_db)
-                        sync_from_markdown(_sync_conn, all_paragraphs, cfg.paragraphs_files)
-                        compute_embeddings(_sync_conn, cfg.voyage_api_key)
-                        _sync_conn.close()
-                        console.print("[dim]Synced new paragraph to DB.[/dim]")
-                except Exception:
-                    pass  # sync failure never blocks the build flow
-        return
-
-    # --- Manual mode: no JD ---
     topic = about
     if not topic:
         _flush_stdin()
@@ -1552,17 +1211,31 @@ def build_library(ctx: click.Context, paragraphs: str | None, about: str | None,
         return
 
     while True:
-        _qa_session(topic, all_paragraphs, priority_file, cfg, voyage_api_key=cfg.voyage_api_key, resume_text=resume_text or "")
+        _qa_session(topic, all_paragraphs, priority_file, cfg, voyage_api_key=cfg.voyage_api_key)
 
         _flush_stdin()
         another = input("Build another paragraph? [Y/n]: ").strip().lower()
         if another in ("n", "no"):
             break
 
+        console.print("[dim]Copy your next topic or material to your clipboard, then press Enter. Just press Enter to exit.[/dim]")
         _flush_stdin()
-        topic = input("What next? (Enter to exit): ").strip()
+        try:
+            sentinel = input()
+        except (KeyboardInterrupt, EOFError):
+            break
+        if sentinel.strip().lower() in ("done", "exit", "quit"):
+            break
+        topic = _read_from_clipboard().strip()
+        if not topic:
+            # Nothing on clipboard — use whatever they typed as the topic
+            topic = sentinel.strip()
         if not topic:
             break
+        try:
+            sys.stdin = open("/dev/tty", "r")
+        except OSError:
+            _flush_stdin()
 
 
 @main.command("reflect")
@@ -1784,7 +1457,7 @@ def intake(
       coverletter intake --mission
       coverletter intake --evidence
     """
-    from coverletter.build import MISSION_SYSTEM, qa_turn, force_draft, append_to_library
+    from coverletter.build import MISSION_SYSTEM, BUILD_SYSTEM, qa_turn, force_draft, append_to_library
     from rich.panel import Panel
     from rich.rule import Rule
 
@@ -1887,8 +1560,7 @@ def _intake_mission(cfg: "Config", all_paragraphs: list["Paragraph"], priority_f
         console.print("[yellow]Nothing to capture — exiting.[/yellow]")
         return
     _flush_stdin()
-    console.print("[dim]What specifically resonates? (your words, as much detail as you want):[/dim]")
-    what_resonates = _read_multiline()
+    what_resonates = input("What specifically resonates? (your words, as much detail as you want): ").strip()
 
     topic = company
     theme = company
@@ -1987,7 +1659,7 @@ def _intake_mission(cfg: "Config", all_paragraphs: list["Paragraph"], priority_f
 
 def _intake_evidence(cfg: "Config", all_paragraphs: list["Paragraph"], priority_file: "Path") -> None:
     """Q&A session to capture an evidence paragraph."""
-    from coverletter.build import build_system_prompt, qa_turn, force_draft, append_to_library
+    from coverletter.build import BUILD_SYSTEM, qa_turn, force_draft, append_to_library
     from rich.panel import Panel
 
     console.print("[bold]Evidence[/bold]  [dim]— what you built or owned at a specific role[/dim]\n")
@@ -2002,7 +1674,6 @@ def _intake_evidence(cfg: "Config", all_paragraphs: list["Paragraph"], priority_
         console.print("[yellow]Nothing to capture — exiting.[/yellow]")
         return
 
-    _system = build_system_prompt(use_tools=True)
     context = (
         f"Topic to explore: {topic}\n\n"
         "Use the search_library tool now to check what is already written about this topic before asking any questions."
@@ -2012,12 +1683,16 @@ def _intake_evidence(cfg: "Config", all_paragraphs: list["Paragraph"], priority_
     console.print(f"\n[bold blue]Capturing:[/bold blue] {topic}")
     console.print("[dim]Answer the questions. 'draft' to draft now. 'done' to exit without saving.[/dim]\n")
 
-    _opening = "Tell me about your experience with this — what did you build or own?"
-    console.print(f"[cyan]{_opening}[/cyan]\n")
-    history.append({"role": "assistant", "content": _opening})
+    with Live(Spinner("dots", text="Thinking..."), refresh_per_second=10, console=console):
+        pending_draft, question = qa_turn(
+            history, cfg.api_key, cfg.model, all_paragraphs,
+            voyage_api_key=cfg.voyage_api_key, system=BUILD_SYSTEM,
+        )
+    console.print(f"[dim]{running_total()}[/dim]")
 
-    pending_draft: str | None = None
-    question: str = ""
+    if question:
+        console.print(f"[cyan]{question}[/cyan]\n")
+        history.append({"role": "assistant", "content": question})
 
     accepted: str | None = None
 
@@ -2047,7 +1722,7 @@ def _intake_evidence(cfg: "Config", all_paragraphs: list["Paragraph"], priority_
                 with Live(Spinner("dots", text="Revising..."), refresh_per_second=10, console=console):
                     # Use qa_turn directly — history already ends with the revision instruction.
                     # force_draft would append a second user message, causing the model to ignore the redirect.
-                    _draft_r, _raw_r = qa_turn(history, cfg.api_key, cfg.model, all_paragraphs, voyage_api_key=cfg.voyage_api_key, system=_system)
+                    _draft_r, _raw_r = qa_turn(history, cfg.api_key, cfg.model, all_paragraphs, voyage_api_key=cfg.voyage_api_key, system=BUILD_SYSTEM)
                     pending_draft = _draft_r or _raw_r or ""
             elif choice == "k":
                 history.append({"role": "assistant", "content": pending_draft})
@@ -2056,7 +1731,7 @@ def _intake_evidence(cfg: "Config", all_paragraphs: list["Paragraph"], priority_
                 with Live(Spinner("dots", text="Continuing..."), refresh_per_second=10, console=console):
                     _, question = qa_turn(
                         history, cfg.api_key, cfg.model, all_paragraphs,
-                        voyage_api_key=cfg.voyage_api_key, system=_system,
+                        voyage_api_key=cfg.voyage_api_key, system=BUILD_SYSTEM,
                     )
                 if question:
                     console.print(f"\n[cyan]{question}[/cyan]\n")
@@ -2069,14 +1744,14 @@ def _intake_evidence(cfg: "Config", all_paragraphs: list["Paragraph"], priority_
                 with Live(Spinner("dots", text="Drafting..."), refresh_per_second=10, console=console):
                     pending_draft = force_draft(
                         history, cfg.api_key, cfg.model, all_paragraphs,
-                        voyage_api_key=cfg.voyage_api_key, system=_system,
+                        voyage_api_key=cfg.voyage_api_key, system=BUILD_SYSTEM,
                     )
             else:
                 history.append({"role": "user", "content": user_input})
                 with Live(Spinner("dots", text="Thinking..."), refresh_per_second=10, console=console):
                     pending_draft, question = qa_turn(
                         history, cfg.api_key, cfg.model, all_paragraphs,
-                        voyage_api_key=cfg.voyage_api_key, system=_system,
+                        voyage_api_key=cfg.voyage_api_key, system=BUILD_SYSTEM,
                     )
                 if question and pending_draft is None:
                     console.print(f"\n[cyan]{question}[/cyan]\n")
@@ -2161,8 +1836,6 @@ def blurb(
         ),
         jds_dir=cfg.paragraphs_files[0].parent / "jds",
     )
-    from coverletter.jd import clean_jd
-    job_description = clean_jd(job_description)
 
     # Application prompt — copy the question from the application form to clipboard, press Enter.
     console.print(
@@ -2188,19 +1861,10 @@ def blurb(
     _flush_stdin()
     company = input("\nCompany name (for filename, optional): ").strip()
 
-    from coverletter.provider import get_embed_provider as _get_ep, get_provider as _get_provider
-    _provider = _get_provider(cfg.model, cfg.api_key)
-    _embed_provider = _get_ep(cfg.embed_model) or _provider
-    from coverletter.db import open_db, db_path, get_or_embed_jd
-    _db = db_path(cfg.paragraphs_files)
-    _conn = open_db(_db) if _db.exists() else None
-    _cached_jd_vec = get_or_embed_jd(_conn, job_description, cfg.voyage_api_key or "", _embed_provider) if _conn else None
-    if cfg.voyage_api_key or _embed_provider.supports_embed() or _embed_provider.supports_hybrid():
-        filtered = embed_prefilter(role_paragraphs, job_description, cfg.top_n, cfg.voyage_api_key or "", _embed_provider, jd_vec=_cached_jd_vec)
+    if cfg.voyage_api_key:
+        filtered = embed_prefilter(role_paragraphs, job_description, cfg.top_n, cfg.voyage_api_key)
     else:
         filtered = prefilter(role_paragraphs, job_description, cfg.top_n)
-    if _conn:
-        _conn.close()
 
     from coverletter.corrections import apply_corrections, load_corrections
     corrections_file = cfg.paragraphs_files[0].parent / "corrections.md"
@@ -2246,7 +1910,6 @@ def blurb(
         values=values,
         goals=goals,
         avoid=avoid,
-        company_values=_company_values,
     )
 
     console.print()
@@ -2297,7 +1960,8 @@ def blurb(
             )
             new_entries: list[str] = []
             while True:
-                entry = _read_multiline()
+                _flush_stdin()
+                entry = input("> ").strip()
                 if not entry:
                     break
                 new_entries.append(entry)
@@ -2322,8 +1986,7 @@ def blurb(
     while True:
         console.print()
         _flush_stdin()
-        console.print("[dim]Revise (free text), or Enter twice to finish:[/dim]")
-        feedback = _read_multiline()
+        feedback = input("Revise (free text), or Enter to finish: ").strip()
         if not feedback:
             break
 
@@ -2370,47 +2033,46 @@ def blurb(
 
 
 @main.command("init")
-def init() -> None:
-    """Scaffold .env, library.md, and experiences.md in the current directory."""
-    from pathlib import Path
+@click.pass_context
+def init(ctx: click.Context) -> None:
+    """Interactive setup — scaffold files, configure keys, and start building your library."""
+    import re as _re
 
     env_path = Path(".env")
     paragraphs_path = Path("library.md")
     experiences_path = Path("experiences.md")
+    angles_path = Path("custom_angles.toml")
+    categories_path = Path("custom_categories.toml")
     created: list[str] = []
     skipped: list[str] = []
 
+    console.print("\n[bold blue]clio setup[/bold blue]\n")
+
+    # ── 1. Create files ──────────────────────────────────────────────────────
+
+    fresh_env = False
     if env_path.exists():
         skipped.append(".env")
     else:
         env_path.write_text(
-            "# Cover Letter Generator — configuration\n"
-            "# ─────────────────────────────────────────\n"
-            "# Generation provider — pick one:\n"
-            "ANTHROPIC_API_KEY=sk-ant-...        # https://console.anthropic.com\n"
-            "# MISTRAL_API_KEY=...               # https://console.mistral.ai\n"
-            "# OPENAI_API_KEY=sk-...             # https://platform.openai.com\n"
-            "# COHERE_API_KEY=...                # https://dashboard.cohere.com\n\n"
-            "# Switch provider by setting the model (prefix selects provider):\n"
-            "# COVERLETTER_MODEL=claude-sonnet-4-6   (default, Anthropic)\n"
-            "# COVERLETTER_MODEL=mistral/mistral-large-latest\n"
-            "# COVERLETTER_MODEL=openai/gpt-4o\n"
-            "# COVERLETTER_MODEL=cohere/command-r-plus\n\n"
-            "# Embeddings (for paragraph + claim retrieval):\n"
-            "# VOYAGE_API_KEY=pa-...             # https://www.voyageai.com — best retrieval quality\n"
-            "# OPENAI_EMBED_MODEL=text-embedding-3-small  # if using OpenAI-compat host\n"
-            "# EMBED_MODEL=bge-m3                # local hybrid dense+sparse (uv add FlagEmbedding)\n\n"
+            "# clio — configuration\n"
+            "# Get your key at https://console.anthropic.com\n"
+            "ANTHROPIC_API_KEY=\n\n"
+            "# Optional: Voyage AI for semantic paragraph matching (better than keyword)\n"
+            "# Get your key at https://www.voyageai.com\n"
+            "VOYAGE_API_KEY=\n\n"
             "# Your name as it appears on the sign-off\n"
-            "AUTHOR_NAME=Your Name\n\n"
+            "AUTHOR_NAME=\n\n"
             "# Absolute path to your resume PDF (or .md / .txt)\n"
-            "# RESUME_FILE=/path/to/your/resume.pdf\n\n"
+            "RESUME_FILE=\n\n"
             "# Where to save generated letters (defaults to ./output)\n"
-            "# OUTPUT_DIR=/path/to/output\n\n"
-            "# How many paragraphs to pass to the model (default 100)\n"
-            "# COVERLETTER_TOP_N=100\n",
+            "# OUTPUT_DIR=\n\n"
+            "# Override the model (defaults to claude-sonnet-4-6)\n"
+            "# COVERLETTER_MODEL=claude-opus-4-5\n",
             encoding="utf-8",
         )
         created.append(".env")
+        fresh_env = True
 
     if paragraphs_path.exists():
         skipped.append("library.md")
@@ -2421,160 +2083,57 @@ def init() -> None:
             "  -----------------------------------------------------------------------\n"
             "  STRUCTURE\n"
             "  * ## Role Name    -> groups paragraphs for a specific role type\n"
-            "  * ## General      -> included in every generation regardless of role\n"
-            "  * ### Section     -> paragraph type (Opening, Technical, Why This Role...)\n"
+            "  * ## General      -> paragraphs included regardless of role\n"
+            "  * ### Section     -> experience or project name, with company context\n"
+            "                       e.g. ### BritBox / Watch Duration Pipeline\n"
             "  * Paragraphs separated by blank lines within each section\n"
             "  * Optional meta comment above each paragraph:\n"
-            "      <!-- meta: tone=opener, strength=high -->\n"
-            "      <!-- meta: tech=python,spark, strength=high -->\n"
+            "      <!-- meta: strength=high, via=build, angle=production-ownership -->\n"
             "  * Valid meta keys: tone (opener|closer), strength (high|medium|low),\n"
-            "                     tech (comma-separated list)\n"
+            "                     via (seed|build|reflect), angle (see clio help)\n"
             "\n"
             "  WORKFLOW\n"
-            "  1. Add your source paragraphs below -- written in your own voice\n"
-            "  2. Run: coverletter\n"
-            "  3. Select a role, paste a job description, get a letter\n"
-            "  4. After every application, add what worked\n"
+            "  1. Run: uv run clio seed <resume-or-letter>  -- bootstrap from existing material\n"
+            "  2. Run: uv run clio build                    -- grow library through Q&A\n"
+            "  3. Run: uv run clio sync                     -- load paragraphs into DB\n"
+            "  4. Run: uv run clio generate                 -- generate a letter\n"
             "  -----------------------------------------------------------------------\n"
             "-->\n"
             "\n"
-            "# My Cover Letter Paragraphs\n"
-            "\n"
-            "## General\n"
-            "\n"
-            "### Opening\n"
-            "\n"
-            "<!-- meta: tone=opener, strength=high -->\n"
-            "Write an opening paragraph here that describes who you are and what kind of\n"
-            "work you do. Make a concrete claim. Do not start with \"I am excited to apply.\"\n"
-            "\n"
-            "### Strengths\n"
-            "\n"
-            "<!-- meta: strength=high -->\n"
-            "Write a paragraph about a specific strength here, with an example or evidence.\n"
-            "\n"
-            "### Closing\n"
-            "\n"
-            "<!-- meta: tone=closer, strength=high -->\n"
-            "Write a closing paragraph here. Thank the reader and express genuine interest\n"
-            "in speaking further. Be specific, not generic.\n"
-            "\n"
-            "## Your Role Type\n"
-            "\n"
-            "### Opening\n"
-            "\n"
-            "<!-- meta: tone=opener, strength=high -->\n"
-            "Write a role-specific opening paragraph here.\n"
-            "\n"
-            "### Technical\n"
-            "\n"
-            "<!-- meta: tech=your,tools,here, strength=high -->\n"
-            "Write a technical paragraph here about a specific project or system you built.\n"
-            "Concrete situation, specific problem, what you did, why it was hard, what changed.\n"
-            "\n"
-            "### Why This Role\n"
-            "\n"
-            "<!-- meta: tone=closer, strength=high -->\n"
-            "Write a paragraph about why this type of role or organization appeals to you.\n"
-            "Specific connection, not generic enthusiasm.\n",
+            "# My Cover Letter Paragraphs\n",
             encoding="utf-8",
         )
         created.append("library.md")
-
-    custom_angles_path = Path("custom_angles.toml")
-    custom_categories_path = Path("custom_categories.toml")
-
-    if custom_angles_path.exists():
-        skipped.append("custom_angles.toml")
-    else:
-        custom_angles_path.write_text(
-            "# custom_angles.toml — your personal angle overrides and additions\n"
-            "# This file is gitignored. The baseline is in the clio source.\n"
-            "#\n"
-            "# To OVERRIDE a baseline angle, add a section with its name:\n"
-            "#\n"
-            "# [angles.compliance]\n"
-            "# description = \"\"\"\n"
-            "# Your more specific description here.\n"
-            "# \"\"\"\n"
-            "#\n"
-            "# To ADD a new angle specific to your career history:\n"
-            "#\n"
-            "# [angles.your-angle-name]\n"
-            "# description = \"\"\"\n"
-            "# What this angle means and when a paragraph demonstrates it.\n"
-            "# \"\"\"\n"
-            "#\n"
-            "# Baseline angles: through-line, autonomy, ownership, business-impact,\n"
-            "# system-design, requirements-translation, compliance, technical-depth,\n"
-            "# precision, communication, leadership, strategic-vision, resilience,\n"
-            "# problem-solving, problem-definition, trust, recovery, scope-expansion\n",
-            encoding="utf-8",
-        )
-        created.append("custom_angles.toml")
-
-    if custom_categories_path.exists():
-        skipped.append("custom_categories.toml")
-    else:
-        custom_categories_path.write_text(
-            "# custom_categories.toml — your personal argument category overrides and additions\n"
-            "# This file is gitignored. The baseline is in coverletter/evals/argument_categories.json.\n"
-            "#\n"
-            "# To OVERRIDE a baseline category (matched by name):\n"
-            "#\n"
-            "# [[categories]]\n"
-            "# name = \"accountability\"\n"
-            "# description = \"Your more specific description.\"\n"
-            "# anchor_signals = [\"responsible for\", \"owned the outcome\"]\n"
-            "#\n"
-            "# To ADD a new category:\n"
-            "#\n"
-            "# [[categories]]\n"
-            "# name = \"your_category\"\n"
-            "# description = \"What kind of claim this category captures.\"\n"
-            "# anchor_signals = [\"signal one\", \"signal two\"]\n"
-            "#\n"
-            "# Baseline categories: accountability, stakeholder_fluency, technical_ownership,\n"
-            "# autonomy, technical_depth, approach_method, disposition, motivation,\n"
-            "# communication, leadership\n",
-            encoding="utf-8",
-        )
-        created.append("custom_categories.toml")
 
     if experiences_path.exists():
         skipped.append("experiences.md")
     else:
         experiences_path.write_text(
             "# Experience Register\n"
-            "#\n"
-            "# Stores raw facts and desired angle framings per experience.\n"
-            "# Used to inject targeted context into Q&A sessions so the agent\n"
-            "# asks about gaps instead of re-asking what's already written.\n"
-            "#\n"
-            "# Format:\n"
-            "#\n"
-            "# ## Experience Name\n"
-            "# company: Company Name\n"
-            "# years: 2021–2023\n"
-            "# angles: production-ownership, system-design, business-impact\n"
-            "#\n"
-            "# Raw facts about this experience (things the Q&A agent already knows).\n"
-            "# Write these as bullet points or short sentences.\n"
-            "#\n"
-            "# qa_targets:\n"
-            "# - What downstream decisions depended directly on the output?\n"
-            "# - What broke or became unreliable when it failed?\n"
-            "#\n"
-            "# Angles to use:\n"
-            "#   production-ownership, system-design, business-impact, data-model,\n"
-            "#   cross-functional, scope-opener, domain-expertise, reliability,\n"
-            "#   leverage, through-line, ownership, architecture, strategic-vision,\n"
-            "#   financial-complexity\n",
+            "# Populated automatically by clio build and clio seed.\n"
+            "# Each entry stores raw facts and Q&A targets per experience.\n",
             encoding="utf-8",
         )
         created.append("experiences.md")
 
-    console.print()
+    for toml_path, label, comments in [
+        (angles_path, "custom_angles.toml",
+         "# Personal angle overrides — gitignored.\n"
+         "# Baseline is in the clio source (coverletter/db.py: CANONICAL_ANGLES).\n"
+         "# Uncomment and edit to override specific angles.\n"
+         "# Format: [angles.angle_name]  description = \"your override\"\n"),
+        (categories_path, "custom_categories.toml",
+         "# Personal category overrides — gitignored.\n"
+         "# Baseline is in coverletter/evals/argument_categories.json.\n"
+         "# Uncomment and edit to override specific categories.\n"
+         "# Format: [categories.category_name]  description = \"your override\"\n"),
+    ]:
+        if toml_path.exists():
+            skipped.append(label)
+        else:
+            toml_path.write_text(comments, encoding="utf-8")
+            created.append(label)
+
     if created:
         console.print("[bold green]Created:[/bold green]")
         for f in created:
@@ -2583,24 +2142,83 @@ def init() -> None:
         console.print("[dim]Already exists (skipped):[/dim]")
         for f in skipped:
             console.print(f"  [dim]{f}[/dim]")
+    console.print()
+
+    # ── 2. Collect API keys and author name ───────────────────────────────────
+
+    env_text = env_path.read_text(encoding="utf-8")
+
+    def _get_env_val(key: str) -> str:
+        m = _re.search(rf"^{key}=(.*)$", env_text, _re.MULTILINE)
+        return m.group(1).strip() if m else ""
+
+    def _set_env_val(key: str, value: str) -> None:
+        nonlocal env_text
+        env_text = _re.sub(
+            rf"^{key}=.*$", f"{key}={value}", env_text, flags=_re.MULTILINE
+        )
+        env_path.write_text(env_text, encoding="utf-8")
+
+    needs_setup: list[tuple[str, str, str]] = []
+    if not _get_env_val("ANTHROPIC_API_KEY"):
+        needs_setup.append(("ANTHROPIC_API_KEY", "Anthropic API key (https://console.anthropic.com)", "sk-ant-"))
+    if not _get_env_val("AUTHOR_NAME"):
+        needs_setup.append(("AUTHOR_NAME", "Your full name (used on letter sign-offs)", ""))
+    if not _get_env_val("RESUME_FILE"):
+        needs_setup.append(("RESUME_FILE", "Path to your resume PDF (optional — press Enter to skip)", ""))
+
+    if needs_setup:
+        console.print("[bold]Let's configure your keys.[/bold] These go into .env\n")
+        _flush_stdin()
+        for key, prompt_text, hint in needs_setup:
+            hint_str = f" [dim](e.g. {hint})[/dim]" if hint else ""
+            console.print(f"  {prompt_text}{hint_str}")
+            val = input(f"  {key}: ").strip()
+            if val:
+                _set_env_val(key, val)
+                console.print(f"  [green]✓ saved[/green]\n")
+            else:
+                console.print(f"  [dim]skipped — edit .env to set {key} later[/dim]\n")
+
+    # Reload dotenv so the rest of init can use the keys we just wrote
+    from dotenv import load_dotenv
+    load_dotenv(override=True)
+
+    # ── 3. Offer to start building the library now ────────────────────────────
+
+    console.print("[bold]Your library is empty. Let's get some material in.[/bold]\n")
+    console.print("  [A] I have a resume, cover letter, or LinkedIn export to seed from")
+    console.print("  [B] I want to start a Q&A session to write a paragraph from scratch")
+    console.print("  [S] Skip — I'll run clio seed or clio build manually later\n")
+    _flush_stdin()
+    choice = input("Choice [A/B/S]: ").strip().lower()
+
+    if choice == "a":
+        console.print()
+        seed_file = input("Path to file (or press Enter to paste from clipboard): ").strip()
+        console.print()
+        try:
+            ctx.invoke(seed_library, input_file=seed_file or None)
+        except Exception as e:
+            console.print(f"[red]seed failed:[/red] {e}")
+    elif choice == "b":
+        console.print()
+        try:
+            ctx.invoke(build_library)
+        except Exception as e:
+            console.print(f"[red]build failed:[/red] {e}")
+
+    # ── 4. What's next ────────────────────────────────────────────────────────
 
     console.print()
-    console.print("[bold]Next steps:[/bold]")
-    console.print("  1. Add your API key and [bold]AUTHOR_NAME[/bold] to .env")
-    console.print("  2. Set [bold]RESUME_FILE[/bold] in .env (used by build and generate)")
+    console.print("[bold]What's next:[/bold]")
+    console.print("  [cyan]uv run clio build[/cyan]         — add more paragraphs through Q&A")
+    console.print("  [cyan]uv run clio profile[/cyan]       — capture your goals and working style")
+    console.print("  [cyan]uv run clio sync[/cyan]          — load paragraphs into the DB")
+    console.print("  [cyan]uv run clio extract[/cyan]       — extract claims (needed for outline and interview)")
+    console.print("  [cyan]uv run clio generate[/cyan]      — generate a letter")
     console.print()
-    console.print("  [bold]If you have existing material[/bold] (resume, old cover letters, LinkedIn):")
-    console.print("    uv run coverletter seed                     # paste material, extract paragraphs")
-    console.print()
-    console.print("  [bold]If you have a job description and want to see what's missing:[/bold]")
-    console.print("    uv run coverletter build --jd jd.txt        # gap analysis + targeted Q&A")
-    console.print("    uv run coverletter build --about \"project\"  # build one paragraph manually")
-    console.print()
-    console.print("  [bold]Build your profile[/bold] (do once before generating letters):")
-    console.print("    uv run coverletter profile --model opus")
-    console.print()
-    console.print("  [bold]Generate your first letter:[/bold]")
-    console.print("    uv run coverletter\n")
+    console.print("[dim]Run [bold]uv run clio onboard[/bold] at any time to check setup status.[/dim]\n")
 
 
 @main.command("profile")
@@ -2994,169 +2612,246 @@ def seed_library(ctx: click.Context, input_file: str | None, paragraphs: str | N
         "tags them by role and angle, and flags what Q&A would make each stronger.[/dim]\n"
     )
 
-    # --- Read input ---
-    material = ""
-    if input_file:
-        path = Path(input_file)
-        if not path.exists():
-            console.print(f"[red]File not found:[/red] {input_file}")
-            return
-        suffix = path.suffix.lower()
-        if suffix == ".pdf":
-            try:
-                from pypdf import PdfReader
-                reader = PdfReader(str(path))
-                material = "\n".join(page.extract_text() or "" for page in reader.pages)
-            except Exception as e:
-                console.print(f"[red]Could not read PDF:[/red] {e}")
-                return
-        elif suffix == ".odt":
-            try:
-                from odf.opendocument import load as odf_load
-                from odf.text import P
-                doc = odf_load(str(path))
-                paragraphs_odt = doc.contentxml().decode("utf-8", errors="ignore")
-                # Extract plain text from all <text:p> elements
-                import re as _re
-                material = "\n".join(
-                    _re.sub(r"<[^>]+>", "", p)
-                    for p in _re.findall(r"<text:p[^>]*>(.*?)</text:p>", paragraphs_odt, _re.DOTALL)
-                ).strip()
-            except Exception as e:
-                console.print(f"[red]Could not read ODT:[/red] {e}")
-                return
-        else:
-            material = path.read_text(encoding="utf-8")
-        console.print(f"[dim]Read {len(material):,} chars from {path.name}[/dim]\n")
-    else:
-        console.print("[dim]Copy your material to your clipboard, then press Enter.[/dim]\n")
-        _flush_stdin()
-        try:
-            input()
-        except (KeyboardInterrupt, EOFError):
-            return
-        material = _read_from_clipboard().strip()
-        try:
-            sys.stdin = open("/dev/tty", "r")
-        except OSError:
-            _flush_stdin()
+    # --- Checkpoint ---
+    checkpoint_path = Path(".seed_checkpoint.json")
 
-    if not material:
-        console.print("[red]No material provided.[/red]")
-        return
+    def _save_checkpoint(accepted_so_far: list[dict], next_index: int) -> None:
+        checkpoint_path.write_text(
+            json.dumps({"accepted": accepted_so_far, "next_index": next_index}, indent=2),
+            encoding="utf-8",
+        )
 
-    # --- Extract ---
-    console.print()
-    with Live(Spinner("dots", text="Extracting paragraphs..."), refresh_per_second=10, console=console):
-        try:
-            extracted = extract_from_material(material, cfg.api_key, cfg.model)
-        except RuntimeError as e:
-            console.print(f"\n[red]Extraction failed:[/red]\n{e}\n")
-            return
-
-    console.print(f"[dim]{running_total()}[/dim]\n")
-    console.print(f"[bold]{len(extracted)} paragraph(s) extracted.[/bold] Review each below.\n")
-
-    # --- Review loop ---
-    # Load existing role types from library so user can file into them
-    try:
-        existing_roles = [r for r in available_roles(load_paragraphs(cfg.paragraphs_files)) if r != "General"]
-    except Exception:
-        existing_roles = []
+    def _clear_checkpoint() -> None:
+        checkpoint_path.unlink(missing_ok=True)
 
     def _confirm_role(extracted_role: str) -> str:
         """Let user confirm or override the role the model inferred. Press Enter to accept."""
         raw = input(f"Role [{extracted_role}]: ").strip()
         return raw if raw else extracted_role
 
-    accepted: list[dict] = []
-    for i, p in enumerate(extracted, 1):
-        strength_color = {"high": "green", "medium": "yellow", "low": "red"}.get(p["strength"], "white")
-        console.print(Rule(
-            f"[bold][{i}/{len(extracted)}] {p['role']} / {p['section']}[/bold]  "
-            f"[{strength_color}]{p['angle']} · {p['strength']}[/{strength_color}]",
-            style="cyan"
-        ))
-        console.print()
-        console.print(p["text"])
-        console.print()
-        has_warnings = bool(p.get("_warnings"))
-        if has_warnings:
-            for w in p["_warnings"]:
-                console.print(f"[yellow]⚠ {w}[/yellow]")
-            console.print("[yellow]This paragraph has issues the auto-fix could not resolve. Edit before accepting.[/yellow]\n")
-        if p["augmentations"]:
-            console.print("[dim]Strengthen later with[/dim] [bold]uv run coverletter build[/bold][dim]:[/dim]")
-            for aug in p["augmentations"]:
-                console.print(f"  [dim]→ {aug}[/dim]")
-            console.print()
+    all_session_accepted: list[dict] = []
+    round_num = 0
 
-        _flush_stdin()
-        if has_warnings:
-            prompt_str = "[E]dit  [S]kip: "
-            valid_choices = {"e", "edit", "s", "skip"}
+    while True:
+        round_num += 1
+
+        # --- Read input ---
+        material = ""
+        if input_file and round_num == 1:
+            path = Path(input_file)
+            if not path.exists():
+                console.print(f"[red]File not found:[/red] {input_file}")
+                return
+            suffix = path.suffix.lower()
+            if suffix == ".pdf":
+                try:
+                    from pypdf import PdfReader
+                    reader = PdfReader(str(path))
+                    material = "\n".join(page.extract_text() or "" for page in reader.pages)
+                except Exception as e:
+                    console.print(f"[red]Could not read PDF:[/red] {e}")
+                    return
+            elif suffix == ".odt":
+                try:
+                    from odf.opendocument import load as odf_load
+                    from odf.text import P
+                    doc = odf_load(str(path))
+                    paragraphs_odt = doc.contentxml().decode("utf-8", errors="ignore")
+                    import re as _re
+                    material = "\n".join(
+                        _re.sub(r"<[^>]+>", "", p)
+                        for p in _re.findall(r"<text:p[^>]*>(.*?)</text:p>", paragraphs_odt, _re.DOTALL)
+                    ).strip()
+                except Exception as e:
+                    console.print(f"[red]Could not read ODT:[/red] {e}")
+                    return
+            else:
+                material = path.read_text(encoding="utf-8")
+            console.print(f"[dim]Read {len(material):,} chars from {path.name}[/dim]\n")
         else:
-            prompt_str = "[A]ccept  [E]dit  [S]kip: "
-            valid_choices = {"a", "accept", "", "e", "edit", "s", "skip"}
-
-        while True:
-            choice = input(prompt_str).strip().lower()
-            if choice not in valid_choices and has_warnings:
-                console.print("[dim]This paragraph must be edited or skipped — it has unfixed issues.[/dim]")
-                continue
-            if choice in ("a", "accept", ""):
-                role_type = _confirm_role(p["role"])
-                p = dict(p, role=role_type)
-                accepted.append(p)
-                console.print(f"[green]→ Accepted under[/green] [bold]{role_type}[/bold]\n")
+            if round_num > 1:
+                console.print("[dim]Copy your next batch of material to your clipboard, then press Enter. Or press Ctrl+C to finish.[/dim]\n")
+            else:
+                console.print("[dim]Copy your material to your clipboard, then press Enter.[/dim]\n")
+            _flush_stdin()
+            try:
+                input()
+            except (KeyboardInterrupt, EOFError):
                 break
-            elif choice in ("e", "edit"):
-                console.print("[dim]Type replacement paragraph. Blank line when done.[/dim]\n")
-                edit_text = _read_multiline()
-                edit_lines = edit_text.splitlines() if edit_text else []
-                if not edit_lines:
-                    console.print("[dim]No edit entered — skipping.[/dim]\n")
-                    break
-                edited_text = " ".join(edit_lines)
+            material = _read_from_clipboard().strip()
+            try:
+                sys.stdin = open("/dev/tty", "r")
+            except OSError:
+                _flush_stdin()
+
+        if not material:
+            if round_num == 1:
+                console.print("[red]No material provided.[/red]")
+                return
+            else:
+                console.print("[dim]Nothing on clipboard — finishing.[/dim]\n")
+                break
+
+        # --- Extract ---
+        console.print()
+        with Live(Spinner("dots", text="Extracting paragraphs..."), refresh_per_second=10, console=console):
+            try:
+                extracted = extract_from_material(material, cfg.api_key, cfg.model)
+            except RuntimeError as e:
+                console.print(f"\n[red]Extraction failed:[/red]\n{e}\n")
+                if round_num == 1:
+                    return
+                break
+
+        console.print(f"[dim]{running_total()}[/dim]\n")
+        console.print(f"[bold]{len(extracted)} paragraph(s) extracted.[/bold] Review each below.\n")
+
+        # --- Review loop ---
+        # Load existing role types from library so user can file into them
+        try:
+            existing_roles = [r for r in available_roles(load_paragraphs(cfg.paragraphs_files)) if r != "General"]
+        except Exception:
+            existing_roles = []
+
+        # Per-round accepted list and checkpoint resume (round 1 only)
+        accepted: list[dict] = []
+        start_index = 0
+
+        if round_num == 1 and checkpoint_path.exists():
+            try:
+                ckpt = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+                ckpt_accepted = ckpt.get("accepted", [])
+                ckpt_next = ckpt.get("next_index", 0)
+                if ckpt_accepted and ckpt_next < len(extracted):
+                    console.print(f"[yellow]Found checkpoint: {len(ckpt_accepted)} paragraph(s) already accepted, resuming at [{ckpt_next + 1}/{len(extracted)}][/yellow]")
+                    _flush_stdin()
+                    resume = input("Resume from checkpoint? [Y/n]: ").strip().lower()
+                    if resume not in ("n", "no"):
+                        accepted = ckpt_accepted
+                        start_index = ckpt_next
+                        console.print(f"[dim]Resuming at paragraph {start_index + 1}[/dim]\n")
+                    else:
+                        _clear_checkpoint()
+            except Exception:
+                _clear_checkpoint()
+
+        for i, p in enumerate(extracted[start_index:], start_index + 1):
+            strength_color = {"high": "green", "medium": "yellow", "low": "red"}.get(p["strength"], "white")
+            console.print(Rule(
+                f"[bold][{i}/{len(extracted)}] {p['role']} / {p['section']}[/bold]  "
+                f"[{strength_color}]{p['angle']} · {p['strength']}[/{strength_color}]",
+                style="cyan"
+            ))
+            console.print()
+            console.print(p["text"])
+            console.print()
+            has_warnings = bool(p.get("_warnings"))
+            if has_warnings:
+                for w in p["_warnings"]:
+                    console.print(f"[yellow]⚠ {w}[/yellow]")
+                console.print("[yellow]This paragraph has issues the auto-fix could not resolve. Edit before accepting.[/yellow]\n")
+            if p["augmentations"]:
+                console.print("[dim]Strengthen later with[/dim] [bold]uv run clio build[/bold][dim]:[/dim]")
+                for aug in p["augmentations"]:
+                    console.print(f"  [dim]→ {aug}[/dim]")
                 console.print()
-                console.print("[bold]Edited paragraph:[/bold]")
-                console.print(edited_text)
-                console.print()
-                confirm = input("[A]ccept edit  [R]edo  [S]kip: ").strip().lower()
-                if confirm in ("s", "skip"):
-                    console.print("[dim]→ Skipped.[/dim]\n")
-                    break
-                elif confirm in ("r", "redo"):
+
+            _flush_stdin()
+            if has_warnings:
+                prompt_str = "[E]dit  [S]kip: "
+                valid_choices = {"e", "edit", "s", "skip"}
+            else:
+                prompt_str = "[A]ccept  [E]dit  [S]kip: "
+                valid_choices = {"a", "accept", "", "e", "edit", "s", "skip"}
+
+            while True:
+                choice = input(prompt_str).strip().lower()
+                if choice not in valid_choices and has_warnings:
+                    console.print("[dim]This paragraph must be edited or skipped — it has unfixed issues.[/dim]")
                     continue
-                else:
-                    p = dict(p, text=edited_text)
+                if choice in ("a", "accept", ""):
                     role_type = _confirm_role(p["role"])
                     p = dict(p, role=role_type)
-                    console.print(f"[green]→ Accepted (edited) under[/green] [bold]{role_type}[/bold]\n")
                     accepted.append(p)
+                    _save_checkpoint(accepted, i)
+                    console.print(f"[green]→ Accepted under[/green] [bold]{role_type}[/bold]\n")
                     break
-            elif choice in ("s", "skip"):
-                console.print("[dim]→ Skipped.[/dim]\n")
-                break
+                elif choice in ("e", "edit"):
+                    import tempfile, subprocess
+                    editor = os.environ.get("EDITOR", "nano")
+                    with tempfile.NamedTemporaryFile(
+                        mode="w", suffix=".txt", delete=False, encoding="utf-8"
+                    ) as tmp:
+                        tmp.write(p["text"])
+                        tmp_path = tmp.name
+                    subprocess.call([editor, tmp_path])
+                    edited_text = Path(tmp_path).read_text(encoding="utf-8").strip()
+                    Path(tmp_path).unlink(missing_ok=True)
+                    if not edited_text or edited_text == p["text"].strip():
+                        console.print("[dim]No changes — skipping.[/dim]\n")
+                        break
+                    console.print()
+                    console.print("[bold]Edited paragraph:[/bold]")
+                    console.print(edited_text)
+                    console.print()
+                    confirm = input("[A]ccept edit  [R]edo  [S]kip: ").strip().lower()
+                    if confirm in ("s", "skip"):
+                        console.print("[dim]→ Skipped.[/dim]\n")
+                        break
+                    elif confirm in ("r", "redo"):
+                        continue
+                    else:
+                        p = dict(p, text=edited_text)
+                        role_type = _confirm_role(p["role"])
+                        p = dict(p, role=role_type)
+                        accepted.append(p)
+                        _save_checkpoint(accepted, i)
+                        console.print(f"[green]→ Accepted (edited) under[/green] [bold]{role_type}[/bold]\n")
+                        break
+                elif choice in ("s", "skip"):
+                    console.print("[dim]→ Skipped.[/dim]\n")
+                    break
 
-    if not accepted:
+        # --- Save this round: Layer 1 (raw) → library.md, Layer 2 (fixed) → library_refined.md ---
+        if accepted:
+            from coverletter.seed import append_paragraphs_to_file, upsert_experience_targets
+            lib_dir = cfg.paragraphs_files[-1].parent
+            raw_target = cfg.paragraphs_files[-1]          # library.md
+            refined_target = lib_dir / "library_refined.md" # library_refined.md
+
+            # Build raw and fixed variants
+            raw_paragraphs = [dict(p, text=p["text"]) for p in accepted]
+            fixed_paragraphs = [dict(p, text=p.get("text_fixed", p["text"])) for p in accepted]
+
+            console.print(Rule(style="green"))
+            console.print(f"\n[bold]{len(accepted)} paragraph(s) accepted.[/bold]")
+            console.print(f"  Layer 1 (raw)     → [cyan]{raw_target}[/cyan]")
+            console.print(f"  Layer 2 (refined) → [cyan]{refined_target}[/cyan]\n")
+            append_paragraphs_to_file(raw_target, raw_paragraphs)
+            append_paragraphs_to_file(refined_target, fixed_paragraphs)
+            _clear_checkpoint()
+            console.print("[green]Saved.[/green]\n")
+            all_session_accepted.extend(accepted)
+        else:
+            console.print("[yellow]No paragraphs accepted this round.[/yellow]\n")
+            _clear_checkpoint()
+
+        # --- Ask to continue ---
+        _flush_stdin()
+        more = input("Add more material? [Y/n]: ").strip().lower()
+        if more in ("n", "no"):
+            break
+        console.print()
+
+    # --- End of session: augmentation summary and profile offer ---
+    if not all_session_accepted:
         console.print("[yellow]No paragraphs accepted. Nothing saved.[/yellow]\n")
         return
 
-    # --- Save ---
-    from coverletter.seed import append_paragraphs_to_file, upsert_experience_targets
-    # Seed always writes to the base layer — raw extractions, not strengthened.
-    # Build writes to library_refined.md (priority layer) after Q&A strengthening.
-    target = cfg.paragraphs_files[-1]
-    console.print(Rule(style="green"))
-    console.print(f"\n[bold]{len(accepted)} paragraph(s) accepted.[/bold] Saving to [cyan]{target}[/cyan]...\n")
-    append_paragraphs_to_file(target, accepted)
-    console.print("[green]Saved.[/green]\n")
-
     # Write augmentation questions into experiences.md so coverletter build picks them up
-    augs_written = 0
-    for p in accepted:
+    for p in all_session_accepted:
         if p.get("augmentations"):
+            from coverletter.seed import upsert_experience_targets
             upsert_experience_targets(
                 cfg.experiences_file,
                 name=p["section"],
@@ -3164,12 +2859,11 @@ def seed_library(ctx: click.Context, input_file: str | None, paragraphs: str | N
                 angle=p.get("angle", ""),
                 augmentations=p["augmentations"],
             )
-            augs_written += 1
 
     # Summarise augmentations across all accepted paragraphs
-    all_augs = [(p.get("company", p["role"]), p["section"], aug) for p in accepted for aug in p.get("augmentations", [])]
+    all_augs = [(p.get("company", p["role"]), p["section"], aug) for p in all_session_accepted for aug in p.get("augmentations", [])]
     if all_augs:
-        console.print("[bold]Q&A agenda saved to experiences.md — run[/bold] [cyan]uv run coverletter build --about \"[experience]\"[/cyan] [bold]to fill these gaps:[/bold]")
+        console.print("[bold]Q&A agenda saved to experiences.md — run[/bold] [cyan]uv run clio build --about \"[experience]\"[/cyan] [bold]to fill these gaps:[/bold]")
         for company, section, aug in all_augs:
             console.print(f"  [dim]{company} / {section}:[/dim] {aug}")
         console.print()
@@ -3197,7 +2891,134 @@ def seed_library(ctx: click.Context, input_file: str | None, paragraphs: str | N
                     for item in items:
                         console.print(f"    • {item}")
             console.print()
-            console.print(f"[dim]Run [bold]uv run coverletter profile[/bold] to review and save.[/dim]\n")
+            console.print(f"[dim]Run [bold]uv run clio profile[/bold] to review and save.[/dim]\n")
+
+
+@main.command("edit")
+@click.option("--paragraphs", "-p", default=None, help="Path to paragraphs file")
+@click.option("--model", "-m", default=None, help="Claude model to use")
+@click.pass_context
+def edit_library(ctx: click.Context, paragraphs: str | None, model: str | None) -> None:
+    """Line-edit and approve paragraphs into library_approved.md (Layer 3).
+
+    Loads paragraphs from library_refined.md (Layer 2) and library.md (Layer 1).
+    For each paragraph you edit and approve, the result is saved to library_approved.md.
+    Only manually approved paragraphs land here — this is the highest-priority source
+    for generation.
+    """
+    from coverletter.seed import append_paragraphs_to_file
+
+    paragraphs = paragraphs or (ctx.obj or {}).get("paragraphs")
+    cfg = load_config(paragraphs, model_override=model)
+
+    lib_dir = cfg.paragraphs_files[-1].parent
+    approved_file = lib_dir / "library_approved.md"
+
+    # Load from Layer 2 first, fall back to Layer 1
+    source_files = [f for f in [lib_dir / "library_refined.md", cfg.paragraphs_files[-1]] if f.exists()]
+    if not source_files:
+        console.print("[red]No library files found to edit.[/red]")
+        return
+
+    all_paragraphs = load_paragraphs(source_files)
+    if not all_paragraphs:
+        console.print("[yellow]No paragraphs found in library files.[/yellow]")
+        return
+
+    console.print(f"\n[bold blue]Library Editor[/bold blue]  [dim]→ {approved_file.name}[/dim]\n")
+    console.print(
+        f"[dim]{len(all_paragraphs)} paragraph(s) to review. "
+        f"Edit each in $EDITOR, then approve to save to {approved_file.name}.[/dim]\n"
+    )
+
+    approved: list[dict] = []
+
+    for i, p in enumerate(all_paragraphs, 1):
+        from rich.rule import Rule
+        strength_color = {"high": "green", "medium": "yellow", "low": "red"}.get(
+            getattr(p, "strength", "medium"), "white"
+        )
+        role = getattr(p, "role", "General")
+        section = getattr(p, "section", "Untitled")
+        angle = getattr(p, "angle", "")
+        strength = getattr(p, "strength", "medium")
+        text = getattr(p, "text", "")
+
+        console.print(Rule(
+            f"[bold][{i}/{len(all_paragraphs)}] {role} / {section}[/bold]  "
+            f"[{strength_color}]{angle} · {strength}[/{strength_color}]",
+            style="cyan"
+        ))
+        console.print()
+        console.print(text)
+        console.print()
+
+        _flush_stdin()
+        prompt_str = "[A]pprove as-is  [E]dit then approve  [S]kip: "
+        valid_choices = {"a", "approve", "", "e", "edit", "s", "skip"}
+
+        while True:
+            choice = input(prompt_str).strip().lower()
+            if choice not in valid_choices:
+                continue
+            if choice in ("a", "approve", ""):
+                approved.append({
+                    "role": role, "section": section, "angle": angle,
+                    "strength": strength, "via": getattr(p, "via", "edit"),
+                    "text": text, "augmentations": [],
+                })
+                console.print("[green]→ Approved.[/green]\n")
+                break
+            elif choice in ("e", "edit"):
+                import tempfile, subprocess
+                editor = os.environ.get("EDITOR", "nano")
+                with tempfile.NamedTemporaryFile(
+                    mode="w", suffix=".txt", delete=False, encoding="utf-8"
+                ) as tmp:
+                    tmp.write(text)
+                    tmp_path = tmp.name
+                subprocess.call([editor, tmp_path])
+                edited_text = Path(tmp_path).read_text(encoding="utf-8").strip()
+                Path(tmp_path).unlink(missing_ok=True)
+                if not edited_text or edited_text == text.strip():
+                    console.print("[dim]No changes — approving as-is.[/dim]\n")
+                    approved.append({
+                        "role": role, "section": section, "angle": angle,
+                        "strength": strength, "via": getattr(p, "via", "edit"),
+                        "text": text, "augmentations": [],
+                    })
+                    break
+                console.print()
+                console.print("[bold]Edited paragraph:[/bold]")
+                console.print(edited_text)
+                console.print()
+                confirm = input("[A]pprove  [R]edo  [S]kip: ").strip().lower()
+                if confirm in ("s", "skip"):
+                    console.print("[dim]→ Skipped.[/dim]\n")
+                    break
+                elif confirm in ("r", "redo"):
+                    continue
+                else:
+                    approved.append({
+                        "role": role, "section": section, "angle": angle,
+                        "strength": strength, "via": "edit",
+                        "text": edited_text, "augmentations": [],
+                    })
+                    console.print("[green]→ Approved (edited).[/green]\n")
+                    break
+            elif choice in ("s", "skip"):
+                console.print("[dim]→ Skipped.[/dim]\n")
+                break
+
+    if not approved:
+        console.print("[yellow]No paragraphs approved. Nothing saved.[/yellow]\n")
+        return
+
+    from rich.rule import Rule
+    console.print(Rule(style="green"))
+    console.print(f"\n[bold]{len(approved)} paragraph(s) approved.[/bold] Saving to [cyan]{approved_file}[/cyan]...\n")
+    append_paragraphs_to_file(approved_file, approved)
+    console.print("[green]Saved to library_approved.md (Layer 3).[/green]\n")
 
 
 @main.command("sync")
@@ -3542,35 +3363,25 @@ def build_outline_command(
         console.print("[red]No claims in DB. Run `coverletter extract` first.[/red]")
         return
 
-    from coverletter.jd import clean_jd
-    from coverletter.db import get_or_company_values
-    jd = clean_jd(jd_file.read_text(encoding="utf-8"))
+    jd = jd_file.read_text(encoding="utf-8")
     company_name = company or jd_file.stem.replace("_", " ").title()
 
     # Generate thesis from JD
     profile = load_profile(cfg.paragraphs_files)
     console.print(f"Building outline for [cyan]{company_name}[/cyan] — {n_claims} claims in DB\n")
 
-    company_values = get_or_company_values(conn, jd, cfg.api_key, cfg.model)
-
     with Live(Spinner("dots", text="Generating thesis..."), refresh_per_second=10, console=console):
-        thesis = generate_argument(jd, cfg.api_key, use_model, profile, company_values=company_values)
+        thesis = generate_argument(jd, cfg.api_key, use_model, profile)
 
-    console.print(f"[dim]Thesis:[/dim] {thesis}")
-    _flush_stdin()
-    thesis_edit = input("Edit thesis (Enter to keep): ").strip()
-    if thesis_edit:
-        thesis = thesis_edit
-    console.print()
+    console.print(f"[dim]Thesis:[/dim] {thesis}\n")
 
     with Live(Spinner("dots", text="Assembling outline..."), refresh_per_second=10, console=console):
-        outline_md, relevant_claims, category_scores, gaps = build_outline(
+        outline_md = build_outline(
             conn, jd, thesis,
             api_key=cfg.api_key,
             model=use_model,
             company=company_name,
             voyage_api_key=cfg.voyage_api_key or "",
-            embed_model=cfg.embed_model,
         )
 
     # Write output
@@ -3584,35 +3395,24 @@ def build_outline_command(
     out_path.write_text(outline_md, encoding="utf-8")
 
     # Record application and capture category/claim scores for analytics
-    from coverletter.db import record_application, record_category_scores, record_claim_scores, record_gaps
+    from coverletter.db import (
+        record_application, record_category_scores, record_claim_scores,
+        ensure_category_embeddings, get_category_embeddings, score_jd_against_categories,
+    )
+    ensure_category_embeddings(conn, cfg.voyage_api_key or "")
     application_id = record_application(conn, company_name, "", jd)
-    if category_scores:
-        record_category_scores(conn, application_id, category_scores)
-    if relevant_claims:
-        scored_claims = [
-            {
-                "claim_id": c["id"],
-                "argument_category": (c.get("argument_categories") or ["unknown"])[0],
-                "similarity_score": c.get("_similarity_score", 0.0),
-                "in_outline": True,
-                "in_letter": False,
-            }
-            for c in relevant_claims
-        ]
-        record_claim_scores(conn, application_id, scored_claims)
-    if gaps:
-        record_gaps(conn, application_id, gaps)
+
+    if cfg.voyage_api_key:
+        from coverletter.outline import _embed_query
+        jd_emb = _embed_query(jd, cfg.voyage_api_key)
+        if jd_emb:
+            cat_embs = get_category_embeddings(conn)
+            if cat_embs:
+                cat_scores = score_jd_against_categories(jd_emb, cat_embs)
+                record_category_scores(conn, application_id, cat_scores)
 
     console.print(f"[green]Outline written:[/green] {out_path}")
     console.print(f"[dim]Application recorded (id={application_id}) — update outcome later with `coverletter outcome`[/dim]")
-
-    if gaps:
-        console.print(f"\n[yellow]JD gaps ({len(gaps)} uncovered requirements):[/yellow]")
-        for g in gaps:
-            cat = g.get("inferred_category", "")
-            console.print(f"  [dim]·[/dim] {g['requirement_text']}" + (f" [dim][{cat}][/dim]" if cat else ""))
-        console.print("[dim]These will appear in `coverletter analytics` after multiple applications.[/dim]")
-
     console.print(f"\nEdit the outline, then:")
     console.print(f"  [cyan]coverletter generate --from-outline {out_path} {jd_file}[/cyan]")
 
@@ -3687,8 +3487,8 @@ def generate_from_outline_command(
     else:
         conn = open_db(db)
         from coverletter.db import record_application, ensure_category_embeddings
-        from coverletter.provider import get_provider as _get_provider
-        ensure_category_embeddings(conn, cfg.voyage_api_key or "", _get_provider(cfg.model, cfg.api_key))
+        # Ensure category embeddings are stored (no-op if already computed)
+        ensure_category_embeddings(conn, cfg.voyage_api_key or "")
         # Record this application
         application_id = record_application(conn, company, "", jd)
         console.print(f"[dim]Application recorded (id={application_id})[/dim]")
@@ -3739,15 +3539,11 @@ def generate_from_outline_command(
     console.print()
     _run_verification(letter_text, messages, cfg.api_key, use_model)
 
-    # Alignment report
-    _outline_alignment_report(outline, letter_text)
-
     # Revision loop
     while True:
         console.print()
         _flush_stdin()
-        console.print("[dim]Revise (free text), or Enter twice to finish:[/dim]")
-        feedback = _read_multiline()
+        feedback = input("Revise (free text), or Enter to finish: ").strip()
         if not feedback:
             break
 
@@ -3887,322 +3683,6 @@ def record_outcome(ctx: click.Context, company: str, result: str, notes: str | N
     console.print(f"[green]Updated:[/green] {row['company']} ({row['applied_at'][:10]}) → {result}")
 
 
-@main.command("claims")
-@click.pass_context
-def show_claims(ctx: click.Context) -> None:
-    """Show extraction status per paragraph — how many claims and anchors each has."""
-    from coverletter.db import open_db, db_path
-    cfg = load_config(ctx.obj.get("paragraphs") if ctx.obj else None)
-    conn = open_db(db_path(cfg.paragraphs_files))
-
-    rows = conn.execute(
-        """
-        SELECT
-            p.hash,
-            p.role,
-            p.angle,
-            COUNT(DISTINCT c.id) AS claim_count,
-            COUNT(DISTINCT CASE WHEN si.is_anchor = 1 THEN si.id END) AS anchor_count,
-            GROUP_CONCAT(c.argument_categories, ', ') AS categories
-        FROM paragraphs p
-        LEFT JOIN claims c ON c.source_para_hash = p.hash
-        LEFT JOIN support_items si ON si.claim_id = c.id AND si.parent_id IS NULL
-        GROUP BY p.hash
-        ORDER BY p.role, p.angle
-        """
-    ).fetchall()
-    conn.close()
-
-    from rich.table import Table
-    table = Table(show_header=True, header_style="bold")
-    table.add_column("Role", style="cyan")
-    table.add_column("Angle")
-    table.add_column("Claims", justify="right")
-    table.add_column("Anchors", justify="right")
-    table.add_column("Categories")
-
-    for r in rows:
-        claim_style = "green" if r["claim_count"] > 0 else "dim"
-        table.add_row(
-            r["role"] or "",
-            r["angle"] or "",
-            f"[{claim_style}]{r['claim_count']}[/{claim_style}]",
-            str(r["anchor_count"]),
-            r["categories"] or "—",
-        )
-
-    console.print(table)
-    total_claims = sum(r["claim_count"] for r in rows)
-    total_anchors = sum(r["anchor_count"] for r in rows)
-    no_claims = sum(1 for r in rows if r["claim_count"] == 0)
-    console.print(f"\n[dim]{total_claims} claims · {total_anchors} anchors · {no_claims} paragraphs with no claims[/dim]")
-
-
-@main.command("help")
-@click.pass_context
-def help_cmd(ctx: click.Context) -> None:
-    """Show all commands organized by workflow."""
-    from rich.table import Table
-    from rich import box
-
-    def section(title: str, rows: list[tuple[str, str]]) -> None:
-        t = Table(
-            box=box.SIMPLE,
-            show_header=True,
-            header_style="bold cyan",
-            title=f"[bold]{title}[/bold]",
-            title_justify="left",
-            title_style="bold white",
-            min_width=72,
-            padding=(0, 1),
-        )
-        t.add_column("Command", style="cyan", no_wrap=True, min_width=36)
-        t.add_column("What it does", style="white")
-        for cmd, desc in rows:
-            t.add_row(cmd, desc)
-        console.print(t)
-
-    console.print("\n[bold white]clio[/bold white] — WorkerChronicle career documentation tool\n")
-
-    section("1. First-time setup", [
-        ("clio init", "Create .env and empty library files"),
-        ("clio onboard", "Setup checklist — shows what's done and what's next"),
-        ("clio profile", "Build your candidate profile (goals, values, working style)"),
-    ])
-
-    section("2. Build your paragraph library", [
-        ("clio seed", "Extract paragraphs from existing material (resume, cover letters, notes)"),
-        ("clio seed --file resume.txt", "Seed from a file"),
-        ("clio build", "Q&A session to document a specific experience"),
-        ("clio build --jd <file>", "Gap-driven mode — analyzes JD, targets what's missing"),
-        ("clio build --resume resume.pdf", "Pass resume as context so coach doesn't re-ask bullets"),
-        ("clio reflect", "Capture perspective paragraphs — through-lines, pivots, synthesis"),
-        ("clio sync", "Sync library markdown files to the SQLite DB"),
-        ("clio show-library", "Show library stats and experience coverage"),
-    ])
-
-    section("3. Extract claims (powers argument-driven letter + interview prep)", [
-        ("clio extract --dry-run", "Extract claims, write review file — nothing inserted"),
-        ("clio extract", "Extract and insert approved claims into DB (requires gold standard)"),
-        ("uv run streamlit run coverletter/label_evals.py", "Review claims, build gold standard"),
-        ("clio claims", "Show claim count and coverage per paragraph"),
-        ("clio resume-extract", "Re-extract resume claims manually (auto-runs on hash change)"),
-    ])
-
-    section("4. Generate letters", [
-        ("clio", "Generate a cover letter — classic paragraph-assembly flow"),
-        ("clio outline <jd_file>", "Build editable argument outline from claims DB"),
-        ("clio generate --from-outline <outline> <jd>", "Generate letter from edited outline"),
-        ("clio blurb", "Answer a short prompt — 'about me', behavioral, motivation"),
-        ("clio pdf <letter_file>", "Convert saved letter markdown to PDF"),
-        ("clio resume", "Generate a tailored resume PDF"),
-    ])
-
-    section("5. Interview prep", [
-        ("clio interview <jd_file>", "Full interview briefing — themes, coverage, likely questions"),
-        ("clio interview <jd_file> --summary", "Short one-page version — fast to read before a call"),
-    ])
-
-    section("6. Job description management", [
-        ("clio jd list", "List saved JDs with date, size, preview"),
-        ("clio jd rename <old> <new>", "Rename a saved JD"),
-        ("clio jd replace <name>", "Replace a saved JD from clipboard; clears embedding cache"),
-    ])
-
-    section("7. Tracking and analytics", [
-        ("clio outcome <company> <result>", "Record result: response/interview/offer/rejected/withdrew"),
-        ("clio analytics", "Cross-application patterns — coverage rates, recurring gaps"),
-        ("clio log", "Show LLM call log — token counts and cost per call and session"),
-    ])
-
-    section("8. Evaluation (development)", [
-        ("uv run python coverletter/evals/align_judge.py", "Check judge accuracy against gold standard"),
-        ("uv run python coverletter/evals/run_evals.py", "Pipeline quality — % of claims approved"),
-        ("uv run pytest tests/", "Run test suite"),
-    ])
-
-    console.print(
-        "[dim]Full documentation: README.md · Workflow reference: WORKFLOW.md[/dim]\n"
-        "[dim]Model aliases: haiku / sonnet / opus  ·  --model flag on most commands[/dim]\n"
-    )
-
-
-@main.command("log")
-@click.option("--tail", "-n", default=20, help="Show last N individual calls (0 to skip)")
-@click.option("--sessions", "-s", default=10, help="Show last N session summaries (0 to skip)")
-def show_log(tail: int, sessions: int) -> None:
-    """Show LLM call log — token usage and cost per call and per session."""
-    from coverletter.costs import log_tail, log_sessions, _log_path
-
-    log_path = _log_path()
-    console.print(f"[dim]Log: {log_path}[/dim]\n")
-
-    if sessions > 0:
-        rows = log_sessions(sessions)
-        if rows:
-            from rich.table import Table
-            t = Table(title="Sessions (most recent first)", show_header=True, header_style="bold")
-            t.add_column("Session ID")
-            t.add_column("Calls", justify="right")
-            t.add_column("Tokens in", justify="right")
-            t.add_column("Tokens out", justify="right")
-            t.add_column("Cost", justify="right")
-            t.add_column("Started")
-            for s in rows:
-                t.add_row(
-                    s["session"],
-                    str(s["calls"]),
-                    f"{s['in']:,}",
-                    f"{s['out']:,}",
-                    f"${s['cost']:.4f}" if s["cost"] else "—",
-                    s["first_ts"][:16].replace("T", " "),
-                )
-            console.print(t)
-        else:
-            console.print("[dim]No session data yet.[/dim]")
-
-    if tail > 0:
-        entries = log_tail(tail)
-        if entries:
-            from rich.table import Table
-            t = Table(title=f"Last {tail} calls", show_header=True, header_style="bold")
-            t.add_column("Time")
-            t.add_column("Label")
-            t.add_column("Model")
-            t.add_column("In", justify="right")
-            t.add_column("Out", justify="right")
-            t.add_column("Cache↑", justify="right")
-            t.add_column("Cache↓", justify="right")
-            t.add_column("Cost", justify="right")
-            for e in entries:
-                t.add_row(
-                    e.get("ts", "")[:19].replace("T", " "),
-                    e.get("label", ""),
-                    e.get("model", ""),
-                    f"{e.get('in', 0):,}",
-                    f"{e.get('out', 0):,}",
-                    str(e.get("cache_write", 0)) if e.get("cache_write") else "—",
-                    str(e.get("cache_read", 0)) if e.get("cache_read") else "—",
-                    f"${e.get('cost', 0):.5f}" if e.get("cost") else "—",
-                )
-            console.print(t)
-        else:
-            console.print("[dim]No call data yet.[/dim]")
-
-
-@main.command("interview")
-@click.argument("jd_file", type=click.Path(exists=True, path_type=Path))
-@click.option("--company", "-c", default=None, help="Company name for output filename")
-@click.option("--summary", is_flag=True, default=False, help="Short one-page summary instead of full briefing")
-@click.option("--paragraphs", "-p", default=None, help="Path to paragraphs file")
-@click.pass_context
-def interview_cmd(
-    ctx: click.Context,
-    jd_file: Path,
-    company: str | None,
-    summary: bool,
-    paragraphs: str | None,
-) -> None:
-    """Build an interview prep briefing from a JD and optional recruiter note."""
-    from datetime import date
-    from coverletter.db import open_db, db_path
-    from coverletter.experiences import load_experiences
-    from coverletter.interview import run_interview_agent
-    from coverletter.jd import clean_jd
-    from coverletter.resume_extract import maybe_extract_resume
-
-    paragraphs = paragraphs or (ctx.obj or {}).get("paragraphs")
-    cfg = load_config(paragraphs)
-    all_paragraphs = load_paragraphs(cfg.paragraphs_files)
-    experiences = load_experiences(cfg.experiences_file)
-
-    jd_text = clean_jd(jd_file.read_text(encoding="utf-8"))
-    if not company:
-        company = jd_file.stem
-
-    # Open DB and auto-extract resume if changed
-    _db = db_path(cfg.paragraphs_files)
-    conn = open_db(_db) if _db.exists() else None
-    if conn:
-        maybe_extract_resume(cfg, conn)
-        conn.close()
-
-    # Optional recruiter/HR note
-    console.print("\n[bold]Recruiter or HR note[/bold] [dim](paste and double-Enter, or just Enter to skip):[/dim]")
-    recruiter_note = _read_multiline()
-
-    console.print(f"\n[dim]Building {'summary' if summary else 'full briefing'} for {company}...[/dim]")
-
-    from rich.spinner import Spinner
-    from rich.live import Live
-    with Live(Spinner("dots", text="Researching..."), refresh_per_second=10, console=console):
-        briefing = run_interview_agent(
-            jd_text=jd_text,
-            recruiter_note=recruiter_note or "",
-            paragraphs=all_paragraphs,
-            experiences=experiences,
-            db_path=_db if _db.exists() else None,
-            api_key=cfg.api_key,
-            model=cfg.model,
-            voyage_api_key=cfg.voyage_api_key,
-            summary=summary,
-        )
-
-    if not briefing:
-        console.print("[red]Agent returned empty briefing.[/red]")
-        return
-
-    # Save
-    cfg.output_dir.mkdir(parents=True, exist_ok=True)
-    slug = company.strip().replace(" ", "_")
-    suffix = "_summary" if summary else "_interview"
-    fname = cfg.output_dir / f"{date.today().isoformat()}_{slug}{suffix}.md"
-    fname.write_text(briefing, encoding="utf-8")
-
-    console.print(f"\n[green]Saved:[/green] {fname}")
-    from coverletter.costs import session_summary
-    summary_str = session_summary()
-    if summary_str:
-        console.print(f"[dim]{summary_str}[/dim]")
-
-
-@main.command("resume-extract")
-@click.option("--force", is_flag=True, default=False, help="Force re-extraction even if resume unchanged")
-@click.option("--paragraphs", "-p", default=None, help="Path to paragraphs file")
-@click.pass_context
-def resume_extract_cmd(ctx: click.Context, force: bool, paragraphs: str | None) -> None:
-    """Extract or re-extract claims from your resume PDF into the claims DB."""
-    from coverletter.db import open_db, db_path
-    from coverletter.resume_extract import run_resume_extraction, _last_extraction
-
-    cfg = load_config(paragraphs)
-    if not cfg.resume_file or not cfg.resume_file.exists():
-        console.print("[red]No resume file found. Set RESUME_FILE in .env[/red]")
-        return
-
-    _db = db_path(cfg.paragraphs_files)
-    conn = open_db(_db)
-
-    last = _last_extraction(conn)
-    if last and not force:
-        console.print(f"[dim]Last extraction: v{last['version']} on {last['extracted_at'][:10]} ({last['claim_count']} claims)[/dim]")
-        console.print("[dim]Use --force to re-extract.[/dim]")
-        conn.close()
-        return
-
-    count = run_resume_extraction(
-        conn, cfg.resume_file, cfg.api_key, cfg.model,
-        voyage_api_key=cfg.voyage_api_key,
-        force=True,
-        silent=False,
-    )
-    conn.close()
-    if count:
-        console.print(f"[green]Done.[/green] {count} resume claims indexed.")
-    else:
-        console.print("[yellow]No claims extracted — check that the resume file has content.[/yellow]")
-
-
 @main.command("analytics")
 @click.option("--paragraphs", "-p", default=None)
 @click.option("--min-gap-count", default=2, help="Minimum applications a gap must appear in to be shown")
@@ -4317,132 +3797,6 @@ def show_analytics(ctx: click.Context, paragraphs: str | None, min_gap_count: in
             console.print()
 
     conn.close()
-
-
-@main.group("jd")
-def jd_cmd() -> None:
-    """Manage saved job descriptions (list, rename, replace)."""
-
-
-@jd_cmd.command("list")
-@click.option("--paragraphs", "-p", default=None, help="Path to paragraphs file (to locate jds/ dir)")
-@click.pass_context
-def jd_list(ctx: click.Context, paragraphs: str | None) -> None:
-    """List saved job descriptions."""
-    from pathlib import Path
-    paragraphs = paragraphs or (ctx.obj or {}).get("paragraphs")
-    cfg = load_config(paragraphs)
-    jds_dir = cfg.paragraphs_files[0].parent / "jds"
-    if not jds_dir.exists():
-        console.print("[dim]No jds/ directory found — JDs are saved on first generate run.[/dim]")
-        return
-    files = sorted(jds_dir.glob("*.txt"), key=lambda f: f.stat().st_mtime, reverse=True)
-    if not files:
-        console.print("[dim]No saved JDs.[/dim]")
-        return
-    import datetime
-    from rich.table import Table
-    console.print(f"\n[bold]Saved job descriptions[/bold]  [dim]→ {jds_dir}[/dim]\n")
-    table = Table(show_header=False, box=None, padding=(0, 2, 0, 0))
-    for f in files:
-        size = f.stat().st_size
-        mtime = datetime.datetime.fromtimestamp(f.stat().st_mtime).strftime("%Y-%m-%d")
-        preview = f.read_text(encoding="utf-8")[:80].replace("\n", " ").strip()
-        table.add_row(
-            f"[bold]{f.stem}[/bold]",
-            f"[dim]{mtime}[/dim]",
-            f"[dim]{size:,}B[/dim]",
-            f"[dim]{preview}…[/dim]",
-        )
-    console.print(table)
-
-
-@jd_cmd.command("rename")
-@click.argument("old_name")
-@click.argument("new_name")
-@click.option("--paragraphs", "-p", default=None, help="Path to paragraphs file")
-@click.pass_context
-def jd_rename(ctx: click.Context, old_name: str, new_name: str, paragraphs: str | None) -> None:
-    """Rename a saved JD. Names are file stems without .txt extension."""
-    paragraphs = paragraphs or (ctx.obj or {}).get("paragraphs")
-    cfg = load_config(paragraphs)
-    jds_dir = cfg.paragraphs_files[0].parent / "jds"
-    old_path = jds_dir / f"{old_name}.txt"
-    if not old_path.exists():
-        console.print(f"[red]Not found:[/red] {old_path}")
-        return
-    new_path = jds_dir / f"{new_name}.txt"
-    if new_path.exists():
-        console.print(f"[red]Already exists:[/red] {new_path} — choose a different name.")
-        return
-    old_path.rename(new_path)
-    console.print(f"[dim]Renamed: {old_name} → {new_name}[/dim]")
-
-
-@jd_cmd.command("replace")
-@click.argument("name")
-@click.option("--paragraphs", "-p", default=None, help="Path to paragraphs file")
-@click.pass_context
-def jd_replace(ctx: click.Context, name: str, paragraphs: str | None) -> None:
-    """Replace a saved JD with a new one pasted from clipboard.
-
-    Also clears the DB embedding cache so the next run re-embeds from scratch.
-    """
-    from pathlib import Path
-    paragraphs = paragraphs or (ctx.obj or {}).get("paragraphs")
-    cfg = load_config(paragraphs)
-    jds_dir = cfg.paragraphs_files[0].parent / "jds"
-    target = jds_dir / f"{name}.txt"
-    if not target.exists():
-        console.print(f"[red]Not found:[/red] {target}")
-        console.print("[dim]Use 'coverletter jd list' to see saved JDs.[/dim]")
-        return
-
-    # Show current content briefly
-    current = target.read_text(encoding="utf-8")
-    console.print(f"\n[dim]Current ({len(current):,} chars):[/dim]")
-    console.print(f"[dim]{current[:200].replace(chr(10), ' ')}…[/dim]\n")
-
-    # Read new JD from clipboard
-    console.print("[bold]Copy the new job description to your clipboard, then press Enter.[/bold]")
-    try:
-        _flush_stdin()
-        input()
-    except (KeyboardInterrupt, EOFError):
-        console.print("[dim]Cancelled.[/dim]")
-        return
-
-    new_text = _read_from_clipboard().strip()
-    if not new_text:
-        console.print("[red]Clipboard was empty.[/red]")
-        return
-
-    from coverletter.jd import clean_jd
-    new_text = clean_jd(new_text)
-    if not new_text:
-        console.print("[red]JD was empty after cleaning.[/red]")
-        return
-
-    # Clear DB cache entry for the old JD and log version change
-    from coverletter.db import open_db, db_path, _hash as _db_hash
-    import hashlib
-    db = db_path(cfg.paragraphs_files)
-    if db.exists():
-        conn = open_db(db)
-        old_hash = _db_hash(current)
-        new_hash = hashlib.sha256(new_text.encode()).hexdigest()[:16]
-        conn.execute("DELETE FROM jd_embedding_cache WHERE jd_hash = ?", (old_hash,))
-        conn.execute(
-            "INSERT INTO jd_versions (jd_name, file_hash, change_summary) VALUES (?, ?, ?)",
-            (name, new_hash, f"Replaced — was {len(current):,} chars, now {len(new_text):,} chars"),
-        )
-        conn.commit()
-        conn.close()
-        console.print("[dim]Cleared DB cache for old JD. Version change logged.[/dim]")
-
-    target.write_text(new_text, encoding="utf-8")
-    console.print(f"[green]Replaced:[/green] {target.name}  ({len(new_text):,} chars)")
-    console.print("[dim]Next run will re-embed the new JD.[/dim]")
 
 
 @main.command("show-library")

@@ -4,7 +4,7 @@ Engineers ship constantly. Projects stack up. Two years later you remember you b
 
 The gap between "what I actually did" and "what I can articulate I did to an outsider" is enormous for most engineers. That gap costs you in interviews, in cover letters, in performance reviews, in any moment where you need someone who wasn't there to understand the value of your work.
 
-I built this tool because I was writing a lot of cover letters and kept losing the pivotal details of my own work. Generic LLM is almost perfectly wrong for the task of writing cover letters — it flattens your story, over-polishes your voice, loses the facts, and produces something that sounds like a cover letter while destroying the evidence that would actually make it compelling.
+I built this tool because I was writing cover letters and preparing for interviews and felt like I kept losing the small yet pivotal details of my own work. Generic LLM is almost perfectly wrong for the task of writing cover letters — it flattens your story, over-polishes your voice, loses the facts, and produces something that sounds like a cover letter while destroying the evidence that would actually make it compelling.
 
 This tool does the opposite. Your paragraph library contains your specific experiences in your own words — the ownership claims, the technical decisions, the evidence that makes those claims credible. The letter is assembled from that material. The model writes sentences grounded in your library rather than inventing generic ones. Library quality directly determines letter quality — a thin library produces a thin letter, a specific library produces a specific letter.
 
@@ -222,6 +222,9 @@ The log is stored at `~/.coverletter/runs.jsonl` — one JSON line per API call,
 |---|---|
 | `uv run python coverletter/evals/align_judge.py` | Check judge accuracy against gold standard — offers patch if misaligned |
 | `uv run python coverletter/evals/run_evals.py` | Measure pipeline quality as % of claims approved |
+| `uv run python coverletter/evals/retrieval_eval.py` | Compare BM25 vs semantic retrieval — MRR and Hit@3 across 8 query types |
+
+See [`RETRIEVAL_EVAL.md`](RETRIEVAL_EVAL.md) for methodology, example results, and how to extend the evaluation.
 
 Most commands work without flags — they'll ask you what they need. Flags are shortcuts for when you already know the answer.
 
@@ -636,6 +639,120 @@ French company, data centers in the EU, €1.2B green energy facility in Sweden.
 **Q&A can still ask about things you've already documented.** Semantic search reduces this but isn't perfect. If the agent asks about something already written, paste the paragraph and say "this is already documented."
 
 **Experience name matching is exact.** Coverage tracking matches experience names in `experiences.md` against section names in the library files. Keep naming consistent across both.
+
+---
+
+## Monitoring and evaluation pipeline
+
+### How monitoring works
+
+Every API call is logged automatically to `~/.coverletter/runs.jsonl` — one JSON line
+per call with timestamp, caller label, model, input/output tokens, cache hit/miss, and
+estimated cost. The log persists across sessions and survives crashes.
+
+```bash
+uv run clio log              # last 20 calls + last 10 session summaries
+uv run clio log --tail 50    # last N calls
+uv run clio log --sessions 5 # session summaries only
+```
+
+Each line in the log looks like:
+
+```json
+{
+  "ts": "2026-06-08T14:23:01",
+  "label": "extract",
+  "model": "claude-haiku-4-5-20251001",
+  "input_tokens": 4821,
+  "output_tokens": 312,
+  "cache_read_tokens": 3200,
+  "cost_usd": 0.0041
+}
+```
+
+The `label` field identifies which code path made the call: `extract`, `judge`,
+`build`, `seed`, `generate`, `interview`, `align_judge`, `profile`, etc. This lets
+you see exactly what each command cost and compare costs across runs as you tune
+prompts or switch models.
+
+### Ground truth pipeline
+
+The monitoring log connects to evaluation through the extraction pipeline. The full
+loop:
+
+**Step 1 — Extract**
+```bash
+uv run clio extract --dry-run    # extract claims, log the API call
+```
+Writes `extractions_review.json`. The extraction call is logged with label `extract`.
+
+**Step 2 — Label (manual ground truth)**
+```bash
+uv run streamlit run coverletter/label_evals.py
+```
+Hand-label every extracted claim: approve or reject, with a failure category on
+rejects. Check "Save as gold standard" on clear unambiguous cases — both correct
+approvals and correct rejections. This is your hand-crafted ground truth dataset.
+Session position saves on every action so you can label across multiple sessions.
+
+**Step 3 — Run extraction live**
+```bash
+uv run clio extract    # requires 5 approved + 5 rejected gold standard examples
+```
+Approved claims insert to DB. The judge call is logged with label `judge`.
+
+**Step 4 — Calibrate the judge**
+```bash
+uv run python coverletter/evals/align_judge.py
+```
+Runs the judge against your gold standard. Reports accuracy, precision, and recall.
+If alignment is below target (recall ≥ 89%, accuracy ≥ 80%), offers to draft a
+targeted patch to the judge prompt. The calibration call is logged with label
+`align_judge`.
+
+**Step 5 — Measure pipeline quality**
+```bash
+uv run python coverletter/evals/run_evals.py
+```
+Measures overall pipeline quality as the percentage of claims the judge approves.
+Run this before and after a prompt change to measure the effect. Logged with label
+`run_evals`.
+
+**Step 6 — Compare across runs**
+```bash
+uv run clio log --tail 50
+```
+Every extraction and evaluation run is in the log. Compare token costs and session
+costs before and after prompt changes to understand the quality/cost tradeoff.
+
+### The feedback loop
+
+```
+extract --dry-run
+    ↓
+hand-label in Streamlit  ← this is your ground truth
+    ↓
+extract (live)
+    ↓
+align_judge.py  ←  if below target: patch judge prompt → repeat
+    ↓
+run_evals.py    ←  compare % approved before/after changes
+    ↓
+clio log        ←  cost and token tracking across all runs
+```
+
+As your gold standard grows (more labeled examples), `align_judge.py` becomes a
+more reliable signal. As your library grows, `run_evals.py` measures whether the
+judge stays calibrated across new material.
+
+### Retrieval evaluation
+
+```bash
+uv run python coverletter/evals/retrieval_eval.py
+```
+
+Compares BM25 vs semantic retrieval across 8 query types. Reports MRR and Hit@3 for
+each method. See [`RETRIEVAL_EVAL.md`](RETRIEVAL_EVAL.md) for full methodology.
 
 ---
 

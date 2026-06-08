@@ -102,9 +102,10 @@ class AnthropicProvider(Provider):
         kwargs: dict[str, Any] = dict(
             model=self.model,
             max_tokens=max_tokens,
-            system=[{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}],
             messages=[{"role": "user", "content": user_content}],
         )
+        if system:
+            kwargs["system"] = [{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}]
         if supports_temperature(self.model) and temperature != 0:
             kwargs["temperature"] = temperature
         elif supports_temperature(self.model):
@@ -128,9 +129,10 @@ class AnthropicProvider(Provider):
         kwargs: dict[str, Any] = dict(
             model=self.model,
             max_tokens=max_tokens,
-            system=[{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}],
             messages=messages,
         )
+        if system:
+            kwargs["system"] = [{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}]
         if supports_temperature(self.model):
             kwargs["temperature"] = temperature
 
