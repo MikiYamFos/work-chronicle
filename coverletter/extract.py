@@ -503,8 +503,8 @@ def _insert_one_claim(
     arg_cats_str = json.dumps(arg_cats) if arg_cats else None
 
     cur = conn.execute(
-        "INSERT INTO claims (text, source_para_hash, embedding, argument_categories) VALUES (?, ?, ?, ?)",
-        (text, para_hash, emb, arg_cats_str),
+        "INSERT INTO claims (text, source_para_hash, embedding, argument_categories, source) VALUES (?, ?, ?, ?, ?)",
+        (text, para_hash, emb, arg_cats_str, "library"),
     )
     claim_id = cur.lastrowid
 

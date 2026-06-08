@@ -1,5 +1,11 @@
 from __future__ import annotations
 
+import inspect
+import json
+import os
+from datetime import datetime, timezone
+from pathlib import Path
+
 # Short aliases → canonical model IDs (provider-prefixed or bare for Anthropic)
 MODEL_ALIASES: dict[str, str] = {
     # Anthropic (bare names = backwards compatible)
@@ -62,12 +68,29 @@ def _price(model: str) -> tuple[float, float] | None:
     return None
 
 
+# --- Log file ---
+
+def _log_path() -> Path:
+    p = Path(os.environ.get("COVERLETTER_LOG_DIR", Path.home() / ".coverletter"))
+    p.mkdir(parents=True, exist_ok=True)
+    return p / "runs.jsonl"
+
+
+def _append_log(entry: dict) -> None:
+    try:
+        with _log_path().open("a") as f:
+            f.write(json.dumps(entry) + "\n")
+    except Exception:
+        pass  # never let logging break a run
+
+
 # --- Session accumulator ---
 
 _session_input_tokens: int = 0
 _session_output_tokens: int = 0
 _session_cost: float = 0.0
 _last_cost: float = 0.0
+_session_id: str = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
 
 
 def supports_temperature(model: str) -> bool:
@@ -76,12 +99,23 @@ def supports_temperature(model: str) -> bool:
     return not any(m in model.lower() for m in _no_temp)
 
 
+def _caller_label() -> str:
+    """Walk up the call stack to find the first frame outside costs/provider."""
+    _skip = {"costs.py", "provider.py"}
+    for frame_info in inspect.stack()[2:]:
+        fname = os.path.basename(frame_info.filename)
+        if fname not in _skip:
+            return f"{fname}:{frame_info.function}"
+    return ""
+
+
 def record(
     model: str,
     input_tokens: int,
     output_tokens: int,
     cache_creation_tokens: int = 0,
     cache_read_tokens: int = 0,
+    label: str = "",
 ) -> float:
     global _session_input_tokens, _session_output_tokens, _session_cost, _last_cost
     _session_input_tokens += input_tokens + cache_creation_tokens + cache_read_tokens
@@ -97,9 +131,24 @@ def record(
         )
         _session_cost += cost
         _last_cost = cost
-        return cost
-    _last_cost = 0.0
-    return 0.0
+    else:
+        cost = 0.0
+        _last_cost = 0.0
+
+    _append_log({
+        "ts": datetime.now(timezone.utc).isoformat(),
+        "session": _session_id,
+        "label": label or _caller_label(),
+        "model": model,
+        "in": input_tokens,
+        "out": output_tokens,
+        "cache_write": cache_creation_tokens,
+        "cache_read": cache_read_tokens,
+        "cost": round(cost, 6),
+        "session_cost": round(_session_cost, 6),
+    })
+
+    return cost
 
 
 def step_cost() -> str:
@@ -123,3 +172,41 @@ def session_summary() -> str:
     if _session_cost:
         parts.append(f"~${_session_cost:.4f}")
     return "  ".join(parts)
+
+
+def log_tail(n: int = 20) -> list[dict]:
+    """Return last n log entries."""
+    path = _log_path()
+    if not path.exists():
+        return []
+    lines = path.read_text().splitlines()
+    entries = []
+    for line in lines[-n:]:
+        try:
+            entries.append(json.loads(line))
+        except Exception:
+            pass
+    return entries
+
+
+def log_sessions(n: int = 10) -> list[dict]:
+    """Aggregate cost and token totals by session_id, most recent n sessions."""
+    path = _log_path()
+    if not path.exists():
+        return []
+    sessions: dict[str, dict] = {}
+    for line in path.read_text().splitlines():
+        try:
+            e = json.loads(line)
+        except Exception:
+            continue
+        sid = e.get("session", "unknown")
+        if sid not in sessions:
+            sessions[sid] = {"session": sid, "calls": 0, "in": 0, "out": 0, "cost": 0.0, "first_ts": e["ts"], "last_ts": e["ts"]}
+        s = sessions[sid]
+        s["calls"] += 1
+        s["in"] += e.get("in", 0)
+        s["out"] += e.get("out", 0)
+        s["cost"] = round(s["cost"] + e.get("cost", 0.0), 6)
+        s["last_ts"] = e["ts"]
+    return sorted(sessions.values(), key=lambda x: x["session"], reverse=True)[:n]

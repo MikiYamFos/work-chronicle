@@ -113,9 +113,6 @@ GAPS
 One line per gap. Only real gaps — things the JD explicitly requires or prefers that the letter
 does not address.
 Format: ✗ [requirement] — [why it matters for this role]
-If a gap is addressed by a paragraph in the library above (even if not used in the current letter),
-append: (library: [N]) using the exact paragraph index. Only tag it if a specific paragraph
-genuinely covers that requirement — not just shares vocabulary with it.
 {seniority_gaps_section}{goal_alignment_section}
 Do not add encouragement, filler, or any sections beyond these {num_sections}.
 """
@@ -135,100 +132,6 @@ with one specific reason grounded in the JD and the candidate's goals.
 """
 
 
-def has_library_coverage(gap_text: str) -> bool:
-    """Return True if the gap text indicates the paragraph already exists in the library."""
-    return bool(re.search(r'\(library:', gap_text, re.IGNORECASE))
-
-
-_STOP_WORDS = {
-    "and", "or", "the", "a", "an", "in", "of", "for", "to", "with", "that",
-    "this", "it", "is", "are", "not", "as", "at", "by", "be", "but", "was",
-    "its", "on", "no", "how", "from", "has", "does", "does", "does", "also",
-    "role", "letter", "required", "explicitly", "addressed", "mentioned",
-    "named", "listed", "absent", "missing", "not", "only", "across",
-}
-
-
-def _significant_terms(text: str) -> list[str]:
-    """Extract meaningful terms from a gap description for library matching."""
-    words = re.findall(r"[a-z][a-z0-9/+#]*", text.lower())
-    return [w for w in words if len(w) > 2 and w not in _STOP_WORDS]
-
-
-def _detect_library_coverage(
-    gaps: list[str],
-    paragraphs: list["Paragraph"],
-) -> list[str]:
-    """Post-process gap list: detect library coverage the LLM missed.
-
-    For each gap not already tagged with (library: [N]), run BM25 against
-    the paragraph library. If a paragraph scores strongly against the gap,
-    append the tag. Runs in Python — not a second LLM call.
-    """
-    if not paragraphs or not gaps:
-        return gaps
-
-    try:
-        from rank_bm25 import BM25Okapi
-
-        corpus = [
-            _significant_terms(p.section + " " + p.role + " " + p.text)
-            for p in paragraphs
-        ]
-        bm25 = BM25Okapi(corpus)
-
-        result = []
-        for gap in gaps:
-            if has_library_coverage(gap):
-                result.append(gap)
-                continue
-
-            query = _significant_terms(gap)
-            if not query:
-                result.append(gap)
-                continue
-
-            scores = bm25.get_scores(query)
-            best_i = int(max(range(len(scores)), key=lambda i: scores[i]))
-            best_score = float(scores[best_i])
-
-            # Threshold calibrated so a paragraph must share several meaningful
-            # terms with the gap description — not just a single word match.
-            if best_score >= 2.0:
-                result.append(f"{gap} (library: [{paragraphs[best_i].index}])")
-            else:
-                result.append(gap)
-
-        return result
-
-    except ImportError:
-        # rank_bm25 not available — fall back to simple term overlap
-        result = []
-        for gap in gaps:
-            if has_library_coverage(gap):
-                result.append(gap)
-                continue
-
-            gap_terms = set(_significant_terms(gap))
-            if not gap_terms:
-                result.append(gap)
-                continue
-
-            best_score = 0.0
-            best_idx = None
-            for p in paragraphs:
-                p_terms = set(_significant_terms(p.section + " " + p.role + " " + p.text))
-                overlap = len(gap_terms & p_terms) / len(gap_terms)
-                if overlap > best_score:
-                    best_score = overlap
-                    best_idx = p.index
-
-            if best_score >= 0.35 and best_idx is not None:
-                result.append(f"{gap} (library: [{best_idx}])")
-            else:
-                result.append(gap)
-
-        return result
 
 
 @dataclass
@@ -325,13 +228,17 @@ def generate_thesis(
         candidate_goals_section = ""
 
     correction_section = (
-        f"\n=== CANDIDATE CORRECTION ===\n{correction}\n"
-        "Revise the thesis to address this correction while keeping it grounded in the letter.\n"
+        f"\n=== CANDIDATE CORRECTION — PRIMARY INSTRUCTION ===\n{correction}\n"
+        "The candidate has told you what is wrong or missing. Your revised thesis MUST use "
+        "their specific language and include every point they raised. Do not rewrite from "
+        "scratch. Do not ignore any part of the correction. Their words take priority over "
+        "the rules below.\n"
         if correction else ""
     )
 
     correction_rule = (
-        "- Address the candidate's correction above."
+        "- THE CANDIDATE CORRECTION above overrides everything else. Include every point "
+        "they named, using their language where possible."
         if correction else
         "- If there is genuine tension between the letter's angle and the JD, name it briefly."
     )
@@ -353,6 +260,7 @@ def generate_argument(
     api_key: str,
     model: str,
     profile: CandidateProfile | None = None,
+    company_values: str | None = None,
 ) -> str:
     """Generate a provisional argument target from the JD alone — before the letter exists.
 
@@ -365,7 +273,15 @@ def generate_argument(
     else:
         candidate_section = ""
 
-    prompt = ARGUMENT_PROMPT.format(jd=jd.strip(), candidate_section=candidate_section)
+    values_section = (
+        f"\n=== COMPANY VALUES / MISSION ===\n{company_values.strip()}\n"
+        if company_values else ""
+    )
+
+    prompt = ARGUMENT_PROMPT.format(
+        jd=jd.strip() + values_section,
+        candidate_section=candidate_section,
+    )
     from coverletter.provider import get_provider
     return get_provider(model, api_key).complete(ARGUMENT_SYSTEM, prompt, max_tokens=200)
 
@@ -514,13 +430,16 @@ def library_gap_analysis(
     """
     import json, re as _re, sqlite3
     from coverletter.provider import get_provider
-    from coverletter.db import embed_query, _cosine
+    from coverletter.db import embed_query, get_or_embed_jd, _cosine
 
     provider = get_provider(model, api_key)
     effective_embed = embed_provider or provider
 
-    # --- Embed the JD ---
-    jd_embedding = embed_query(jd, voyage_api_key, effective_embed)
+    # --- Embed the JD (cached if conn available) ---
+    if conn is not None:
+        jd_embedding = get_or_embed_jd(conn, jd, voyage_api_key, effective_embed)
+    else:
+        jd_embedding = embed_query(jd, voyage_api_key, effective_embed)
 
     covered: list[dict] = []
     gaps: list[dict] = []

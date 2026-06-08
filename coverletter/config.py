@@ -33,6 +33,8 @@ class Config:
     embed_model: str = ""  # EMBED_MODEL env var; "bge-m3" → local hybrid embed, "" → use provider's embed
     profile_file: Path = Path("candidate_profile.toml")
     experiences_file: Path = Path("experiences.md")
+    custom_angles_file: Path = Path("custom_angles.toml")
+    custom_categories_file: Path = Path("custom_categories.toml")
 
 
 def _resolve_paragraphs_files(override: str | None) -> list[Path]:
@@ -136,6 +138,11 @@ def load_config(
         candidate_exp = paragraphs_files[0].parent / "experiences.md"
         experiences_file = candidate_exp if candidate_exp.exists() else Path("experiences.md")
 
+    # custom angle/category overrides — auto-detected alongside paragraphs file, gitignored
+    _lib_dir = paragraphs_files[0].parent
+    custom_angles_file = _lib_dir / "custom_angles.toml"
+    custom_categories_file = _lib_dir / "custom_categories.toml"
+
     return Config(
         api_key=api_key,
         voyage_api_key=voyage_api_key,
@@ -150,4 +157,6 @@ def load_config(
         embed_model=embed_model,
         profile_file=profile_file,
         experiences_file=experiences_file,
+        custom_angles_file=custom_angles_file,
+        custom_categories_file=custom_categories_file,
     )

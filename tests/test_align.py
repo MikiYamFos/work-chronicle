@@ -1,26 +1,4 @@
-from coverletter.align import _parse_alignment, has_library_coverage
-
-
-# ── _has_library_coverage ─────────────────────────────────────────────────────
-
-def test_library_coverage_detected():
-    assert has_library_coverage("dbt experience — JD requires it (library: [15])")
-
-
-def test_library_coverage_detected_different_index():
-    assert has_library_coverage("Kafka knowledge (library: [3])")
-
-
-def test_library_coverage_not_present():
-    assert not has_library_coverage("Kafka knowledge — not mentioned in letter")
-
-
-def test_library_coverage_case_insensitive():
-    assert has_library_coverage("Missing skill (Library: [7])")
-
-
-def test_library_coverage_empty_string():
-    assert not has_library_coverage("")
+from coverletter.align import _parse_alignment
 
 
 # ── _parse_alignment ──────────────────────────────────────────────────────────

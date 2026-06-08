@@ -813,10 +813,11 @@ def build_outline(
         return "# No claims found\n\nRun `coverletter extract` first.\n", [], [], []
 
     from coverletter.provider import get_embed_provider, get_provider
+    from coverletter.db import get_or_embed_jd
     provider = get_provider(model, api_key)
     embed_provider = get_embed_provider(embed_model) or provider
 
-    jd_embedding = _embed_query(jd + "\n" + thesis, voyage_api_key, embed_provider)
+    jd_embedding = get_or_embed_jd(conn, jd + "\n" + thesis, voyage_api_key, embed_provider)
 
     from coverletter.db import ensure_category_embeddings
     category_embeddings = ensure_category_embeddings(conn, voyage_api_key, embed_provider)

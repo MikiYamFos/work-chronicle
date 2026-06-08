@@ -147,6 +147,15 @@ _BANNED_PHRASES = [
     "the clearest connection", "this is the kind of work",
     "i am strongest in",
     "i combine ",
+    # "I have been the X" — invented LLM construction, no one writes this way
+    "i have been the ",
+    # AI filler — vague career-narrative constructions that replace actual evidence
+    "career-long pattern",
+    "building for the next",
+    "for the next engineer",
+    "for the next person",
+    "not just for the immediate",
+    "not just the immediate problem",
 ]
 
 def _hard_check(letter_text: str) -> list[str]:

@@ -18,7 +18,7 @@ dependencies = [
 ]
 
 [project.scripts]
-coverletter = "coverletter.cli:main"
+clio = "coverletter.cli:main"
 
 [tool.setuptools.packages.find]
 include = ["coverletter*"]

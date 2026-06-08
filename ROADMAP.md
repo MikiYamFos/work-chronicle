@@ -61,6 +61,34 @@ The gap-to-experience matcher in `experiences.py` was matching on stop words, ca
 - `force_draft()` now sends a comprehensive rules reminder covering first-sentence structure, no-invention constraint, voice preservation, and banned constructs.
 - The 120-word "rich answer" threshold was removed — it was an arbitrary cap that forced premature drafts on answers that weren't yet complete.
 
+### Q&A system overhaul (June 2026)
+
+**BUILD_SYSTEM refactored to dynamic gap-type blocks** (`build.py:build_system_prompt()`). The old monolithic prompt mixed rules for competence gaps, production gaps, impact gaps, resume context, and framing context — the model could not differentiate which rules applied and generated conflicting behavior. Now assembled dynamically:
+
+- `_BUILD_CORE` — always included: paragraph rules, drafting triggers, banned constructs, voice rules
+- `_BUILD_TOOLS` — injected only when library search is active (Anthropic tool-calling path)
+- `_BUILD_GAP_COMPETENCE` — injected for tool/skill gaps: ask what was BUILT, never ask about breakage
+- `_BUILD_GAP_PRODUCTION` — injected for ownership/system design gaps: failure questions appropriate
+- `_BUILD_GAP_IMPACT` — injected for business outcome gaps: ask what became POSSIBLE, not what broke
+- `_BUILD_CONTEXT_RESUME` — injected when resume is present: treat bullets as established fact
+- `_BUILD_CONTEXT_FRAMING` — injected when experience framing is present: ask about missing angles only
+
+`_classify_gap(gap_description)` maps alignment gap descriptions to the correct block using keyword signals. Exactly one gap block per session. No stale `BUILD_SYSTEM` references remain in `cli.py` — all paths use `build_system_prompt()`. Guarded by `tests/test_build_system.py`.
+
+**Static opening question** — no LLM call before the user types anything. Previously the system made a full model call (and incurred cost) to generate the first question before the user had entered a word. Now shows a static prompt immediately. Model runs only after the user responds.
+
+**Deterministic metadata clarification** — free, zero cost. After the user's first response, a Python check (`needs_metadata_clarification()` in `build.py`) determines whether employment context is clear. If a specific project or system is described but no employer or personal project signal is present, a boilerplate question fires immediately with no LLM call: "Is this a personal project or work you did at an employer? If an employer, which one?" Does not fire for freewriting about ways of being, working approaches, or general observations — only when a specific project is described.
+
+**prompt_toolkit multiline input** — `_read_multiline()` in `cli.py` was documented as using prompt_toolkit but actually used `input()`, which is capped at 1023 chars on macOS by the kernel's canonical input mode. Now actually uses prompt_toolkit with double-Enter-to-submit behavior. All free-form text entry points in `cli.py` use `_read_multiline()`. Guarded by `tests/test_input_safety.py`.
+
+**Question judge improvements** (`question_judge.py`):
+- Metadata questions (`_METADATA_PATTERNS`) are whitelisted — always pass both pattern filter and LLM judge, never blocked. These establish required paragraph metadata (personal project vs employer, which company) at zero cost.
+- Self-reflection distinction: questions that open a topic for exploration ("what did this teach you about governance?") are rejected. Questions that ask what specifically CHANGED or SURPRISED — producing concrete answers — are allowed.
+- "What would you do differently?" hard-blocked: cover letter writing defends decisions, never revisits them.
+- Rejected questions logged to stderr as `[JUDGE BLOCKED]` with reason and full question text.
+
+**Resume suppressed when user declines library match** — when the user declines a library match to discuss a different experience (`skip_library_search=True`), the resume is no longer passed to the coach. Previously the resume caused the coach to anchor questions to projects already documented, defeating the purpose of the skip.
+
 ---
 
 ## Issue #1 — Multi-provider support *(partially shipped)*
