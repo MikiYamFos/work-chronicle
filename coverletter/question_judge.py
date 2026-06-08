@@ -36,11 +36,47 @@ _BAD_PATTERNS: list[tuple[str, str]] = [
     # "X could not have handled Y as well" / "X just the right tool" phrasing
     (r"(could not|couldn.t) have (handled|done|supported).{0,40}(as well|instead|better)", "asks about tool limitations — for competence gaps ask what they built, not what the alternative couldn't do"),
     (r"(just the right|the better) tool for", "asks about tool selection rationale — for competence gaps ask what they built with the tool"),
+    # "What would you do differently?" — undermines defensibility of past decisions
+    (r"\bwhat would you (do|have done) differently\b", "asks the person to second-guess their own decisions — cover letter writing defends choices, it does not revisit them"),
+    # Invented difficulty framing — assumes something was hard when the person never said so
+    (r"what made .{3,60} (hard|difficult|challenging|tricky|complex) to (define|design|build|implement|structure|create)", "invents a difficulty the person never stated — ask what they built or decided, not what was hard about a specific sub-problem they never mentioned"),
+    (r"what (difficulty|difficulties|challenge|challenges) did you (face|encounter|run into|have) (with|when|while|in)", "assumes difficulties — only ask about difficulty if the person described something that was hard; otherwise ask what they built"),
 ]
 
 
+# ---------------------------------------------------------------------------
+# Metadata clarification questions — always pass, never sent to the LLM judge.
+# These fill required holes before a paragraph can be drafted or stored:
+# personal project vs employer, which role/company, time period, scope.
+# ---------------------------------------------------------------------------
+
+_METADATA_PATTERNS: list[str] = [
+    r"\b(personal project|side project|personal work|your own project)\b",
+    r"\b(employer|company|organization|role)\b.{0,40}\?(.*)?$",
+    r"^(is|was) this (a )?(personal|side|your own|an employer|a work|a paid|a volunteer)",
+    r"^(which|what) (company|employer|organization|role|job|position)",
+    r"^(was this|is this|is it|was it) (paid|employed|freelance|contractor|volunteer|personal)",
+    r"^(did you|were you) (build|do|work on) this (at|for|as part of|while at|during)",
+    r"\b(when did you|how long did you|what year|what period|over what)",
+    r"^(who|what team|how many people).{0,40}(used|depended on|relied on|consumed)",
+]
+
+
+def _is_metadata_question(question: str) -> bool:
+    """Return True if the question is asking for required paragraph metadata."""
+    q = question.lower().strip()
+    return any(re.search(p, q) for p in _METADATA_PATTERNS)
+
+
 def check_patterns(question: str) -> str | None:
-    """Return a rejection reason if the question matches a bad pattern, else None."""
+    """Return a rejection reason if the question matches a bad pattern, else None.
+
+    Metadata clarification questions always pass — they fill required holes
+    (personal project vs employer, which role, time period) before drafting.
+    """
+    # Metadata questions are exempt from all rejection patterns
+    if _is_metadata_question(question):
+        return None
     q = question.lower().strip()
     for pattern, reason in _BAD_PATTERNS:
         if re.search(pattern, q):
@@ -85,9 +121,18 @@ A GOOD question regardless of gap type:
 A BAD question regardless of gap type:
 - Asks for counts, numbers, or percentages
 - Asks for process walkthroughs ("walk me through")
-- Asks for self-reflection ("what did you learn", "what are you proud of")
+- Self-reflection that opens a topic for exploration — "what did this teach you about \
+  how X works?", "what did you learn about governance/scale/leadership?" These prompt \
+  the person to philosophize about a domain, not tell an experience. \
+  GOOD reflection asks what specifically CHANGED or SURPRISED them — those produce \
+  concrete answers. \
+  BAD reflection asks what something taught them ABOUT A TOPIC — that produces a lecture.
 - Is so vague the answer could apply to any job
 - Is a rephrasing of a question already asked in this conversation
+- Invents a premise the person never stated — "what made X hard to design" when \
+  they never said X was hard; "what difficulties did you face with Y" when they \
+  never described Y as difficult. If the question assumes a specific constraint, \
+  failure, or difficulty that does not appear in the conversation, reject it.
 
 Return ONLY valid JSON: {"pass": true} or {"pass": false, "reason": "one sentence"}
 """
@@ -104,21 +149,10 @@ def judge_question(
     Uses Haiku — fast and cheap for binary classification.
     """
     import json
-    import anthropic
-    from coverletter.costs import record
+    from coverletter.provider import get_provider
 
-    client = anthropic.Anthropic(api_key=api_key)
     prompt = f"Context: {context[:300]}\n\nQuestion to judge: {question}"
-
-    response = client.messages.create(
-        model=_JUDGE_MODEL,
-        max_tokens=128,
-        system=_JUDGE_SYSTEM,
-        messages=[{"role": "user", "content": prompt}],
-    )
-    record(_JUDGE_MODEL, response.usage.input_tokens, response.usage.output_tokens)
-
-    raw = response.content[0].text.strip()
+    raw = get_provider(_JUDGE_MODEL, api_key).complete(_JUDGE_SYSTEM, prompt, max_tokens=128)
     raw = re.sub(r"^```(?:json)?\s*", "", raw)
     raw = re.sub(r"\s*```$", "", raw)
     try:
@@ -198,22 +232,14 @@ def company_accuracy_check(
     if not mentioned:
         return True, ""  # question names no company from library — skip LLM check
 
-    import anthropic
-    from coverletter.costs import record
+    from coverletter.provider import get_provider
 
-    client = anthropic.Anthropic(api_key=api_key)
     prompt = (
         f"Library search results:\n{library_results[:2000]}\n\n"
         f"Question: {question}"
     )
-    response = client.messages.create(
-        model=_JUDGE_MODEL,
-        max_tokens=128,
-        system=_COMPANY_JUDGE_SYSTEM,
-        messages=[{"role": "user", "content": prompt}],
-    )
-    record(_JUDGE_MODEL, response.usage.input_tokens, response.usage.output_tokens)
-    return _parse_judge_response(response.content[0].text)
+    raw = get_provider(_JUDGE_MODEL, api_key).complete(_COMPANY_JUDGE_SYSTEM, prompt, max_tokens=128)
+    return _parse_judge_response(raw)
 
 
 def validate_draft(
@@ -229,22 +255,14 @@ def validate_draft(
     if not api_key or not conversation_turns.strip():
         return True, ""
 
-    import anthropic
-    from coverletter.costs import record
+    from coverletter.provider import get_provider
 
-    client = anthropic.Anthropic(api_key=api_key)
     prompt = (
         f"What the person said in this conversation:\n{conversation_turns[:2000]}\n\n"
         f"Draft paragraph:\n{draft}"
     )
-    response = client.messages.create(
-        model=_JUDGE_MODEL,
-        max_tokens=160,
-        system=_DRAFT_JUDGE_SYSTEM,
-        messages=[{"role": "user", "content": prompt}],
-    )
-    record(_JUDGE_MODEL, response.usage.input_tokens, response.usage.output_tokens)
-    return _parse_judge_response(response.content[0].text)
+    raw = get_provider(_JUDGE_MODEL, api_key).complete(_DRAFT_JUDGE_SYSTEM, prompt, max_tokens=160)
+    return _parse_judge_response(raw)
 
 
 def validate_question(
@@ -256,12 +274,18 @@ def validate_question(
 ) -> tuple[bool, str]:
     """Two-layer validation: deterministic patterns, then LLM judge.
 
-    Company accuracy is NOT checked at the question level — questions may legitimately
-    ask about experience at multiple companies, or ask which company an experience
-    belongs to when it's a gap. Company fact accuracy is caught by the draft judge.
+    Metadata clarification questions (personal project vs employer, which role,
+    time period) always pass both layers — they fill required holes before drafting.
+
+    Company accuracy is NOT checked at the question level. Company fact accuracy
+    is caught by the draft judge.
 
     Returns (passes, rejection_reason_or_empty).
     """
+    # Metadata questions always pass — never sent to the judge
+    if _is_metadata_question(question):
+        return True, ""
+
     # Layer 1: free, instant
     reason = check_patterns(question)
     if reason:

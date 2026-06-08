@@ -4,7 +4,7 @@ import json
 import re
 from dataclasses import dataclass, field
 
-from coverletter.costs import record, supports_temperature
+from coverletter.provider import get_provider
 
 # ---------------------------------------------------------------------------
 # Level 3 — finished letter coach (existing)
@@ -66,25 +66,8 @@ class WeakSentence:
 
 
 def analyze_letter(letter: str, api_key: str, model: str) -> list[WeakSentence]:
-    import anthropic
-    client = anthropic.Anthropic(api_key=api_key)
     prompt = COACH_PROMPT.format(letter=letter)
-    kwargs: dict = dict(
-        model=model,
-        max_tokens=1024,
-        system=[{"type": "text", "text": COACH_SYSTEM, "cache_control": {"type": "ephemeral"}}],
-        messages=[{"role": "user", "content": prompt}],
-    )
-    if supports_temperature(model):
-        kwargs["temperature"] = 0
-    response = client.messages.create(**kwargs)
-    usage = response.usage
-    record(
-        model, usage.input_tokens, usage.output_tokens,
-        cache_creation_tokens=getattr(usage, "cache_creation_input_tokens", 0) or 0,
-        cache_read_tokens=getattr(usage, "cache_read_input_tokens", 0) or 0,
-    )
-    raw = response.content[0].text.strip()
+    raw = get_provider(model, api_key).complete(COACH_SYSTEM, prompt, max_tokens=1024, temperature=0)
     raw = re.sub(r"^```(?:json)?\s*", "", raw)
     raw = re.sub(r"\s*```$", "", raw)
     try:
@@ -95,26 +78,9 @@ def analyze_letter(letter: str, api_key: str, model: str) -> list[WeakSentence]:
 
 
 def rewrite_sentence(sentence: str, context: str, issue: str, user_input: str, api_key: str, model: str) -> str:
-    import anthropic
     direction = f"Issue: {issue}\nUser input: {user_input}\n\n{REWRITE_DIRECTION}"
-    client = anthropic.Anthropic(api_key=api_key)
     prompt = REWRITE_PROMPT.format(sentence=sentence, context=context, direction=direction)
-    kwargs: dict = dict(
-        model=model,
-        max_tokens=256,
-        system=[{"type": "text", "text": REWRITE_SYSTEM, "cache_control": {"type": "ephemeral"}}],
-        messages=[{"role": "user", "content": prompt}],
-    )
-    if supports_temperature(model):
-        kwargs["temperature"] = 0.3
-    response = client.messages.create(**kwargs)
-    usage = response.usage
-    record(
-        model, usage.input_tokens, usage.output_tokens,
-        cache_creation_tokens=getattr(usage, "cache_creation_input_tokens", 0) or 0,
-        cache_read_tokens=getattr(usage, "cache_read_input_tokens", 0) or 0,
-    )
-    return response.content[0].text.strip()
+    return get_provider(model, api_key).complete(REWRITE_SYSTEM, prompt, max_tokens=256, temperature=0.3)
 
 
 def get_context(letter: str, sentence: str, window: int = 200) -> str:
@@ -191,25 +157,8 @@ class DraftIssue:
 
 def analyze_draft(raw_text: str, draft_text: str, api_key: str, model: str) -> list[DraftIssue]:
     """Level 1 coach — check draft fidelity against raw source text."""
-    import anthropic
-    client = anthropic.Anthropic(api_key=api_key)
     prompt = _DRAFT_COACH_PROMPT.format(raw_text=raw_text.strip(), draft_text=draft_text.strip())
-    kwargs: dict = dict(
-        model=model,
-        max_tokens=2048,
-        system=[{"type": "text", "text": _DRAFT_COACH_SYSTEM, "cache_control": {"type": "ephemeral"}}],
-        messages=[{"role": "user", "content": prompt}],
-    )
-    if supports_temperature(model):
-        kwargs["temperature"] = 0
-    response = client.messages.create(**kwargs)
-    usage = response.usage
-    record(
-        model, usage.input_tokens, usage.output_tokens,
-        cache_creation_tokens=getattr(usage, "cache_creation_input_tokens", 0) or 0,
-        cache_read_tokens=getattr(usage, "cache_read_input_tokens", 0) or 0,
-    )
-    raw = response.content[0].text.strip()
+    raw = get_provider(model, api_key).complete(_DRAFT_COACH_SYSTEM, prompt, max_tokens=2048, temperature=0)
     raw = re.sub(r"^```(?:json)?\s*", "", raw)
     raw = re.sub(r"\s*```$", "", raw)
     try:
@@ -321,8 +270,6 @@ def analyze_library_paragraph(
     angle: str = "",
 ) -> list[LibraryIssue]:
     """Level 2 coach — check a library paragraph for rule-based issues."""
-    import anthropic
-
     is_perspective = (
         via == "reflect"
         or angle.lower() in _PERSPECTIVE_ANGLES
@@ -330,28 +277,12 @@ def analyze_library_paragraph(
     opener_rule = _OPENER_RULE_PERSPECTIVE if is_perspective else _OPENER_RULE_EVIDENCE
     para_type = "perspective/narrative" if is_perspective else "evidence"
 
-    client = anthropic.Anthropic(api_key=api_key)
     prompt = _LIBRARY_COACH_PROMPT.format(
         para_text=para_text.strip(),
         para_type=para_type,
         opener_rule=opener_rule,
     )
-    kwargs: dict = dict(
-        model=model,
-        max_tokens=1024,
-        system=[{"type": "text", "text": _LIBRARY_COACH_SYSTEM, "cache_control": {"type": "ephemeral"}}],
-        messages=[{"role": "user", "content": prompt}],
-    )
-    if supports_temperature(model):
-        kwargs["temperature"] = 0
-    response = client.messages.create(**kwargs)
-    usage = response.usage
-    record(
-        model, usage.input_tokens, usage.output_tokens,
-        cache_creation_tokens=getattr(usage, "cache_creation_input_tokens", 0) or 0,
-        cache_read_tokens=getattr(usage, "cache_read_input_tokens", 0) or 0,
-    )
-    raw = response.content[0].text.strip()
+    raw = get_provider(model, api_key).complete(_LIBRARY_COACH_SYSTEM, prompt, max_tokens=1024, temperature=0)
     raw = re.sub(r"^```(?:json)?\s*", "", raw)
     raw = re.sub(r"\s*```$", "", raw)
     try:

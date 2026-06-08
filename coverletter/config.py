@@ -20,8 +20,8 @@ DEFAULT_TOP_N = 100  # safety cap — libraries under this size pass everything 
 
 @dataclass
 class Config:
-    api_key: str
-    voyage_api_key: str  # empty string = fall back to keyword prefilter
+    api_key: str          # active provider key (Anthropic or Mistral)
+    voyage_api_key: str   # empty string = fall back to keyword prefilter
     paragraphs_files: list[Path]  # ordered by priority — index 0 is layer 0 (highest)
     resume_file: Path
     resume_typ_file: Path       # base resume.typ for Typst compilation
@@ -30,8 +30,11 @@ class Config:
     model: str
     top_n: int
     author_name: str
+    embed_model: str = ""  # EMBED_MODEL env var; "bge-m3" → local hybrid embed, "" → use provider's embed
     profile_file: Path = Path("candidate_profile.toml")
     experiences_file: Path = Path("experiences.md")
+    custom_angles_file: Path = Path("custom_angles.toml")
+    custom_categories_file: Path = Path("custom_categories.toml")
 
 
 def _resolve_paragraphs_files(override: str | None) -> list[Path]:
@@ -65,14 +68,48 @@ def load_config(
     model_override: str | None = None,
     resume_override: str | None = None,
 ) -> Config:
-    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
-    if not api_key:
-        raise SystemExit(
-            "\nANTHROPIC_API_KEY is not set.\n"
-            "Add it to a .env file in the project directory:\n\n"
-            "  ANTHROPIC_API_KEY=sk-ant-...\n\n"
-            "Or export it in your shell before running coverletter.\n"
-        )
+    # Resolve model first so we know which provider key to require
+    model = resolve_model(model_override or os.environ.get("COVERLETTER_MODEL", DEFAULT_MODEL))
+
+    from coverletter.provider import parse_model
+    provider_name, _ = parse_model(model)
+
+    if provider_name == "mistral":
+        api_key = os.environ.get("MISTRAL_API_KEY", "")
+        if not api_key:
+            raise SystemExit(
+                "\nMISTRAL_API_KEY is not set.\n"
+                "Add it to a .env file in the project directory:\n\n"
+                "  MISTRAL_API_KEY=...\n\n"
+                "Or export it in your shell before running coverletter.\n"
+            )
+    elif provider_name == "openai":
+        api_key = os.environ.get("OPENAI_API_KEY", "")
+        if not api_key:
+            raise SystemExit(
+                "\nOPENAI_API_KEY is not set.\n"
+                "Add it to a .env file in the project directory:\n\n"
+                "  OPENAI_API_KEY=sk-...\n\n"
+                "Or export it in your shell before running coverletter.\n"
+            )
+    elif provider_name == "cohere":
+        api_key = os.environ.get("COHERE_API_KEY", "")
+        if not api_key:
+            raise SystemExit(
+                "\nCOHERE_API_KEY is not set.\n"
+                "Add it to a .env file in the project directory:\n\n"
+                "  COHERE_API_KEY=...\n\n"
+                "Or export it in your shell before running coverletter.\n"
+            )
+    else:
+        api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+        if not api_key:
+            raise SystemExit(
+                "\nANTHROPIC_API_KEY is not set.\n"
+                "Add it to a .env file in the project directory:\n\n"
+                "  ANTHROPIC_API_KEY=sk-ant-...\n\n"
+                "Or export it in your shell before running coverletter.\n"
+            )
 
     voyage_api_key = os.environ.get("VOYAGE_API_KEY", "")
     paragraphs_files = _resolve_paragraphs_files(paragraphs_override)
@@ -85,9 +122,9 @@ def load_config(
         if candidate.exists():
             resume_bullets_file = candidate
     output_dir = Path(output_override) if output_override else Path(os.environ.get("OUTPUT_DIR", str(DEFAULT_OUTPUT_DIR)))
-    model = resolve_model(model_override or os.environ.get("COVERLETTER_MODEL", DEFAULT_MODEL))
     top_n = int(os.environ.get("COVERLETTER_TOP_N", DEFAULT_TOP_N))
     author_name = os.environ.get("AUTHOR_NAME", "")
+    embed_model = os.environ.get("EMBED_MODEL", "").strip().lower()
 
     profile_file = Path(
         os.environ.get("CANDIDATE_PROFILE_FILE", "candidate_profile.toml")
@@ -101,6 +138,11 @@ def load_config(
         candidate_exp = paragraphs_files[0].parent / "experiences.md"
         experiences_file = candidate_exp if candidate_exp.exists() else Path("experiences.md")
 
+    # custom angle/category overrides — auto-detected alongside paragraphs file, gitignored
+    _lib_dir = paragraphs_files[0].parent
+    custom_angles_file = _lib_dir / "custom_angles.toml"
+    custom_categories_file = _lib_dir / "custom_categories.toml"
+
     return Config(
         api_key=api_key,
         voyage_api_key=voyage_api_key,
@@ -112,6 +154,9 @@ def load_config(
         model=model,
         top_n=top_n,
         author_name=author_name,
+        embed_model=embed_model,
         profile_file=profile_file,
         experiences_file=experiences_file,
+        custom_angles_file=custom_angles_file,
+        custom_categories_file=custom_categories_file,
     )

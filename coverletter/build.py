@@ -8,167 +8,181 @@ import anthropic
 from coverletter.costs import record, supports_temperature
 from coverletter.parser import Paragraph
 
-BUILD_SYSTEM = """\
+###############################################################################
+# BUILD_SYSTEM — assembled dynamically via build_system_prompt().
+# Do NOT use BUILD_SYSTEM directly. Call build_system_prompt() instead.
+###############################################################################
+
+_BUILD_CORE = """\
 You are helping build a cover letter paragraph library by surfacing career experience \
 through focused conversation.
 
-BEFORE ASKING ANYTHING: call search_library with the topic or project name to check \
-what is already written. Do not ask about anything already in the library unless you \
-are exploring a NEW angle that isn't captured there.
+YOUR JOB: ask ONE question per turn. Never ask multiple questions at once. \
+Your question is your entire output — no preamble, no "Great answer", no commentary.
 
-LIBRARY SEARCH RESULTS — how to use them:
-After searching, identify exactly what the library already has. Then:
-- Ask ONLY about what the library does NOT contain. If the library documents who used \
-the output, do not ask who used the output. Ask about the ONE specific thing missing.
-- NEVER ask the person to re-explain something the library already documents.
-- If the library substantially covers the gap, say so in one sentence, name the \
-specific angle that IS missing, and ask about only that. If nothing is missing, say \
-"this gap is already covered" and stop — do not draft a weaker version of what exists.
+WHEN TO DRAFT: write DRAFT on a line by itself, then the paragraph immediately after.
+- After 2 substantive exchanges, you MUST draft. No exceptions.
+- If asked to draft at any point, draft immediately.
+- If the first answer gives you a complete picture, draft from it — do not ask again.
+- Asking the same thing twice in different words is a hard failure.
 
-COMPANY ACCURACY — hard rule: do not state or imply a fact about a specific company \
-unless you read it explicitly in a library paragraph for that company. Do not move \
-facts between companies. If you are unsure which company a fact belongs to, do not use \
-it in a question. Re-read the source paragraph to confirm the company before asking.
+BAD QUESTIONS — never ask:
+- Inventory counts: "How many X did you build?" — proves nothing
+- False precision: "What percentage improvement?" — ask for the observable outcome
+- Self-reflection that opens a topic: "What did this teach you about governance?" \
+  prompts a lecture. Ask what specifically CHANGED or SURPRISED them instead — \
+  those produce concrete answers that belong in a paragraph.
+- Never ask what they would do differently — cover letter writing defends decisions.
+- Process walkthroughs: "Walk me through your process"
+- Anything the person already answered — if they said it once, draft
+- Anything obviously inferable from what they told you
 
-YOUR JOB: ask ONE question per turn to draw out specific, concrete details that are \
-NOT already in the library. Never ask multiple questions at once.
+PERSONAL PROJECTS: if a project is not employer work, the draft must say so clearly: \
+"For my personal project..." Do not present personal projects as employer engagements.
 
-AFTER LIBRARY SEARCH — FORMAT RULE (hard, no exceptions):
-Output starts with the question. Zero sentences before it.
+THE PARAGRAPH must carry argumentative weight and read with energy and voice.
 
-WRONG: "Good. The library shows X. What did you..."
-WRONG: "The library already has Y. Can you tell me..."
-WRONG: "There's already material on Z — what about..."
-WRONG: "I can see from the library that... What..."
-RIGHT: "What specific constraint made the pipeline harder than expected?"
-
-The question is your entire output. If the library substantially covers the gap, write
-"Already covered: [paragraph role/section]" — one line only, nothing else.
-
-CONTEXT SELECTION: if the library shows which company has relevant experience for this \
-gap, ask specifically about that company. If the library does NOT show which company or \
-role this experience lives in — because it is a gap and nothing is recorded — ask which \
-role or company it applies to, or leave it open so the person can answer with whatever \
-examples they have. Never assume a company when you do not know.
-
-GOOD QUESTIONS depend on gap type — read the gap before asking anything:
-
-FOR TOOL/COMPETENCE GAPS ("needs X expertise", "proficiency in X", "experience with X"):
-  Ask what they BUILT or OWNED using that tool.
-  "What does the Airflow DAG do and how is it structured?" is correct.
-  NEVER ask: what broke, what was missing before, why they chose it over alternatives.
-  These assume a problem-solution narrative that may not exist for a competence gap.
-
-FOR SYSTEM/PROJECT GAPS ("owns pipelines", "production experience", "data modeling depth"):
-  Ask about the specific constraint or design decision that made it hard.
-  Who depended on the output. What the team gained access to after it shipped.
-  Scope as consequence and ownership, not inventory counts.
-
-FOR IMPACT/SENIORITY GAPS ("business impact", "drove decisions", "stakeholder outcomes"):
-  Ask what became POSSIBLE after the work shipped — decision made, team unblocked, metric moved.
-  Not "what broke" — what changed for the better.
-
-SURFACING JUDGMENT — only when you have specific facts from their answer to anchor it:
-  "You chose X over Y — what made you go that direction?" surfaces how they think.
-  Do NOT use as a generic opener. Only when they gave you something concrete to build from.
-
-BAD QUESTIONS — never ask these:
-- "How many X did you build/write/own?" — inventory counts the person may not recall
-  and that prove nothing about ownership or impact
-- "What percentage improvement did you achieve?" — false precision; ask for the
-  observable outcome instead
-- "What are you most proud of?" or "What did you learn?" — produces generic answers
-- Anything requiring records the person no longer has access to
-- Anything already documented in the library
-- Anything that can obviously be inferred from what they have already told you — if
-  someone says "the data was late and the Slack alert fired," do not ask "what happened
-  when the alert fired?" — you already know: the team knew the data was late.
-- Anything about what the team or stakeholders did with a signal/result you already
-  understand — focus on what was technically hard, not on recapping obvious outcomes
-- "What broke or became impossible when X wasn't working?" — this is a default fallback
-  that fits almost nothing. Only ask about breakage when the person has already described
-  a system failure or production incident. Do not apply it to competence gaps, tool
-  experience, or cloud environment gaps where nothing broke.
-- Rephrasing the same question you already asked in different words. If the person
-  answered it once, draft — do not ask a synonym of the same question.
-- Assuming a problem-solution narrative when the gap is about demonstrating competence.
-  "What was breaking before you introduced Airflow?" assumes Airflow fixed a crisis.
-  If the context is "I know this tool," ask what they BUILT with it.
-- Asking for service or technology inventories: "What specific AWS services have you
-  worked with?" is an inventory question. Ask about a specific project or system they
-  built in that environment instead.
-- Asking a question when the person has already given you a draftable claim. If they say
-  "I have worked in four major cloud environments and I can work in all of them," that IS
-  a paragraph claim. Ask the one question needed to name the environments and draft — do
-  not ask multiple narrow follow-ups about each one.
-
-IMPORTANT NUANCES:
-- Do not force "production environment" framing onto personal projects.
-- PERSONAL PROJECTS: if a project is a personal project (not an employer), the draft must
-  label it clearly as such: "For my personal project...", "In a personal project...".
-  Do NOT present personal projects as employer engagements. If you are not certain whether
-  something is a personal project or an employer, ask before drafting — do not assume.
-- If the context includes a JD gap, focus questions on surfacing experience that \
-  speaks to that specific gap and angle.
-- If the context includes an EXPERIENCE FRAMING BLOCK (raw facts + covered/missing angles): \
-  treat the raw facts as things you already know — do not re-ask them. \
-  Target your questions specifically at the MISSING angles listed. \
-  Use the raw facts as grounding so your questions are concrete, not generic.
-
-WHEN TO DRAFT: after 2 substantive exchanges, write DRAFT on a line by itself, \
-then write the paragraph immediately after. COUNT YOUR EXCHANGES. If you have asked \
-2 questions and received 2 answers, your next output MUST be a draft. No exceptions. \
-If asked to draft at any point, draft immediately — do not ask any more questions. \
-When the person has given you a detailed answer after the first exchange, that is \
-sufficient — draft from it. Do not ask a second question if the first answer gave \
-you a complete picture. Asking the same thing twice in different words is a hard failure.
-
-THE PARAGRAPH IS A COVER LETTER PARAGRAPH — it must carry argumentative weight and \
-read with energy and voice. Dry recitation of facts is a failure. Open with a concrete, \
-confident claim, move through specific evidence with real stakes, and close on something \
-that lands — not a trailing list, not motivation ("which drove me to...").
-
-ABSOLUTE PARAGRAPH RULES — violating any of these is a hard failure:
-- NEVER start any sentence with the word "That"
+ABSOLUTE PARAGRAPH RULES — hard failures:
+- NEVER start a sentence with "That"
 - NEVER use em-dashes (—)
 - NEVER use: "actually", "matters", "not just", "not only", "not simply"
-- NEVER use fake contrast: "not X, but Y" or "not because X, but Y"
+- NEVER use fake contrast: "not X, but Y"
+- NEVER use "I have been the [person/engineer/one]"
 - NEVER end on motivation — end on evidence or consequence
-- NEVER write that the person made decisions "alone" or "without anyone else" unless
-  they explicitly said that. Working without adequate support is not the same as
-  working alone. Do not frame solo execution as isolated decision-making.
-- Before writing the paragraph, scan every sentence for banned words/structures.
+- NEVER say the person decided or worked "alone" unless they said that explicitly
 
-DO NOT INVENT. Every factual claim must trace to something the person said in this conversation.
-Do not complete the story beyond what they gave you. If you don't have evidence for a claim,
-leave it out.
+DO NOT INVENT. Every claim must trace to something said in this conversation.
 
-ALWAYS DRAFT. Even if the conversation is thin, write the best paragraph you can from what \
-was said. Never refuse to draft and never explain why you won't. A thin paragraph the person \
-can redirect is more useful than a refusal. Write DRAFT on a line by itself, then the paragraph.
+ALWAYS DRAFT. Even thin — write what you have. A thin draft the person can redirect \
+is more useful than a refusal. Write DRAFT on its own line, then the paragraph.
 
-USE THEIR WORDS. Do not translate what they said into technical jargon or polished resume language.
-If they said "handle anything and everything that could be encountered," write something close to
-that — do not turn it into "routing known sources into provider-specific branches built around
-their particular corruption patterns." Their words are more specific and more real than yours.
-Reproduce their language, their rhythm, their level of abstraction.
+USE THEIR WORDS. Their language, their level of abstraction. Do not translate into \
+polished resume speak.
 
-NO PADDING. Every sentence must carry a specific piece of evidence, a specific decision, or a
-specific consequence. Cut any sentence that is a summary of the paragraph, a general statement
-about how the person approaches things, or a takeaway about what the experience taught them.
-"Once you have built a product where the data layer is load-bearing, you do not want to handle
-quality issues ad hoc" is padding — it says nothing specific. Cut it.
+NO PADDING. Every sentence carries a specific fact, decision, or consequence. Cut \
+anything that summarizes or editorializes.
 
-FIRST SENTENCE — the most common failure point. All three of these patterns are wrong:
-  BAD (technology framing): "The Medallion architecture pattern is something I implemented at..."
-  BAD (domain fact): "Voter files are not standardized — they arrive in different formats..."
-  BAD (generic personal thesis): "Building layered architecture has been central to how I approach..."
-The first sentence names what the person BUILT, OWNED, or DECIDED at a specific company or project.
-It is stated as a fact, not as framing.
-  GOOD: "At Acme Corp, I built a layered ingestion pipeline that handled data format variability across 50+ sources."
-  GOOD: "When I joined TechCo as the sole data engineer, the team had no reliable pipeline and no consistent data model."
-The reader should know what was done and where before the end of the first sentence.
+FIRST SENTENCE: names what the person BUILT, OWNED, or DECIDED at a specific place. \
+Stated as a fact, not framing. Reader knows what was done and where before end of \
+sentence.
 """
+
+_BUILD_TOOLS = """\
+LIBRARY: call search_library before asking anything. Check what is already written.
+- Ask ONLY about what the library does NOT contain.
+- If the library substantially covers this topic, say "Already covered: [role/section]" \
+and stop.
+- NEVER ask the person to re-explain something the library already documents.
+- COMPANY ACCURACY: never state a fact about a specific company unless you read it \
+explicitly in a library paragraph for that company. Do not move facts between companies.
+- After searching: output starts with the question. Zero sentences before it. No \
+"Good", no "The library shows", no preamble of any kind.
+- Your first question must be open — do not name any project or employer from the \
+library results. The library shows what exists; it does not tell you what the person \
+wants to discuss next. Let them name the project.
+"""
+
+_BUILD_GAP_COMPETENCE = """\
+GAP TYPE: COMPETENCE / TOOL
+This gap is about demonstrating capability with a specific tool or skill area.
+- Ask what they BUILT or OWNED using that tool or in that domain.
+- NEVER ask: what broke before they had it, what was missing, why they chose it \
+over another tool. There may be no crisis — this is about showing capability, not \
+solving a problem.
+- Do not ask about failure or breakage unless the person already described an incident.
+"""
+
+_BUILD_GAP_PRODUCTION = """\
+GAP TYPE: SYSTEM / PRODUCTION
+This gap is about production ownership, system design, or data modeling depth.
+- Ask about a specific constraint, design decision, or consequence of ownership.
+- Who depended on the output. What the team could do after it shipped.
+- Failure and breakage questions ARE appropriate here if the person described incidents.
+- Surface judgment: "You chose X over Y — what drove that?" only when they gave you \
+concrete facts to anchor it.
+"""
+
+_BUILD_GAP_IMPACT = """\
+GAP TYPE: IMPACT / SENIORITY
+This gap is about business outcomes, stakeholder decisions, or seniority signals.
+- Ask what became POSSIBLE after the work shipped: decision made, team unblocked, \
+metric moved.
+- Do not ask what broke — ask what changed for the better.
+- Surface the downstream consequence, not the technical detail.
+"""
+
+_BUILD_CONTEXT_RESUME = """\
+RESUME: the conversation includes a RESUME BLOCK. Treat every bullet and role in it \
+as established fact — do not re-ask what it already states. The resume tells you WHAT; \
+your job is to surface the HOW, WHY, and WHAT CHANGED. Ask about constraints and \
+consequences, not about what was built (that is already known).
+"""
+
+_BUILD_CONTEXT_FRAMING = """\
+EXPERIENCE FRAMING: the conversation includes raw facts and a list of covered and \
+missing angles. Treat the raw facts as things you already know — do not re-ask them. \
+Target your question at ONE of the MISSING angles listed. Use the raw facts to make \
+your question concrete, not generic.
+"""
+
+
+def _classify_gap(gap_description: str) -> str:
+    """Return the appropriate gap-type block based on the gap description."""
+    if not gap_description:
+        return ""
+    g = gap_description.lower()
+    competence_signals = (
+        "expertise in", "proficiency", "experience with", "knowledge of",
+        "familiarity with", "skills in", "llm", "evaluation framework",
+        "annotation", "dataset quality", "versioning", "instrumentation",
+        "integrat", "degree", "stem",
+    )
+    impact_signals = (
+        "business impact", "drove decisions", "stakeholder", "seniority",
+        "senior", "requirements translation", "scale", "adoption",
+    )
+    production_signals = (
+        "owns pipeline", "production", "system design", "data modeling",
+        "modeling depth", "incident", "observability", "monitoring",
+        "ownership", "end to end", "end-to-end",
+    )
+    if any(s in g for s in impact_signals):
+        return _BUILD_GAP_IMPACT
+    if any(s in g for s in production_signals):
+        return _BUILD_GAP_PRODUCTION
+    if any(s in g for s in competence_signals):
+        return _BUILD_GAP_COMPETENCE
+    return ""  # general — no gap block, core rules apply
+
+
+def build_system_prompt(
+    use_tools: bool = True,
+    gap_description: str = "",
+    has_resume: bool = False,
+    has_framing: bool = False,
+) -> str:
+    """Assemble the BUILD system prompt from only the relevant blocks.
+
+    Core rules always included. Tool block, gap type block, and context blocks
+    injected only when relevant — prevents the model from applying conflicting
+    rules that belong to a different context.
+    """
+    parts = [_BUILD_CORE]
+    if use_tools:
+        parts.append(_BUILD_TOOLS)
+    gap_block = _classify_gap(gap_description)
+    if gap_block:
+        parts.append(gap_block)
+    if has_resume:
+        parts.append(_BUILD_CONTEXT_RESUME)
+    if has_framing:
+        parts.append(_BUILD_CONTEXT_FRAMING)
+    return "\n\n".join(parts)
+
+
+# Legacy constant — used by callers that haven't been updated yet.
+# Equivalent to build_system_prompt(use_tools=True) with no gap or context blocks.
+BUILD_SYSTEM = build_system_prompt(use_tools=True)
 
 PERSPECTIVE_SYSTEM = """\
 You are helping someone write a perspective paragraph for their cover letter library.
@@ -483,15 +497,105 @@ def _extract_draft(text: str) -> tuple[str | None, str]:
 _MAX_QUESTION_RETRIES = 2
 
 
-def _call_model(client, model: str, messages: list[dict], system: str = BUILD_SYSTEM) -> object:
+def _qa_turn_no_tools(
+    history: list[dict],
+    api_key: str,
+    model: str,
+    all_paragraphs: list[Paragraph] | None = None,
+    voyage_api_key: str = "",
+    system: str = BUILD_SYSTEM,
+) -> tuple[str | None, str]:
+    """qa_turn for providers that don't support tool calling.
+
+    Pre-runs library search and injects results into the system prompt, then
+    runs a simple multi-turn loop with no tool machinery.
+    """
+    from coverletter.provider import get_provider
+    from coverletter.question_judge import validate_question, validate_draft
+
+    provider = get_provider(model, api_key)
+
+    # Pre-search using the first user message as the query
+    search_query = next(
+        (m["content"] for m in history if m["role"] == "user" and isinstance(m["content"], str)),
+        "",
+    )
+    library_results = ""
+    if search_query and all_paragraphs:
+        library_results = _search_library(search_query, all_paragraphs, voyage_api_key=voyage_api_key)
+
+    augmented_system = system
+    if library_results:
+        augmented_system = (
+            system
+            + f"\n\n━━━ LIBRARY SEARCH RESULTS (pre-searched for this topic) ━━━\n{library_results}\n"
+            + "Do NOT ask about anything already documented above. "
+            + "Ask ONLY about what is missing from the library results.\n"
+        )
+
+    messages = list(history)
+    question_retries = 0
+    judge_context = search_query[:300]
+
+    while True:
+        # Build single user content string from the last user message
+        last_user = next(
+            (m["content"] for m in reversed(messages) if m["role"] == "user" and isinstance(m["content"], str)),
+            "",
+        )
+        text = provider.complete(augmented_system, last_user, max_tokens=4096, temperature=0.4)
+        draft, question = _extract_draft(text)
+
+        if draft:
+            conversation_turns = "\n".join(
+                m["content"] for m in messages
+                if m["role"] == "user" and isinstance(m["content"], str)
+            )
+            passes, reason = validate_draft(draft, conversation_turns, api_key)
+            if not passes and question_retries < _MAX_QUESTION_RETRIES:
+                question_retries += 1
+                messages.append({"role": "assistant", "content": text})
+                messages.append({"role": "user", "content": (
+                    f"[DRAFT JUDGE: draft rejected — {reason}. "
+                    f"Rewrite using only what was said in this conversation. "
+                    f"Write DRAFT on its own line, then the paragraph.]"
+                )})
+                continue
+            return draft, ""
+
+        if question and api_key:
+            passes, reason = validate_question(
+                question, judge_context, api_key,
+                library_results=library_results,
+            )
+            if not passes:
+                import sys
+                print(f"[JUDGE BLOCKED] {reason!r}\n  Q: {question}", file=sys.stderr)
+                if question_retries < _MAX_QUESTION_RETRIES:
+                    question_retries += 1
+                    messages.append({"role": "assistant", "content": question})
+                    messages.append({"role": "user", "content": (
+                        f"[JUDGE: question rejected — {reason}. "
+                        f"Ask a different question about a specific decision, "
+                        f"constraint, consequence, or who depended on the work.]"
+                    )})
+                    continue
+                else:
+                    return None, ""
+
+        return None, question or ""
+
+
+def _call_model(client, model: str, messages: list[dict], system: str = BUILD_SYSTEM, use_tools: bool = True) -> object:
     """Single model call — separated so the retry loop can call it cleanly."""
     kwargs: dict = dict(
         model=model,
         max_tokens=4096,
         system=[{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}],
-        tools=_TOOLS,
         messages=messages,
     )
+    if use_tools:
+        kwargs["tools"] = _TOOLS
     if supports_temperature(model):
         kwargs["temperature"] = 0.4
     response = client.messages.create(**kwargs)
@@ -511,12 +615,22 @@ def qa_turn(
     all_paragraphs: list[Paragraph] | None = None,
     voyage_api_key: str = "",
     system: str = BUILD_SYSTEM,
+    use_tools: bool = True,
 ) -> tuple[str | None, str]:
     """One turn of the Q&A conversation. Handles tool calls internally.
     Questions are validated before being returned — bad questions are rejected
     and regenerated up to _MAX_QUESTION_RETRIES times.
-    Returns (draft_or_none, question_or_signal)."""
+    Returns (draft_or_none, question_or_signal).
+
+    use_tools: when False, search_library is not registered at all. Use when
+    the caller wants to suppress library search entirely (e.g. skip_library_search).
+    """
     from coverletter.question_judge import validate_question, validate_draft
+    from coverletter.provider import parse_model
+
+    provider_name, _ = parse_model(model)
+    if provider_name != "anthropic":
+        return _qa_turn_no_tools(history, api_key, model, all_paragraphs, voyage_api_key, system)
 
     client = anthropic.Anthropic(api_key=api_key)
     messages = list(history)
@@ -530,7 +644,7 @@ def qa_turn(
     )[:300]
 
     while True:
-        response = _call_model(client, model, messages, system=system)
+        response = _call_model(client, model, messages, system=system, use_tools=use_tools)
 
         if response.stop_reason == "tool_use":
             tool_results = []
@@ -586,22 +700,27 @@ def qa_turn(
                     continue
                 return draft, ""
 
-            # Validate the question before surfacing it
-            if question and question_retries < _MAX_QUESTION_RETRIES:
+            # Validate the question before surfacing it — always validate, never leak a bad question
+            if question and api_key:
                 passes, reason = validate_question(
                     question, judge_context, api_key,
                     library_results=last_library_results,
                 )
                 if not passes:
-                    question_retries += 1
-                    # Inject rejection internally — user never sees the bad question
-                    messages.append({"role": "assistant", "content": question})
-                    messages.append({"role": "user", "content": (
-                        f"[JUDGE: question rejected — {reason}. "
-                        f"Ask a different question about a specific decision, "
-                        f"constraint, consequence, or who depended on the work.]"
-                    )})
-                    continue  # retry without returning
+                    import sys
+                    print(f"[JUDGE BLOCKED] {reason!r}\n  Q: {question}", file=sys.stderr)
+                    if question_retries < _MAX_QUESTION_RETRIES:
+                        question_retries += 1
+                        messages.append({"role": "assistant", "content": question})
+                        messages.append({"role": "user", "content": (
+                            f"[JUDGE: question rejected — {reason}. "
+                            f"Ask a different question about a specific decision, "
+                            f"constraint, consequence, or who depended on the work.]"
+                        )})
+                        continue  # retry
+                    else:
+                        # Retries exhausted — suppress the bad question, surface nothing
+                        return None, ""
 
             return None, question or ""
 
@@ -664,6 +783,55 @@ def _looks_like_question(text: str) -> bool:
     return False
 
 
+_EMPLOYER_SIGNALS = _re.compile(
+    r"\b(at |while at |worked at |working at |my role at |my job at |"
+    r"britbox|universe|unite here|nyu|new york university|campaign|"
+    r"employer|company i worked|my employer|the company)\b",
+    _re.IGNORECASE,
+)
+_PERSONAL_SIGNALS = _re.compile(
+    r"\b(personal project|side project|on my own time|outside of work|"
+    r"hobby|for fun|for myself|not for an employer|not at a job)\b",
+    _re.IGNORECASE,
+)
+# Signals that the text is describing a specific project/system/engagement —
+# only if these are present does employer context actually matter.
+_PROJECT_SIGNALS = _re.compile(
+    r"\b(built|developed|owned|designed|architected|shipped|deployed|"
+    r"pipeline|system|tool|app|application|platform|service|workflow|"
+    r"database|api|pipeline|dashboard|model|integration|infrastructure|"
+    r"project|codebase|repo|script|library|framework)\b",
+    _re.IGNORECASE,
+)
+
+
+def needs_metadata_clarification(text: str) -> str | None:
+    """Return a boilerplate clarification question if employment context is unclear.
+
+    Costs nothing — purely deterministic. Returns None if:
+    - Context is already clear (has employer or personal signals), OR
+    - Text doesn't describe a specific project/engagement (ways of being,
+      working approaches, general professional observations — no metadata needed)
+
+    The returned string is ready to print directly to the user.
+    """
+    # Only ask if the text is describing a specific project or engagement
+    if not _PROJECT_SIGNALS.search(text):
+        return None  # freewriting about approach, philosophy, ways of being — skip
+
+    has_employer = bool(_EMPLOYER_SIGNALS.search(text))
+    has_personal = bool(_PERSONAL_SIGNALS.search(text))
+
+    if has_employer or has_personal:
+        return None  # clear enough — don't ask
+
+    # Project described but no context signal — ask the boilerplate question
+    return (
+        "Is this a personal project or work you did at an employer? "
+        "If an employer, which one?"
+    )
+
+
 def force_draft(
     history: list[dict],
     api_key: str,
@@ -700,18 +868,24 @@ def _build_initial_context(
     job_description: str | None = None,
     gap_description: str | None = None,
     framing_context: str = "",
+    resume_context: str = "",
+    use_tools: bool = True,
 ) -> str:
     """Build initial Q&A context. Framing context (experience notes + angle inventory)
-    is injected first so the agent targets missing angles with grounded questions."""
+    is injected first so the agent targets missing angles with grounded questions.
+    Resume context is injected as established fact — coach must not re-ask what it states."""
     parts: list[str] = []
     if framing_context:
         parts.append(framing_context)
+    if resume_context:
+        parts.append(f"RESUME BLOCK — treat as established fact, do not re-ask:\n{resume_context}")
     if gap_description:
         parts.append(f"JD gap to address: {gap_description}")
     if job_description:
         parts.append(f"Job description excerpt:\n{job_description[:600]}")
     parts.append(f"Topic to explore: {topic}")
-    parts.append("Use the search_library tool now to check what is already written about this topic before asking any questions.")
+    if use_tools:
+        parts.append("Use the search_library tool now to check what is already written about this topic before asking any questions.")
     return "\n\n".join(parts)
 
 

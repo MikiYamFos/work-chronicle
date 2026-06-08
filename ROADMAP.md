@@ -2,6 +2,40 @@
 
 ## Recently shipped
 
+### Provider expansion + gap-driven build mode (May 2026)
+
+**CohereProvider** — generation (`command-r-plus`), embeddings (`embed-v4.0`), and
+reranking (`rerank-v3.5`) on one key. The reranker is a cross-encoder — sees the full
+(query, document) pair, not just vector distance. Wired as Stage 3 in the claim
+retrieval pipeline (`_category_aware_retrieval`). Canadian provider.
+
+**BGEM3Provider** — local hybrid dense+sparse embeddings via `FlagEmbedding`. BGE-M3
+outputs both dense vectors (semantic) and sparse vectors (lexical, BM25-like) from one
+model. `hybrid_scores()` fuses them: `alpha * dense_cosine + (1-alpha) * sparse_dot`.
+Activated via `EMBED_MODEL=bge-m3` — independent of generation provider. No API key.
+Requires `uv add FlagEmbedding` and ~2GB model download on first use.
+
+**Track 1 `embed_prefilter` now fully provider-aware**: BGE-M3 hybrid path, provider-
+native dense path, Voyage, BM25 — in priority order. All three call sites in cli.py
+updated. `EMBED_MODEL` env var selects embedding provider independently.
+
+**Resume threading into build/QA**: `coverletter build --resume` passes the resume to
+the Q&A coach. Coach treats resume bullets as established fact — asks about HOW/WHY/
+WHAT CHANGED, not what the resume already states. Also flows through gap-fill sessions
+during `coverletter generate`.
+
+**Gap-driven build mode** (`coverletter build --jd`): takes a JD, uses the claims DB
+to score which argument categories are covered and which aren't (embed JD → cosine
+against category_embeddings and claim embeddings — no LLM scan of the library). Shows
+covered/gap breakdown. One small LLM call generates a concrete build prompt per gap.
+Walks through targeted Q&A. Syncs new paragraphs to DB after each accepted paragraph.
+
+**`embed_query` moved to `db.py`**: was a private function in `outline.py`. Now public
+in `db.py`. `outline._embed_query` delegates to it. No more cross-module private imports.
+
+**`OPENAI_EMBED_MODEL` env var**: lets OpenAI-compat hosts (Regolo, local) specify
+which embedding model to use. Defaults to `text-embedding-3-small` for OpenAI proper.
+
 ### Gap loop improvements (May 2026)
 
 - **`all` option**: type `all` or `a` at the gap selection prompt to address every actionable gap in sequence, instead of entering numbers individually
@@ -27,83 +61,124 @@ The gap-to-experience matcher in `experiences.py` was matching on stop words, ca
 - `force_draft()` now sends a comprehensive rules reminder covering first-sentence structure, no-invention constraint, voice preservation, and banned constructs.
 - The 120-word "rich answer" threshold was removed — it was an arbitrary cap that forced premature drafts on answers that weren't yet complete.
 
+### Q&A system overhaul (June 2026)
+
+**BUILD_SYSTEM refactored to dynamic gap-type blocks** (`build.py:build_system_prompt()`). The old monolithic prompt mixed rules for competence gaps, production gaps, impact gaps, resume context, and framing context — the model could not differentiate which rules applied and generated conflicting behavior. Now assembled dynamically:
+
+- `_BUILD_CORE` — always included: paragraph rules, drafting triggers, banned constructs, voice rules
+- `_BUILD_TOOLS` — injected only when library search is active (Anthropic tool-calling path)
+- `_BUILD_GAP_COMPETENCE` — injected for tool/skill gaps: ask what was BUILT, never ask about breakage
+- `_BUILD_GAP_PRODUCTION` — injected for ownership/system design gaps: failure questions appropriate
+- `_BUILD_GAP_IMPACT` — injected for business outcome gaps: ask what became POSSIBLE, not what broke
+- `_BUILD_CONTEXT_RESUME` — injected when resume is present: treat bullets as established fact
+- `_BUILD_CONTEXT_FRAMING` — injected when experience framing is present: ask about missing angles only
+
+`_classify_gap(gap_description)` maps alignment gap descriptions to the correct block using keyword signals. Exactly one gap block per session. No stale `BUILD_SYSTEM` references remain in `cli.py` — all paths use `build_system_prompt()`. Guarded by `tests/test_build_system.py`.
+
+**Static opening question** — no LLM call before the user types anything. Previously the system made a full model call (and incurred cost) to generate the first question before the user had entered a word. Now shows a static prompt immediately. Model runs only after the user responds.
+
+**Deterministic metadata clarification** — free, zero cost. After the user's first response, a Python check (`needs_metadata_clarification()` in `build.py`) determines whether employment context is clear. If a specific project or system is described but no employer or personal project signal is present, a boilerplate question fires immediately with no LLM call: "Is this a personal project or work you did at an employer? If an employer, which one?" Does not fire for freewriting about ways of being, working approaches, or general observations — only when a specific project is described.
+
+**prompt_toolkit multiline input** — `_read_multiline()` in `cli.py` was documented as using prompt_toolkit but actually used `input()`, which is capped at 1023 chars on macOS by the kernel's canonical input mode. Now actually uses prompt_toolkit with double-Enter-to-submit behavior. All free-form text entry points in `cli.py` use `_read_multiline()`. Guarded by `tests/test_input_safety.py`.
+
+**Question judge improvements** (`question_judge.py`):
+- Metadata questions (`_METADATA_PATTERNS`) are whitelisted — always pass both pattern filter and LLM judge, never blocked. These establish required paragraph metadata (personal project vs employer, which company) at zero cost.
+- Self-reflection distinction: questions that open a topic for exploration ("what did this teach you about governance?") are rejected. Questions that ask what specifically CHANGED or SURPRISED — producing concrete answers — are allowed.
+- "What would you do differently?" hard-blocked: cover letter writing defends decisions, never revisits them.
+- Rejected questions logged to stderr as `[JUDGE BLOCKED]` with reason and full question text.
+
+**Resume suppressed when user declines library match** — when the user declines a library match to discuss a different experience (`skip_library_search=True`), the resume is no longer passed to the coach. Previously the resume caused the coach to anchor questions to projects already documented, defeating the purpose of the skip.
+
 ---
 
-## Issue #1 — Multi-provider support
+## Issue #1 — Multi-provider support *(partially shipped)*
 
-The tool is currently Anthropic-only. Every API call uses the Anthropic SDK directly,
-model aliases map to Claude model strings, and prompt caching uses Anthropic-specific
-`cache_control` message blocks. This is the top priority to fix.
+### Understanding the two non-negotiables
 
-### Why this is hard
+**Prompt caching** is not optional. The paragraph library (12k+ tokens) is sent on
+every API call. Without caching, a full session costs 3–5× more. Any provider that
+can't cache is unviable for regular use.
 
-Prompt caching isn't a detail — it's what makes the economics work. The paragraph
-library (12k+ tokens) gets sent on every API call in a session. Caching it after the
-first call drops subsequent call costs to ~10% (Anthropic) or ~50% (OpenAI automatic).
-Without caching, a full letter session costs 3–5x more.
+**Semantic embeddings** are not optional for quality. BM25 keyword fallback works
+but is noticeably worse for paragraph selection. Provider-native embeddings (or Voyage
+as a standalone service) are required for the tool to work well.
 
-A generic wrapper like LiteLLM doesn't solve this — its caching abstraction is for
-full response memoization, not provider-level prompt prefix caching. Each provider
-exposes caching differently and needs its own implementation.
+### What's shipped
 
-### Target providers
+**Provider abstraction** (`coverletter/provider.py`) — `AnthropicProvider`,
+`MistralProvider`, and `OpenAIProvider` implement `complete()`, `stream()`, and
+`embed()`. `get_provider(model, api_key)` returns the right one.
 
-**Mistral**
-- Explicit caching API, most similar to Anthropic's model
-- Strong writing quality, competitive pricing
-- European data residency — meaningful for users with GDPR concerns
-- Implement second (after Anthropic) to stress-test the abstraction
+**Model naming**: `provider/model-name` prefix. Bare names default to Anthropic.
+Aliases: `mistral-large`, `mistral-small`, `gpt-4o`, `gpt-4o-mini` etc.
 
-**Cohere**
-- Interesting because it collapses two dependencies into one: Command R+ for
-  generation AND Cohere embeddings to replace Voyage AI
-- Currently the tool requires two API keys (Anthropic + Voyage). Cohere users
-  would need only one
-- Retrieval-trained models are relevant to how this tool works (library search
-  drives paragraph selection)
+**Config**: reads the right API key for the active provider. Never requires keys
+for providers you're not using.
 
-**Ollama**
-- Local inference — zero API cost, nothing leaves the machine
-- Career material is sensitive; some users will care a lot about this
-- Caching works differently (context stays in memory, keep-alive handles it)
-- OpenAI-compatible locally, no auth
-- The most architecturally different provider — implement third to find
-  abstraction gaps before adding more
+**Extraction and judging**: `_fast_model_for()` maps each provider to its cheapest
+model — Haiku for Anthropic, `mistral-small` for Mistral, `gpt-4o-mini` for OpenAI.
 
-**Together AI / Fireworks AI**
-- Hosts open source models (Llama, Mixtral, etc.) at low cost
-- Good fit for users who want model transparency or want to run open weights
-- To evaluate: writing quality for this specific task (cover letter generation
-  requires nuance that not all open source models handle well)
+**Library building** (`coverletter build`, `reflect`, `intake`): non-Anthropic
+providers use pre-search injection instead of tool calling. Same quality signal.
 
-### Planned architecture
+**Mistral is now fully self-contained**:
+- Generation via `mistral-large-latest` or `mistral-small-latest`
+- Caching via `cache_key` parameter — **90% discount** on cached tokens (same as Anthropic)
+- Embeddings via `mistral-embed` ($0.10/1M tokens) — no Voyage key needed
+- One API key covers everything
 
-A thin `Provider` protocol that each provider implements:
+**OpenAI is largely self-contained**:
+- Generation via `gpt-4o` or `gpt-4o-mini`
+- Caching automatic — **50% discount**, activates for prompts ≥1024 tokens with no
+  code changes required. Our prompts are structured correctly (system first, stable
+  before dynamic) so cache hits happen automatically.
+- Embeddings via `text-embedding-3-small` ($0.02/1M tokens) — no Voyage key needed
+- One API key covers everything
 
-```python
-class Provider(Protocol):
-    def complete(self, system: str, messages: list, tools: list | None) -> Response: ...
-    def stream(self, system: str, messages: list) -> Iterator[str]: ...
-    def embed(self, texts: list[str]) -> list[list[float]]: ...  # replaces Voyage
-    def supports_caching(self) -> bool: ...
-    def wrap_cached(self, content: str) -> dict: ...  # provider-specific cache block
-```
+**OpenAI-compatible providers work via `OPENAI_BASE_URL`**: any OpenAI-compatible
+host can be targeted without code changes. Set `OPENAI_BASE_URL` in `.env`:
+- **Regolo.ai** — Italian, 100% green energy, zero data retention, GDPR by design,
+  open-source models only (Llama, Mistral weights). Transparent token pricing.
+- **Hugging Face Inference** — open-source community, aggregates 15+ inference
+  partners, free tier, embeddings via nomic-embed-text.
 
-Each provider handles caching in its own way:
-- **Anthropic**: inject `cache_control: {"type": "ephemeral"}` on library block
-- **Mistral**: explicit cache API call before session, reference by ID
-- **OpenAI**: automatic prefix caching, just structure prompts correctly (library first)
-- **Ollama**: keep-alive, no explicit caching needed
-- **Others**: degrade gracefully — send full context, costs more, still works
+**Voyage AI** remains the default embedding provider for Anthropic users. It is a
+separate key but reliable and cheap ($0.06/1M tokens). Anthropic users who don't want
+a second key can switch to Mistral or OpenAI for a single-key stack.
 
-### Also needed
+### Caching status by provider
 
-- The question judge is hardcoded to `claude-haiku-4-5-20251001` — needs to become
-  a configurable cheap model per provider
-- Voyage AI embedding dependency needs to become optional with a provider-native
-  fallback (Cohere embeddings, Ollama embeddings, or BM25 keyword fallback as last resort)
-- `COVERLETTER_MODEL` env var would accept provider-prefixed model names:
-  `anthropic/claude-sonnet-4-6`, `mistral/mistral-large-latest`, `ollama/llama3.3`, etc.
+| Provider | Caching mechanism | Discount | Status |
+|---|---|---|---|
+| Anthropic | `cache_control` on system prompt | 90% | ✓ Implemented |
+| Mistral | `cache_key` parameter | 90% | ✓ Implemented |
+| OpenAI | Automatic prefix cache | 50% | ✓ Works automatically |
+| Regolo.ai | Via hosted model (unknown discount) | Unknown | Via OpenAI provider |
+| HuggingFace | Unknown | Unknown | Via OpenAI provider |
+| Ollama | Keep-alive (local, free) | 100% (no API cost) | Not yet implemented |
+
+### Embedding + reranking status by provider
+
+| Provider | Embed (Track 1+2) | Model | Price | Rerank | Status |
+|---|---|---|---|---|---|
+| Anthropic | Via Voyage | voyage-3-lite | $0.06/1M | — | ✓ Works |
+| Mistral | Same key | mistral-embed | $0.10/1M | — | ✓ Both tracks |
+| OpenAI | Same key | text-embedding-3-small | $0.02/1M | — | ✓ Both tracks |
+| Cohere | Same key | embed-v4.0 | $0.10/1M | rerank-v3.5 | ✓ Implemented (untested) |
+| BGE-M3 | Local, hybrid | BAAI/bge-m3 | Free | — | ✓ Both tracks (untested) |
+| Voyage AI | Standalone | voyage-3-lite | $0.06/1M | — | ✓ All providers |
+| Ollama | Local | nomic-embed-text | Free | — | Not yet implemented |
+
+### What's still needed
+
+**Ollama**: local inference, nothing leaves the machine, zero API cost. Critical for
+privacy-sensitive users. Uses nomic-embed-text for embeddings. The most architecturally
+different provider — keep-alive for context instead of stateless API calls. Implement
+after the tool is more stable.
+
+**Cohere + BGE-M3 real-world testing**: both providers are implemented but untested
+against real keys / real model downloads. Cohere `stream()` field names may need
+adjustment. BGE-M3 `hybrid_scores()` logic is correct by inspection.
 
 ---
 

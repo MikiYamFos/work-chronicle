@@ -35,101 +35,99 @@ if TYPE_CHECKING:
 
 CANONICAL_ANGLES: dict[str, str] = {
     "through-line": (
-        "A broad narrative about professional identity across domains — who I am as an engineer "
-        "and what drives my work, connecting different industries and roles into a coherent story "
-        "about what I consistently bring and what I find most meaningful."
+        "The connecting thread across different roles, employers, or domains that makes a career "
+        "legible as a single identity rather than a list of jobs. What this person reliably brings "
+        "regardless of context, and the intellectual or professional commitments that hold across it."
     ),
     "autonomy": (
-        "Working solo or far beyond my title in under-resourced environments with high expectations "
-        "and minimal direction — being the only person responsible for a job function, operating "
-        "through ambiguity without waiting for someone to define the path."
+        "The condition of determining the path without being told how. Not just executing "
+        "independently on a defined task, but being the person who figures out what needs to be "
+        "done when no one else is going to — responsible for the function, not just for completing "
+        "work within it."
     ),
     "ownership": (
-        "End-to-end ownership of a specific system, pipeline, or product — I designed it, built it, "
-        "maintained it, and was accountable for its correctness and reliability in production."
+        "End-to-end accountability for a specific system, pipeline, product, or function. The "
+        "person who designed it, built it, and remained answerable for whether it worked correctly "
+        "in production — not a contributor to something someone else held."
     ),
     "business-impact": (
-        "Concrete, measurable outcomes for the business — subscriber numbers the CEO reads, "
-        "content decisions driven by viewership data, campaign results, revenue metrics. "
-        "What the work produced that the organization actually needed and acted on."
+        "Work whose outputs mattered outside of engineering — decisions made, strategy changed, "
+        "performance measured, costs reduced, revenue affected. The work was not neutral to the "
+        "organization's interests; it moved something."
     ),
     "system-design": (
-        "Architectural decisions that shaped how a system works — grain choices, schema design, "
-        "pipeline structure, partitioning strategy, validation frameworks, session-boundary logic. "
-        "Making the technical calls that determined how data flowed and how the system held together."
+        "The architectural calls that determined how a system works — structure, data flow, grain, "
+        "component relationships, validation approach. Decisions about what got built and why, not "
+        "decisions about how to implement what was already specified."
     ),
     "requirements-translation": (
-        "Working out what was actually needed before building anything — gathering requirements from "
-        "non-technical stakeholders, translating fuzzy asks into data models, doing the specification "
-        "work that the engineering depended on, interviewing people who had been doing their jobs "
-        "for decades and understanding their processes well enough to translate them into data structures."
+        "The work of determining what was actually needed before anything was built. Gathering "
+        "requirements from non-technical stakeholders, identifying the gap between what people said "
+        "and what the system should do, and producing something buildable from ambiguous "
+        "domain-specific asks."
     ),
     "compliance": (
-        "Handling legally sensitive or regulated data — union membership, health fund, dues records, "
-        "PII, HIPAA, infosec vetting, data retention decisions, role-based access control, governance "
-        "frameworks. Getting it wrong has legal or organizational consequences, not just technical ones."
+        "Work with regulated, legally sensitive, or access-controlled data where technical failure "
+        "has consequences that extend beyond the system — governance requirements, retention rules, "
+        "PII handling, access control, legal or organizational stakes that make correctness "
+        "mandatory rather than desirable."
     ),
     "technical-depth": (
-        "Deep mastery of a specific tool or technology — Spark, Redshift, dbt, Airflow, BigQuery, "
-        "Prefect, Elasticsearch, Snowflake, PySpark, Glue. Not just using the tool but understanding "
-        "its tradeoffs, failure modes, and how to optimize it under real production conditions at scale."
+        "Deep mastery of a specific tool, technology, or problem domain — not just facility with "
+        "it, but knowledge of how it behaves under pressure, where it breaks, what its tradeoffs "
+        "are, and how to get reliable production-grade output from it."
     ),
     "precision": (
-        "Exactness and accountability around numbers — data that has to be right, not approximately "
-        "right. The CFO reads these numbers. The grievance depends on this record. The campaign "
-        "outcome turns on this count. The engineering work serves that precision requirement directly."
+        "Work where correctness is a hard constraint rather than a best-effort target. Output that "
+        "feeds decisions with real stakes, records that must be exactly right. The accountability "
+        "for accuracy is personal and specific, not diffused across a team or softened by "
+        "approximation."
     ),
     "communication": (
-        "Communicating complex technical things clearly across varied audiences — non-technical "
-        "stakeholders, organizing staff, leadership, users, collaborators. Training people. "
-        "Writing documentation that reflects how work actually moves. Proactively surfacing "
-        "constraints and failure modes before anyone asked."
+        "Making complex or technical things legible to people who need to understand or act on "
+        "them — documentation others depend on, constraints surfaced proactively, requirements "
+        "gathered through the right questions, training that actually transferred knowledge."
     ),
     "leadership": (
-        "Directing projects, teams, or technical work — product ownership, sprint planning, "
-        "cutting tickets, setting priorities, running design reviews, making architectural calls "
-        "with authority. Organizing how the work gets done and keeping people oriented to it."
+        "Directing work beyond individual contribution — setting priorities, owning an initiative, "
+        "making calls others depend on, keeping a team or project oriented to what matters. "
+        "Organizing how work gets done, not just doing the work."
     ),
     "strategic-vision": (
-        "Personal projects built from a clear point of view about a problem worth solving — "
-        "Personal tools and applications built from a clear point of view about a problem "
-        "worth solving. The design rationale, the technical architecture, and the larger purpose."
+        "A considered rationale for why something was built the way it was — a clear point of view "
+        "about the problem, the approach, and what made this design the right one. The thinking "
+        "behind the artifact, not just the artifact."
     ),
     "resilience": (
-        "Staying with hard problems under pressure — rebuilding logic overnight, working until "
-        "midnight to hit a deadline, not putting something down until it works, absorbing "
-        "failures and getting the system back online. Reliability when the stakes are high."
+        "Staying with hard problems through setbacks, pressure, or failure without walking away or "
+        "becoming unreliable. The capacity to absorb difficulty and remain dependable when the "
+        "stakes make it harder to be."
     ),
     "problem-solving": (
-        "Approaching undefined or broken situations analytically — diagnosing root causes, "
-        "working backwards from what someone needs to understand, figuring out what the problem "
-        "actually is before trying to solve it. Thriving when the path is not obvious."
+        "Approaching broken, undefined, or ambiguous situations by diagnosing what is actually "
+        "happening before attempting a fix — working backward from symptoms to root cause, finding "
+        "a path when the path is not given."
     ),
     "problem-definition": (
-        "Identifying what the actual problem was before anyone else had framed it correctly — "
-        "recognizing that the stated requirement was a symptom, not the root cause, and doing "
-        "the upstream work to redefine the question itself. I figured out what we were solving "
-        "before we built anything, and that reframing changed what got built."
+        "Identifying what the real problem is before anyone else has framed it correctly. "
+        "Recognizing that a stated requirement is a symptom of something upstream, and doing the "
+        "work to reframe what needs to be solved so that what gets built is the right thing — not "
+        "just a correct answer to the wrong question."
     ),
     "trust": (
-        "Being the person whose numbers had to be right — not approximately right, not "
-        "directionally correct, but exact and defensible. The output fed executive decisions, "
-        "campaign results, or public-facing products, and the accountability for its accuracy "
-        "was mine personally, not shared or buffered. The number had to be right and I made "
-        "sure it was."
+        "The professional property of being someone whose output others depend on without needing "
+        "to check it — earned through consistent accuracy, transparency about uncertainty, and a "
+        "track record of catching problems before they become crises."
     ),
     "recovery": (
-        "Stepping into something already broken, wrong, or on fire and making it right — "
-        "diagnosing a data failure in production, rebuilding a corrupted migration, correcting "
-        "a reporting error before it became a crisis, staying with the problem until the system "
-        "was back to a state I would stand behind. Includes understanding why it broke and "
-        "building the safeguards that prevented recurrence."
+        "Taking ownership of a situation that arrived broken. Diagnosing what went wrong, "
+        "executing a fix under pressure, and understanding the root cause well enough to prevent "
+        "recurrence — not inheriting a clean system but making a broken one right."
     ),
     "scope-expansion": (
-        "Doing significantly more than my title or role formally required — owning systems, "
-        "functions, or decisions that belonged above my level, filling gaps nobody else was "
-        "filling, covering scope that was not in my job description but needed to happen and "
-        "I made it happen. I did the job of a more senior person without the title or support."
+        "Carrying work that formally belonged above one's level — owning decisions, systems, or "
+        "functions that exceeded the defined role, filling gaps no one else was filling, and "
+        "delivering at a scope a more senior person would typically hold."
     ),
 }
 
@@ -333,6 +331,33 @@ CREATE TABLE IF NOT EXISTS category_embeddings (
     computed_at     TEXT DEFAULT (datetime('now'))
 );
 
+-- JD embedding cache — keyed by content hash so the same JD is never re-embedded
+-- across generate, outline, blurb, build --jd regardless of which flow runs first.
+-- company_values: extracted values/mission from the JD (NULL if none found or not yet extracted)
+CREATE TABLE IF NOT EXISTS resume_extractions (
+    id           INTEGER PRIMARY KEY,
+    file_hash    TEXT NOT NULL,
+    extracted_at TEXT DEFAULT (datetime('now')),
+    version      INTEGER NOT NULL DEFAULT 1,
+    claim_count  INTEGER DEFAULT 0,
+    notes        TEXT
+);
+
+CREATE TABLE IF NOT EXISTS jd_versions (
+    id             INTEGER PRIMARY KEY,
+    jd_name        TEXT NOT NULL,
+    file_hash      TEXT NOT NULL,
+    saved_at       TEXT DEFAULT (datetime('now')),
+    change_summary TEXT
+);
+
+CREATE TABLE IF NOT EXISTS jd_embedding_cache (
+    jd_hash         TEXT PRIMARY KEY,
+    embedding       BLOB NOT NULL,
+    company_values  TEXT,
+    cached_at       TEXT DEFAULT (datetime('now'))
+);
+
 CREATE INDEX IF NOT EXISTS idx_para_hash          ON paragraphs(text_hash);
 CREATE INDEX IF NOT EXISTS idx_para_source        ON paragraphs(source_file, active);
 CREATE INDEX IF NOT EXISTS idx_para_type          ON paragraphs(type, active);
@@ -366,6 +391,160 @@ def _cosine(a: list[float], b: list[float]) -> float:
     return dot / (na * nb) if na and nb else 0.0
 
 
+def embed_query(
+    text: str,
+    voyage_api_key: str,
+    provider: "object | None" = None,
+) -> "list[float] | None":
+    """Embed a query string. Tries provider-native embeddings first, then Voyage, then None."""
+    if provider is not None:
+        from coverletter.provider import Provider as ProviderBase
+        if isinstance(provider, ProviderBase) and provider.supports_embed():
+            result = provider.embed([text], input_type="query")
+            if result:
+                return result[0]
+
+    if voyage_api_key:
+        try:
+            import voyageai  # type: ignore
+            client = voyageai.Client(api_key=voyage_api_key)
+            result = client.embed([text], model="voyage-3-lite", input_type="query")
+            return result.embeddings[0]
+        except Exception:
+            pass
+
+    return None
+
+
+def get_or_embed_jd(
+    conn: "sqlite3.Connection",
+    jd_text: str,
+    voyage_api_key: str,
+    provider: "object | None" = None,
+) -> "list[float] | None":
+    """Return a JD embedding, using the cache when available.
+
+    Checks jd_embedding_cache by content hash first. On a cache miss, embeds
+    and stores the result so subsequent calls (generate → outline → blurb on
+    the same JD) skip re-embedding entirely.
+    """
+    jd_hash = _hash(jd_text)
+    row = conn.execute(
+        "SELECT embedding FROM jd_embedding_cache WHERE jd_hash = ?", (jd_hash,)
+    ).fetchone()
+    if row and row["embedding"]:
+        try:
+            return json.loads(row["embedding"])
+        except Exception:
+            pass
+
+    vec = embed_query(jd_text, voyage_api_key, provider)
+    if vec is not None:
+        conn.execute(
+            "INSERT OR REPLACE INTO jd_embedding_cache (jd_hash, embedding) VALUES (?, ?)",
+            (jd_hash, json.dumps(vec).encode()),
+        )
+        conn.commit()
+    return vec
+
+
+def gap_library_coverage(
+    conn: "sqlite3.Connection",
+    gaps: "list[str]",
+    voyage_api_key: str,
+    embed_provider: "object | None" = None,
+    threshold: float = 0.45,
+) -> "set[int]":
+    """Return indices (0-based) of gaps that have matching claims in the DB.
+
+    Embeds all gaps in one batch call. Loads all claim embeddings once.
+    Returns the set of gap indices where at least one claim scores above threshold.
+    Falls back to empty set if no embeddings are available.
+    """
+    if not gaps:
+        return set()
+
+    # Load claim embeddings once
+    rows = conn.execute(
+        "SELECT embedding FROM claims WHERE embedding IS NOT NULL"
+    ).fetchall()
+    if not rows:
+        return set()
+
+    claim_vecs: list[list[float]] = []
+    for row in rows:
+        try:
+            claim_vecs.append(json.loads(row["embedding"]))
+        except Exception:
+            pass
+    if not claim_vecs:
+        return set()
+
+    # Embed all gaps in one call
+    if embed_provider is not None:
+        from coverletter.provider import Provider as _P
+        if isinstance(embed_provider, _P) and embed_provider.supports_embed():
+            gap_vecs = embed_provider.embed(gaps, input_type="query")
+        else:
+            gap_vecs = None
+    else:
+        gap_vecs = None
+
+    if gap_vecs is None and voyage_api_key:
+        try:
+            import voyageai  # type: ignore
+            client = voyageai.Client(api_key=voyage_api_key)
+            gap_vecs = client.embed(gaps, model="voyage-3-lite", input_type="query").embeddings
+        except Exception:
+            gap_vecs = None
+
+    if not gap_vecs:
+        return set()
+
+    covered: set[int] = set()
+    for i, gap_vec in enumerate(gap_vecs):
+        for claim_vec in claim_vecs:
+            if _cosine(gap_vec, claim_vec) >= threshold:
+                covered.add(i)
+                break
+    return covered
+
+
+def get_or_company_values(
+    conn: "sqlite3.Connection",
+    jd_text: str,
+    api_key: str,
+    model: str,
+) -> "str | None":
+    """Return company values/mission extracted from the JD, using cache when available.
+
+    Values are extracted once per unique JD and stored alongside the embedding.
+    Returns None if the JD contains no values/mission content.
+    """
+    jd_hash = _hash(jd_text)
+
+    row = conn.execute(
+        "SELECT company_values FROM jd_embedding_cache WHERE jd_hash = ?", (jd_hash,)
+    ).fetchone()
+
+    if row is not None:
+        # Row exists — return cached value (may be NULL meaning "no values found")
+        return row["company_values"]
+
+    # No cache entry yet — extract and store
+    from coverletter.jd import extract_company_values
+    values = extract_company_values(jd_text, api_key, model)
+    # Store even if None — records that extraction ran so we don't repeat it
+    conn.execute(
+        """INSERT INTO jd_embedding_cache (jd_hash, embedding, company_values)
+           VALUES (?, ?, ?)
+           ON CONFLICT(jd_hash) DO UPDATE SET company_values = excluded.company_values""",
+        (jd_hash, b"", values),
+    )
+    conn.commit()
+    return values
+
+
 # ---------------------------------------------------------------------------
 # DB lifecycle
 # ---------------------------------------------------------------------------
@@ -373,16 +552,79 @@ def _cosine(a: list[float], b: list[float]) -> float:
 _CATEGORIES_PATH = Path(__file__).parent / "evals" / "argument_categories.json"
 
 
-def load_argument_categories() -> list[dict]:
-    """Load argument categories from the data file.
+def load_canonical_angles(custom_file: "Path | None" = None) -> dict[str, str]:
+    """Return CANONICAL_ANGLES merged with user overrides from custom_angles.toml.
 
-    Returns list of category dicts with keys: name, description, anchor_signals.
-    Adding a new category to argument_categories.json is all that's needed —
-    both the extraction and judge prompts read from this at runtime.
+    New keys in the user file add angles; matching keys override baseline descriptions.
+    Auto-detects custom_angles.toml in CWD when no path is given.
     """
-    if not _CATEGORIES_PATH.exists():
-        return []
-    return json.loads(_CATEGORIES_PATH.read_text(encoding="utf-8")).get("categories", [])
+    import copy
+    angles = copy.copy(CANONICAL_ANGLES)
+
+    if custom_file is None:
+        custom_file = Path.cwd() / "custom_angles.toml"
+
+    if not custom_file.exists():
+        return angles
+
+    try:
+        import tomllib
+    except ImportError:
+        try:
+            import tomli as tomllib  # type: ignore
+        except ImportError:
+            return angles
+
+    try:
+        data = tomllib.loads(custom_file.read_text(encoding="utf-8"))
+        for name, body in data.get("angles", {}).items():
+            if isinstance(body, dict) and "description" in body:
+                angles[name] = body["description"]
+    except Exception:
+        pass
+
+    return angles
+
+
+def load_argument_categories(custom_file: "Path | None" = None) -> list[dict]:
+    """Load argument categories merged with user overrides from custom_categories.toml.
+
+    Baseline comes from argument_categories.json. User file adds new categories or
+    overrides existing ones by name. Auto-detects custom_categories.toml in CWD.
+    """
+    baseline: list[dict] = []
+    if _CATEGORIES_PATH.exists():
+        try:
+            baseline = json.loads(_CATEGORIES_PATH.read_text(encoding="utf-8")).get("categories", [])
+        except Exception:
+            pass
+
+    if custom_file is None:
+        custom_file = Path.cwd() / "custom_categories.toml"
+
+    if not custom_file.exists():
+        return baseline
+
+    try:
+        import tomllib
+    except ImportError:
+        try:
+            import tomli as tomllib  # type: ignore
+        except ImportError:
+            return baseline
+
+    try:
+        data = tomllib.loads(custom_file.read_text(encoding="utf-8"))
+        custom_cats = data.get("categories", [])
+    except Exception:
+        return baseline
+
+    merged = {c["name"]: c for c in baseline}
+    for cat in custom_cats:
+        if "name" in cat:
+            merged[cat["name"]] = cat
+
+    return list(merged.values())
 
 
 _MIGRATIONS = [
@@ -392,6 +634,14 @@ _MIGRATIONS = [
     # Add is_anchor to support_items — 1 = load-bearing language that must reach generation.
     # 0 on existing rows.
     "ALTER TABLE support_items ADD COLUMN is_anchor INTEGER DEFAULT 0",
+    # Add source to claims — where the claim originated.
+    # 'library' = extracted from a library paragraph (existing rows backfilled).
+    # 'resume'  = extracted from resume PDF.
+    # Future sources add a new string value; no schema change needed.
+    "ALTER TABLE claims ADD COLUMN source TEXT NOT NULL DEFAULT 'library'",
+    # Add description_hash to category_embeddings so stale entries are detected
+    # automatically when CANONICAL_ANGLES definitions change.
+    "ALTER TABLE category_embeddings ADD COLUMN description_hash TEXT",
 ]
 
 
@@ -1115,45 +1365,72 @@ def stats(conn: sqlite3.Connection) -> dict:
 # Category embeddings — precomputed, stored in DB, recomputed only on change
 # ---------------------------------------------------------------------------
 
-def ensure_category_embeddings(conn: sqlite3.Connection, voyage_api_key: str) -> int:
+def ensure_category_embeddings(
+    conn: sqlite3.Connection,
+    voyage_api_key: str,
+    provider: "object | None" = None,
+) -> int:
     """Compute and store category description embeddings if missing or stale.
 
-    Compares stored category names against current categories file. Recomputes
-    only categories that are new or whose description has changed.
+    Tries provider-native embeddings first, then Voyage, then skips.
     Returns number of categories (re)computed.
     """
-    if not voyage_api_key:
-        return 0
-
     categories = load_argument_categories()
     if not categories:
         return 0
 
+    import hashlib
+
     existing = {
-        row["category_name"]: row["embedding"]
-        for row in conn.execute("SELECT category_name, embedding FROM category_embeddings").fetchall()
+        row["category_name"]: row["description_hash"]
+        for row in conn.execute(
+            "SELECT category_name, description_hash FROM category_embeddings"
+        ).fetchall()
     }
 
-    to_compute = [c for c in categories if c["name"] not in existing]
+    def _desc_hash(text: str) -> str:
+        return hashlib.sha256(text.encode()).hexdigest()[:16]
+
+    to_compute = [
+        c for c in categories
+        if c["name"] not in existing
+        or existing[c["name"]] != _desc_hash(c["description"])
+    ]
     if not to_compute:
         return 0
 
-    try:
-        import voyageai  # type: ignore
-        client = voyageai.Client(api_key=voyage_api_key)
-        descriptions = [c["description"] for c in to_compute]
-        result = client.embed(descriptions, model="voyage-3-lite", input_type="document")
-        for cat, vec in zip(to_compute, result.embeddings):
-            blob = json.dumps(vec).encode()
-            conn.execute(
-                "INSERT OR REPLACE INTO category_embeddings (category_name, embedding, computed_at) "
-                "VALUES (?, ?, datetime('now'))",
-                (cat["name"], blob),
-            )
-        conn.commit()
-        return len(to_compute)
-    except Exception:
+    descriptions = [c["description"] for c in to_compute]
+    vectors: list[list[float]] | None = None
+
+    # Try provider-native embeddings first
+    if provider is not None:
+        from coverletter.provider import Provider as ProviderBase
+        if isinstance(provider, ProviderBase) and provider.supports_embed():
+            vectors = provider.embed(descriptions, input_type="document")
+
+    # Fall back to Voyage
+    if vectors is None and voyage_api_key:
+        try:
+            import voyageai  # type: ignore
+            client = voyageai.Client(api_key=voyage_api_key)
+            result = client.embed(descriptions, model="voyage-3-lite", input_type="document")
+            vectors = result.embeddings
+        except Exception:
+            pass
+
+    if not vectors:
         return 0
+
+    for cat, vec in zip(to_compute, vectors):
+        blob = json.dumps(vec).encode()
+        conn.execute(
+            "INSERT OR REPLACE INTO category_embeddings "
+            "(category_name, embedding, computed_at, description_hash) "
+            "VALUES (?, ?, datetime('now'), ?)",
+            (cat["name"], blob, _desc_hash(cat["description"])),
+        )
+    conn.commit()
+    return len(to_compute)
 
 
 def get_category_embeddings(conn: sqlite3.Connection) -> dict[str, list[float]]:

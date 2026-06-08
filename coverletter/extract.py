@@ -42,6 +42,22 @@ from coverletter.db import load_argument_categories
 _EXTRACT_MODEL = "claude-haiku-4-5-20251001"
 _JUDGE_MODEL   = "claude-haiku-4-5-20251001"
 
+# Per-provider fast model for extraction and judging.
+# When a non-Anthropic model is passed to extraction, this maps to the
+# cheapest capable model for that provider.
+_FAST_MODELS: dict[str, str] = {
+    "anthropic": "claude-haiku-4-5-20251001",
+    "mistral": "mistral/mistral-small-latest",
+    "openai": "openai/gpt-4o-mini",
+}
+
+
+def _fast_model_for(model: str) -> str:
+    """Return the cheap/fast model for the same provider as `model`."""
+    from coverletter.provider import parse_model
+    provider, _ = parse_model(model)
+    return _FAST_MODELS.get(provider, _JUDGE_MODEL)
+
 # Judge accuracy threshold. Below this, warn that the judge prompt needs work.
 _JUDGE_ACCURACY_THRESHOLD = 0.80
 
@@ -272,6 +288,18 @@ plausible way to substantiate it with specific experiences, episodes, or pattern
 A claim is invalid if it is pure assertion with nothing behind it — no evidence could
 prove or disprove it because it is just words.
 
+━━━ USE THE SOURCE PARAGRAPH ━━━
+
+You are given the source paragraph alongside the claim. Use it.
+
+If a claim reads as broad or thin in isolation, check the source paragraph. If the source
+paragraph contains specific facts, episodes, or named work that could back the claim up,
+the claim is valid even if the claim text itself is general. The claim is a heading; the
+paragraph is the evidence beneath it.
+
+PASS claims where the source paragraph makes substantiation plausible, even if the claim
+alone would look thin.
+
 ━━━ VALID CLAIM TYPES ━━━
 
 1. EMPLOYER-SPECIFIC OWNERSHIP: Named employer, named deliverable, ownership verb.
@@ -283,11 +311,15 @@ prove or disprove it because it is just words.
 
 3. APPROACH / METHOD: Describes HOW this person consistently works.
    PASS: "I work backwards from what someone needs to understand into the data model"
-   FAIL: "I have strong skills in Python" — capability statement
+   PASS: "I built production Python while staying deeply thoughtful about non-technical users"
+        — broad, no employer named, but provable from the work history in the source paragraph
+   FAIL: "I have strong skills in Python" — names a tool, not a way of working
 
 4. DISPOSITION / CHARACTER: Who the person IS — backed by real work history.
    PASS: "I spent years caring for data where precision was non-negotiable — that's rare for a DE"
-   FAIL: "I care about data quality" — just words
+   PASS: "I am the kind of engineer who treats the question before the query as real work"
+        — broad, but the source paragraph likely contains specific episodes that prove it
+   FAIL: "I care about data quality" — says nothing a hiring manager could verify
 
 5. MOTIVATION / ORIENTATION: Specific about WHAT kind of work and WHY.
    PASS: "I am most excited by work where careful engineering makes organizations more accountable"
@@ -298,9 +330,10 @@ prove or disprove it because it is just words.
 {anchor_block}━━━ DEFINITELY INVALID ━━━
 
 INVALID — PURE CAPABILITY STATEMENT:
-   "I have experience with X", "I work comfortably in X", "I have strong skills in X"
+   Names a tool or skill but makes no claim about how the person works or what they built.
    FAIL: "I have experience with event-based data"
    FAIL: "I work comfortably in both Airflow and dbt"
+   Note: "I used Airflow to build X at Y" is valid — it names what was done, not just the tool.
 
 INVALID — SHOULD BE A SUPPORT ITEM:
    Describes what a SYSTEM did, not what the PERSON owned or decided.
@@ -315,10 +348,19 @@ INVALID — PURE SUMMARY / RESUME-SPEAK:
 INVALID — NEGATIVE FRAMING:
    "I have never needed X" — claims prove what was done/true, not what was avoided.
 
+━━━ ON ARGUMENT CATEGORIES ━━━
+
+The claim has been tagged with argument categories. Treat these as hints about what type
+of claim it is — not as a pass/fail test. Category tagging is imperfect. A valid claim
+tagged with the wrong category is still a valid claim. Do not fail a claim because its
+text doesn't perfectly match its tagged category. Judge the claim on its own merits using
+the core test above.
+
 ━━━ WHEN IN DOUBT: PASS ━━━
 
-If a claim is broad but provable, pass it. The human reviewer can reject it in the app.
-Only reject claims that are clearly unsubstantiatable or clearly wrong in type/structure.
+If a claim is broad but provable given the source paragraph, pass it. The human reviewer
+can reject it in the app. Only reject claims that are clearly unsubstantiatable — where
+no specific evidence could possibly back them up — or clearly wrong in type/structure.
 
 Reason through your assessment, then return ONLY the JSON:
 {{"pass": true}} or {{"pass": false, "reason": "one sentence naming the specific failure"}}
@@ -369,23 +411,8 @@ def _is_summary_conclusion(text: str) -> bool:
 # ---------------------------------------------------------------------------
 
 def _call_haiku(system: str, content: str, api_key: str, model: str, max_tokens: int = 256) -> str:
-    import anthropic
-    client = anthropic.Anthropic(api_key=api_key)
-    kwargs: dict = dict(
-        model=model,
-        max_tokens=max_tokens,
-        system=[{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}],
-        messages=[{"role": "user", "content": content}],
-    )
-    if supports_temperature(model):
-        kwargs["temperature"] = 0
-    response = client.messages.create(**kwargs)
-    record(
-        model, response.usage.input_tokens, response.usage.output_tokens,
-        cache_creation_tokens=getattr(response.usage, "cache_creation_input_tokens", 0) or 0,
-        cache_read_tokens=getattr(response.usage, "cache_read_input_tokens", 0) or 0,
-    )
-    return response.content[0].text.strip()
+    from coverletter.provider import get_provider
+    return get_provider(model, api_key).complete(system, content, max_tokens=max_tokens)
 
 
 def _extract_json_object(text: str) -> dict:
@@ -415,11 +442,12 @@ def _extract_from_paragraph(para_text: str, raw: str | None, api_key: str, model
     return _extract_json_object(raw_resp)
 
 
-def _judge_claim(claim_text: str, para_text: str, api_key: str) -> tuple[bool, str]:
+def _judge_claim(claim_text: str, para_text: str, api_key: str, model: str = _JUDGE_MODEL) -> tuple[bool, str]:
     """Run the judge on a single claim. Returns (passed, reason)."""
+    judge_model = _fast_model_for(model)
     prompt = f"Source paragraph:\n{para_text.strip()}\n\nClaim to judge:\n{claim_text}"
     try:
-        raw = _call_haiku(_JUDGE_SYSTEM, prompt, api_key, _JUDGE_MODEL, max_tokens=512)
+        raw = _call_haiku(_JUDGE_SYSTEM, prompt, api_key, judge_model, max_tokens=512)
         data = _extract_json_object(raw)
         if data.get("pass"):
             return True, ""
@@ -475,8 +503,8 @@ def _insert_one_claim(
     arg_cats_str = json.dumps(arg_cats) if arg_cats else None
 
     cur = conn.execute(
-        "INSERT INTO claims (text, source_para_hash, embedding, argument_categories) VALUES (?, ?, ?, ?)",
-        (text, para_hash, emb, arg_cats_str),
+        "INSERT INTO claims (text, source_para_hash, embedding, argument_categories, source) VALUES (?, ?, ?, ?, ?)",
+        (text, para_hash, emb, arg_cats_str, "library"),
     )
     claim_id = cur.lastrowid
 
@@ -737,6 +765,7 @@ def _judge_claims_concurrent(
     para_text: str,
     api_key: str,
     max_workers: int,
+    model: str = _JUDGE_MODEL,
 ) -> dict[int, tuple[bool, str]]:
     """Judge all claims in one paragraph concurrently. Returns {index: (passed, reason)}."""
     results: dict[int, tuple[bool, str]] = {}
@@ -745,7 +774,7 @@ def _judge_claims_concurrent(
         return results
 
     def _one(i: int, text: str) -> tuple[int, bool, str]:
-        passed, reason = _judge_claim(text, para_text, api_key)
+        passed, reason = _judge_claim(text, para_text, api_key, model)
         return i, passed, reason
 
     with ThreadPoolExecutor(max_workers=min(max_workers, len(eligible))) as pool:
@@ -781,7 +810,7 @@ def _process_paragraph_for_review(
             "Review the paragraph and consider rebuilding it with `coverletter build`."
         )
 
-    judge_results = _judge_claims_concurrent(data.get("claims", []), para_text, api_key, max_workers)
+    judge_results = _judge_claims_concurrent(data.get("claims", []), para_text, api_key, max_workers, model)
     return _build_review_entry(para_hash, para_text, role, section, raw, data, judge_results)
 
 
@@ -822,7 +851,7 @@ def _process_paragraph_for_insert(
         return para_hash, [], data.get("conclusion")
 
     judge_results = _judge_claims_concurrent(
-        [c for _, c in eligible], para_text, api_key, max_workers
+        [c for _, c in eligible], para_text, api_key, max_workers, model
     )
     # judge_results keys are 0..len(eligible)-1 (re-indexed inside _judge_claims_concurrent)
     approved = [claim for j, (_, claim) in enumerate(eligible) if judge_results.get(j, (True, ""))[0]]

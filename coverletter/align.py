@@ -113,9 +113,6 @@ GAPS
 One line per gap. Only real gaps — things the JD explicitly requires or prefers that the letter
 does not address.
 Format: ✗ [requirement] — [why it matters for this role]
-If a gap is addressed by a paragraph in the library above (even if not used in the current letter),
-append: (library: [N]) using the exact paragraph index. Only tag it if a specific paragraph
-genuinely covers that requirement — not just shares vocabulary with it.
 {seniority_gaps_section}{goal_alignment_section}
 Do not add encouragement, filler, or any sections beyond these {num_sections}.
 """
@@ -135,100 +132,6 @@ with one specific reason grounded in the JD and the candidate's goals.
 """
 
 
-def has_library_coverage(gap_text: str) -> bool:
-    """Return True if the gap text indicates the paragraph already exists in the library."""
-    return bool(re.search(r'\(library:', gap_text, re.IGNORECASE))
-
-
-_STOP_WORDS = {
-    "and", "or", "the", "a", "an", "in", "of", "for", "to", "with", "that",
-    "this", "it", "is", "are", "not", "as", "at", "by", "be", "but", "was",
-    "its", "on", "no", "how", "from", "has", "does", "does", "does", "also",
-    "role", "letter", "required", "explicitly", "addressed", "mentioned",
-    "named", "listed", "absent", "missing", "not", "only", "across",
-}
-
-
-def _significant_terms(text: str) -> list[str]:
-    """Extract meaningful terms from a gap description for library matching."""
-    words = re.findall(r"[a-z][a-z0-9/+#]*", text.lower())
-    return [w for w in words if len(w) > 2 and w not in _STOP_WORDS]
-
-
-def _detect_library_coverage(
-    gaps: list[str],
-    paragraphs: list["Paragraph"],
-) -> list[str]:
-    """Post-process gap list: detect library coverage the LLM missed.
-
-    For each gap not already tagged with (library: [N]), run BM25 against
-    the paragraph library. If a paragraph scores strongly against the gap,
-    append the tag. Runs in Python — not a second LLM call.
-    """
-    if not paragraphs or not gaps:
-        return gaps
-
-    try:
-        from rank_bm25 import BM25Okapi
-
-        corpus = [
-            _significant_terms(p.section + " " + p.role + " " + p.text)
-            for p in paragraphs
-        ]
-        bm25 = BM25Okapi(corpus)
-
-        result = []
-        for gap in gaps:
-            if has_library_coverage(gap):
-                result.append(gap)
-                continue
-
-            query = _significant_terms(gap)
-            if not query:
-                result.append(gap)
-                continue
-
-            scores = bm25.get_scores(query)
-            best_i = int(max(range(len(scores)), key=lambda i: scores[i]))
-            best_score = float(scores[best_i])
-
-            # Threshold calibrated so a paragraph must share several meaningful
-            # terms with the gap description — not just a single word match.
-            if best_score >= 2.0:
-                result.append(f"{gap} (library: [{paragraphs[best_i].index}])")
-            else:
-                result.append(gap)
-
-        return result
-
-    except ImportError:
-        # rank_bm25 not available — fall back to simple term overlap
-        result = []
-        for gap in gaps:
-            if has_library_coverage(gap):
-                result.append(gap)
-                continue
-
-            gap_terms = set(_significant_terms(gap))
-            if not gap_terms:
-                result.append(gap)
-                continue
-
-            best_score = 0.0
-            best_idx = None
-            for p in paragraphs:
-                p_terms = set(_significant_terms(p.section + " " + p.role + " " + p.text))
-                overlap = len(gap_terms & p_terms) / len(gap_terms)
-                if overlap > best_score:
-                    best_score = overlap
-                    best_idx = p.index
-
-            if best_score >= 0.35 and best_idx is not None:
-                result.append(f"{gap} (library: [{best_idx}])")
-            else:
-                result.append(gap)
-
-        return result
 
 
 @dataclass
@@ -315,7 +218,6 @@ def generate_thesis(
     profile: CandidateProfile | None = None,
     correction: str | None = None,
 ) -> str:
-    import anthropic
 
     if profile and not profile.is_empty:
         system = THESIS_SYSTEM.format(candidate_profile=profile.as_full_text())
@@ -326,13 +228,17 @@ def generate_thesis(
         candidate_goals_section = ""
 
     correction_section = (
-        f"\n=== CANDIDATE CORRECTION ===\n{correction}\n"
-        "Revise the thesis to address this correction while keeping it grounded in the letter.\n"
+        f"\n=== CANDIDATE CORRECTION — PRIMARY INSTRUCTION ===\n{correction}\n"
+        "The candidate has told you what is wrong or missing. Your revised thesis MUST use "
+        "their specific language and include every point they raised. Do not rewrite from "
+        "scratch. Do not ignore any part of the correction. Their words take priority over "
+        "the rules below.\n"
         if correction else ""
     )
 
     correction_rule = (
-        "- Address the candidate's correction above."
+        "- THE CANDIDATE CORRECTION above overrides everything else. Include every point "
+        "they named, using their language where possible."
         if correction else
         "- If there is genuine tension between the letter's angle and the JD, name it briefly."
     )
@@ -345,23 +251,8 @@ def generate_thesis(
         correction_rule=correction_rule,
     )
 
-    client = anthropic.Anthropic(api_key=api_key)
-    kwargs: dict = dict(
-        model=model,
-        max_tokens=300,
-        system=[{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}],
-        messages=[{"role": "user", "content": prompt}],
-    )
-    if supports_temperature(model):
-        kwargs["temperature"] = 0
-    response = client.messages.create(**kwargs)
-    usage = response.usage
-    record(
-        model, usage.input_tokens, usage.output_tokens,
-        cache_creation_tokens=getattr(usage, "cache_creation_input_tokens", 0) or 0,
-        cache_read_tokens=getattr(usage, "cache_read_input_tokens", 0) or 0,
-    )
-    return response.content[0].text.strip()
+    from coverletter.provider import get_provider
+    return get_provider(model, api_key).complete(system, prompt, max_tokens=300)
 
 
 def generate_argument(
@@ -369,37 +260,30 @@ def generate_argument(
     api_key: str,
     model: str,
     profile: CandidateProfile | None = None,
+    company_values: str | None = None,
 ) -> str:
     """Generate a provisional argument target from the JD alone — before the letter exists.
 
     This is the beacon: a single sentence stating what the letter SHOULD argue.
     Used to focus sentence retrieval and anchor the model's assembly.
     """
-    import anthropic
 
     if profile and not profile.is_empty:
         candidate_section = f"\n=== CANDIDATE PROFILE ===\n{profile.as_goals_text()}\n"
     else:
         candidate_section = ""
 
-    prompt = ARGUMENT_PROMPT.format(jd=jd.strip(), candidate_section=candidate_section)
-    client = anthropic.Anthropic(api_key=api_key)
-    kwargs: dict = dict(
-        model=model,
-        max_tokens=200,
-        system=[{"type": "text", "text": ARGUMENT_SYSTEM, "cache_control": {"type": "ephemeral"}}],
-        messages=[{"role": "user", "content": prompt}],
+    values_section = (
+        f"\n=== COMPANY VALUES / MISSION ===\n{company_values.strip()}\n"
+        if company_values else ""
     )
-    if supports_temperature(model):
-        kwargs["temperature"] = 0
-    response = client.messages.create(**kwargs)
-    usage = response.usage
-    record(
-        model, usage.input_tokens, usage.output_tokens,
-        cache_creation_tokens=getattr(usage, "cache_creation_input_tokens", 0) or 0,
-        cache_read_tokens=getattr(usage, "cache_read_input_tokens", 0) or 0,
+
+    prompt = ARGUMENT_PROMPT.format(
+        jd=jd.strip() + values_section,
+        candidate_section=candidate_section,
     )
-    return response.content[0].text.strip()
+    from coverletter.provider import get_provider
+    return get_provider(model, api_key).complete(ARGUMENT_SYSTEM, prompt, max_tokens=200)
 
 
 def alignment_report(
@@ -410,7 +294,6 @@ def alignment_report(
     model: str,
     profile: CandidateProfile | None = None,
 ) -> AlignmentResult:
-    import anthropic
 
     library_lines = []
     for p in filtered_paragraphs:
@@ -464,23 +347,10 @@ def alignment_report(
         {"type": "text", "text": jd_block},
     ]
 
-    client = anthropic.Anthropic(api_key=api_key)
-    kwargs: dict = dict(
-        model=model,
-        max_tokens=1200,
-        system=[{"type": "text", "text": ALIGN_SYSTEM, "cache_control": {"type": "ephemeral"}}],
-        messages=[{"role": "user", "content": user_content}],
+    from coverletter.provider import get_provider
+    result = _parse_alignment(
+        get_provider(model, api_key).complete(ALIGN_SYSTEM, user_content, max_tokens=1200)
     )
-    if supports_temperature(model):
-        kwargs["temperature"] = 0
-    response = client.messages.create(**kwargs)
-    usage = response.usage
-    record(
-        model, usage.input_tokens, usage.output_tokens,
-        cache_creation_tokens=getattr(usage, "cache_creation_input_tokens", 0) or 0,
-        cache_read_tokens=getattr(usage, "cache_read_input_tokens", 0) or 0,
-    )
-    result = _parse_alignment(response.content[0].text.strip())
 
     # Perspective frame check — Python level, no LLM call needed.
     # If the library has no through-line, pivot, reframe, or synthesis paragraphs,
@@ -498,3 +368,150 @@ def alignment_report(
         )
 
     return result
+
+
+# ---------------------------------------------------------------------------
+# Library-only gap analysis (no letter required — for cold build mode)
+# ---------------------------------------------------------------------------
+
+# Coverage threshold: category cosine score below this → treat as a gap candidate.
+_CATEGORY_GAP_THRESHOLD = 0.30
+# Claim coverage threshold: highest claim score below this → no claim covers the category.
+_CLAIM_COVERAGE_THRESHOLD = 0.35
+
+_BUILD_PROMPT_SYSTEM = """\
+You are a cover letter coach. For each argument category listed below that is a gap, write one
+concrete, specific question or prompt the candidate can answer to build a paragraph for it.
+
+Return ONLY valid JSON — a dict mapping category_name to build_prompt string:
+{"category_name": "build_prompt", ...}
+
+Rules:
+- The prompt must be specific to the category and JD context — not generic ("tell me about your experience").
+- Anchor to what the JD is actually asking for: "What pipeline did you build that handles real-time event data?"
+- One sentence max per prompt.
+"""
+
+
+@dataclass
+class LibraryGapResult:
+    covered: list[dict]   # [{"requirement": str, "best_score": float, "best_claim": str}]
+    gaps: list[dict]      # [{"requirement": str, "build_prompt": str}]
+    no_db: bool = False   # True when DB/embeddings unavailable — caller should tell user
+
+    @property
+    def gap_requirements(self) -> list[str]:
+        return [g["requirement"] for g in self.gaps]
+
+    @property
+    def gap_prompts(self) -> dict[str, str]:
+        return {g["requirement"]: g.get("build_prompt", "") for g in self.gaps}
+
+
+def library_gap_analysis(
+    jd: str,
+    api_key: str,
+    model: str,
+    conn: "sqlite3.Connection | None" = None,
+    voyage_api_key: str = "",
+    embed_provider: "object | None" = None,
+) -> "LibraryGapResult":
+    """Analyze JD coverage using the claims DB — no LLM scan of the full library.
+
+    Steps:
+    1. Embed the JD using provider-native or Voyage embeddings.
+    2. Score against category_embeddings (already in DB) — zero cost beyond one embed call.
+    3. For weak categories, check best matching claim score from claims table.
+    4. Covered = strong category score OR a claim that scores above threshold.
+       Gap = category is weak AND no claim covers it.
+    5. One targeted LLM call to generate a concrete build_prompt per gap category.
+
+    Falls back to BM25 paragraph matching if no DB or no embeddings.
+    """
+    import json, re as _re, sqlite3
+    from coverletter.provider import get_provider
+    from coverletter.db import embed_query, get_or_embed_jd, _cosine
+
+    provider = get_provider(model, api_key)
+    effective_embed = embed_provider or provider
+
+    # --- Embed the JD (cached if conn available) ---
+    if conn is not None:
+        jd_embedding = get_or_embed_jd(conn, jd, voyage_api_key, effective_embed)
+    else:
+        jd_embedding = embed_query(jd, voyage_api_key, effective_embed)
+
+    covered: list[dict] = []
+    gaps: list[dict] = []
+
+    if conn is not None and jd_embedding is not None:
+        # --- DB path: category + claim scoring ---
+        from coverletter.db import get_category_embeddings, score_jd_against_categories
+
+        category_embeddings = get_category_embeddings(conn)
+        if not category_embeddings:
+            return LibraryGapResult(covered=[], gaps=[], no_db=True)
+
+        cat_scores = score_jd_against_categories(jd_embedding, category_embeddings)
+
+        # Load all claim embeddings once
+        rows = conn.execute(
+            "SELECT id, text, argument_categories, embedding FROM claims WHERE embedding IS NOT NULL"
+        ).fetchall()
+        claim_rows = []
+        for row in rows:
+            try:
+                emb = json.loads(row["embedding"])
+                claim_rows.append({
+                    "id": row["id"],
+                    "text": row["text"],
+                    "cats": json.loads(row["argument_categories"]) if row["argument_categories"] else [],
+                    "emb": emb,
+                })
+            except Exception:
+                pass
+
+        gap_categories: list[str] = []
+        for cat_name, cat_score in cat_scores:
+            cat_claims = [c for c in claim_rows if cat_name in c["cats"]]
+            best_claim_score = max(
+                (_cosine(jd_embedding, c["emb"]) for c in cat_claims),
+                default=0.0,
+            )
+            best_claim_text = ""
+            if cat_claims:
+                best_claim_text = max(cat_claims, key=lambda c: _cosine(jd_embedding, c["emb"]))["text"]
+
+            if cat_score >= _CATEGORY_GAP_THRESHOLD or best_claim_score >= _CLAIM_COVERAGE_THRESHOLD:
+                covered.append({
+                    "requirement": cat_name,
+                    "best_score": round(best_claim_score, 3),
+                    "best_claim": best_claim_text[:120] if best_claim_text else "",
+                })
+            else:
+                gap_categories.append(cat_name)
+
+        # Generate build prompts for gap categories in one small LLM call
+        if gap_categories:
+            gap_list = "\n".join(f"- {c}" for c in gap_categories)
+            content = (
+                f"=== JOB DESCRIPTION ===\n{jd.strip()[:800]}\n\n"
+                f"=== GAP CATEGORIES (not covered by the candidate's library) ===\n{gap_list}"
+            )
+            raw = provider.complete(_BUILD_PROMPT_SYSTEM, content, max_tokens=512)
+            raw = _re.sub(r"^```(?:json)?\s*", "", raw.strip())
+            raw = _re.sub(r"\s*```$", "", raw)
+            try:
+                prompts: dict[str, str] = json.loads(raw)
+            except Exception:
+                prompts = {}
+            for cat_name in gap_categories:
+                gaps.append({
+                    "requirement": cat_name,
+                    "build_prompt": prompts.get(cat_name, ""),
+                })
+
+        return LibraryGapResult(covered=covered, gaps=gaps)
+
+    # No DB or no embeddings — caller should prompt user to run sync + extract.
+    return LibraryGapResult(covered=[], gaps=[], no_db=True)

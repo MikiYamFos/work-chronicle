@@ -4,8 +4,8 @@ import json
 import re
 from dataclasses import dataclass, field
 
-from coverletter.costs import record, supports_temperature
 from coverletter.parser import Paragraph
+from coverletter.provider import get_provider
 
 VERIFY_SYSTEM = """\
 You are a cover letter quality checker. Return ONLY valid JSON — no reasoning, no preamble.
@@ -147,6 +147,15 @@ _BANNED_PHRASES = [
     "the clearest connection", "this is the kind of work",
     "i am strongest in",
     "i combine ",
+    # "I have been the X" — invented LLM construction, no one writes this way
+    "i have been the ",
+    # AI filler — vague career-narrative constructions that replace actual evidence
+    "career-long pattern",
+    "building for the next",
+    "for the next engineer",
+    "for the next person",
+    "not just for the immediate",
+    "not just the immediate problem",
 ]
 
 def _hard_check(letter_text: str) -> list[str]:
@@ -177,32 +186,15 @@ def _hard_check(letter_text: str) -> list[str]:
 
 
 def verify_letter(letter_text: str, api_key: str, model: str) -> VerificationResult:
-    import anthropic
     hard_failures = _hard_check(letter_text)
     if hard_failures:
         return VerificationResult(verdict="FAIL", failures=hard_failures)
 
-    client = anthropic.Anthropic(api_key=api_key, timeout=30.0)
     prompt = VERIFY_PROMPT.format(letter=letter_text)
-    kwargs: dict = dict(
-        model=model,
-        max_tokens=512,
-        system=[{"type": "text", "text": VERIFY_SYSTEM, "cache_control": {"type": "ephemeral"}}],
-        messages=[{"role": "user", "content": prompt}],
-    )
-    if supports_temperature(model):
-        kwargs["temperature"] = 0
     try:
-        response = client.messages.create(**kwargs)
+        raw = get_provider(model, api_key).complete(VERIFY_SYSTEM, prompt, max_tokens=512, temperature=0)
     except Exception:
         return VerificationResult(verdict="PASS", failures=[])
-    usage = response.usage
-    record(
-        model, usage.input_tokens, usage.output_tokens,
-        cache_creation_tokens=getattr(usage, "cache_creation_input_tokens", 0) or 0,
-        cache_read_tokens=getattr(usage, "cache_read_input_tokens", 0) or 0,
-    )
-    raw = response.content[0].text.strip()
     raw = re.sub(r"^```(?:json)?\s*", "", raw)
     raw = re.sub(r"\s*```$", "", raw)
     try:
