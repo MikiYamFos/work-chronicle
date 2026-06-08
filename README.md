@@ -222,6 +222,9 @@ The log is stored at `~/.coverletter/runs.jsonl` — one JSON line per API call,
 |---|---|
 | `uv run python coverletter/evals/align_judge.py` | Check judge accuracy against gold standard — offers patch if misaligned |
 | `uv run python coverletter/evals/run_evals.py` | Measure pipeline quality as % of claims approved |
+| `uv run python coverletter/evals/retrieval_eval.py` | Compare BM25 vs semantic retrieval — MRR and Hit@3 across 8 query types |
+
+See [`RETRIEVAL_EVAL.md`](RETRIEVAL_EVAL.md) for methodology, example results, and how to extend the evaluation.
 
 Most commands work without flags — they'll ask you what they need. Flags are shortcuts for when you already know the answer.
 
