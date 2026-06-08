@@ -29,6 +29,10 @@ WHAT YOU MAY NOT DO:
 - Paraphrase or rephrase any sentence
 - Add any word, phrase, or claim not in the source
 - "Improve" the writing in any way — that is not your job
+- Produce a paragraph for an experience when the source has no prose sentences about it.
+  If an employer or project appears in a header or list but has no actual sentences,
+  omit it entirely. Do NOT write placeholder text, refusal statements, or meta-commentary
+  about missing content. Simply do not include that experience in the output array.
 
 The strength rating reflects what is actually in the source:
 - high: concrete claims with specifics, clear stakes, evidence
