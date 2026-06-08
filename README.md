@@ -642,6 +642,120 @@ French company, data centers in the EU, €1.2B green energy facility in Sweden.
 
 ---
 
+## Monitoring and evaluation pipeline
+
+### How monitoring works
+
+Every API call is logged automatically to `~/.coverletter/runs.jsonl` — one JSON line
+per call with timestamp, caller label, model, input/output tokens, cache hit/miss, and
+estimated cost. The log persists across sessions and survives crashes.
+
+```bash
+uv run clio log              # last 20 calls + last 10 session summaries
+uv run clio log --tail 50    # last N calls
+uv run clio log --sessions 5 # session summaries only
+```
+
+Each line in the log looks like:
+
+```json
+{
+  "ts": "2026-06-08T14:23:01",
+  "label": "extract",
+  "model": "claude-haiku-4-5-20251001",
+  "input_tokens": 4821,
+  "output_tokens": 312,
+  "cache_read_tokens": 3200,
+  "cost_usd": 0.0041
+}
+```
+
+The `label` field identifies which code path made the call: `extract`, `judge`,
+`build`, `seed`, `generate`, `interview`, `align_judge`, `profile`, etc. This lets
+you see exactly what each command cost and compare costs across runs as you tune
+prompts or switch models.
+
+### Ground truth pipeline
+
+The monitoring log connects to evaluation through the extraction pipeline. The full
+loop:
+
+**Step 1 — Extract**
+```bash
+uv run clio extract --dry-run    # extract claims, log the API call
+```
+Writes `extractions_review.json`. The extraction call is logged with label `extract`.
+
+**Step 2 — Label (manual ground truth)**
+```bash
+uv run streamlit run coverletter/label_evals.py
+```
+Hand-label every extracted claim: approve or reject, with a failure category on
+rejects. Check "Save as gold standard" on clear unambiguous cases — both correct
+approvals and correct rejections. This is your hand-crafted ground truth dataset.
+Session position saves on every action so you can label across multiple sessions.
+
+**Step 3 — Run extraction live**
+```bash
+uv run clio extract    # requires 5 approved + 5 rejected gold standard examples
+```
+Approved claims insert to DB. The judge call is logged with label `judge`.
+
+**Step 4 — Calibrate the judge**
+```bash
+uv run python coverletter/evals/align_judge.py
+```
+Runs the judge against your gold standard. Reports accuracy, precision, and recall.
+If alignment is below target (recall ≥ 89%, accuracy ≥ 80%), offers to draft a
+targeted patch to the judge prompt. The calibration call is logged with label
+`align_judge`.
+
+**Step 5 — Measure pipeline quality**
+```bash
+uv run python coverletter/evals/run_evals.py
+```
+Measures overall pipeline quality as the percentage of claims the judge approves.
+Run this before and after a prompt change to measure the effect. Logged with label
+`run_evals`.
+
+**Step 6 — Compare across runs**
+```bash
+uv run clio log --tail 50
+```
+Every extraction and evaluation run is in the log. Compare token costs and session
+costs before and after prompt changes to understand the quality/cost tradeoff.
+
+### The feedback loop
+
+```
+extract --dry-run
+    ↓
+hand-label in Streamlit  ← this is your ground truth
+    ↓
+extract (live)
+    ↓
+align_judge.py  ←  if below target: patch judge prompt → repeat
+    ↓
+run_evals.py    ←  compare % approved before/after changes
+    ↓
+clio log        ←  cost and token tracking across all runs
+```
+
+As your gold standard grows (more labeled examples), `align_judge.py` becomes a
+more reliable signal. As your library grows, `run_evals.py` measures whether the
+judge stays calibrated across new material.
+
+### Retrieval evaluation
+
+```bash
+uv run python coverletter/evals/retrieval_eval.py
+```
+
+Compares BM25 vs semantic retrieval across 8 query types. Reports MRR and Hit@3 for
+each method. See [`RETRIEVAL_EVAL.md`](RETRIEVAL_EVAL.md) for full methodology.
+
+---
+
 ## Development
 
 ```bash
