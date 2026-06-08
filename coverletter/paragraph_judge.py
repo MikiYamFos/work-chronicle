@@ -193,6 +193,7 @@ def validate_and_fix_paragraph(
     api_key: str,
     model: str,
     use_llm_judge: bool = True,
+    check_writing_rules: bool = True,
 ) -> tuple[str, list[str]]:
     """Validate a paragraph and attempt to fix it if it fails.
 
@@ -200,12 +201,16 @@ def validate_and_fix_paragraph(
     warnings is empty if the paragraph passed (original or fixed).
     If it still fails after retries, returns the original with warnings so
     the user can see what the model kept getting wrong.
+
+    check_writing_rules=False skips the deterministic style rules (em-dash,
+    banned words, etc.) — use this for paragraphs lifted from the user's own
+    source material where style choices belong to the author, not the model.
     """
     warnings: list[str] = []
 
     for attempt in range(_MAX_RETRIES + 1):
-        # Layer 1: deterministic
-        reason = check_paragraph_patterns(paragraph)
+        # Layer 1: deterministic style rules — skip for user-authored material
+        reason = check_paragraph_patterns(paragraph) if check_writing_rules else None
         if reason:
             if attempt < _MAX_RETRIES:
                 fixed = rewrite_paragraph(paragraph, source, reason, [], api_key, model)

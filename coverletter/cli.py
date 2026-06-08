@@ -2171,16 +2171,16 @@ def init() -> None:
     console.print("  2. Set [bold]AUTHOR_NAME[/bold] in .env")
     console.print()
     console.print("  [bold]If you have existing material[/bold] (cover letter, resume, LinkedIn bio):")
-    console.print("    uv run coverletter seed              # paste material, extract paragraphs")
+    console.print("    uv run clio seed              # paste material, extract paragraphs")
     console.print()
     console.print("  [bold]If you're starting from scratch:[/bold]")
-    console.print("    uv run coverletter build --about \"your experience\"")
+    console.print("    uv run clio build --about \"your experience\"")
     console.print()
     console.print("  Then build your profile (do this once before generating letters):")
-    console.print("    uv run coverletter profile --model opus")
+    console.print("    uv run clio profile --model opus")
     console.print()
     console.print("  Then generate your first letter:")
-    console.print("    uv run coverletter\n")
+    console.print("    uv run clio\n")
 
 
 @main.command("profile")
@@ -2666,7 +2666,7 @@ def seed_library(ctx: click.Context, input_file: str | None, paragraphs: str | N
                 console.print(f"[yellow]⚠ {w}[/yellow]")
             console.print("[yellow]This paragraph has issues the auto-fix could not resolve. Edit before accepting.[/yellow]\n")
         if p["augmentations"]:
-            console.print("[dim]Strengthen later with[/dim] [bold]uv run coverletter build[/bold][dim]:[/dim]")
+            console.print("[dim]Strengthen later with[/dim] [bold]uv run clio build[/bold][dim]:[/dim]")
             for aug in p["augmentations"]:
                 console.print(f"  [dim]→ {aug}[/dim]")
             console.print()
@@ -2756,7 +2756,7 @@ def seed_library(ctx: click.Context, input_file: str | None, paragraphs: str | N
     # Summarise augmentations across all accepted paragraphs
     all_augs = [(p.get("company", p["role"]), p["section"], aug) for p in accepted for aug in p.get("augmentations", [])]
     if all_augs:
-        console.print("[bold]Q&A agenda saved to experiences.md — run[/bold] [cyan]uv run coverletter build --about \"[experience]\"[/cyan] [bold]to fill these gaps:[/bold]")
+        console.print("[bold]Q&A agenda saved to experiences.md — run[/bold] [cyan]uv run clio build --about \"[experience]\"[/cyan] [bold]to fill these gaps:[/bold]")
         for company, section, aug in all_augs:
             console.print(f"  [dim]{company} / {section}:[/dim] {aug}")
         console.print()
@@ -2784,7 +2784,7 @@ def seed_library(ctx: click.Context, input_file: str | None, paragraphs: str | N
                     for item in items:
                         console.print(f"    • {item}")
             console.print()
-            console.print(f"[dim]Run [bold]uv run coverletter profile[/bold] to review and save.[/dim]\n")
+            console.print(f"[dim]Run [bold]uv run clio profile[/bold] to review and save.[/dim]\n")
 
 
 @main.command("sync")

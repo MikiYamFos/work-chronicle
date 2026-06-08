@@ -67,24 +67,41 @@ STRENGTH GUIDE:
 
 AUGMENTATIONS — write 1–3 targeted questions per paragraph that would make the
 argument significantly stronger. These questions will drive a Q&A session, so they
-must be answerable from memory and surface something argumentatively useful.
+must be answerable from memory and generate a specific story or decision, not a
+reflection or a hypothetical.
 
-GOOD questions ask about:
-  - The hardest or most consequential decision made ("What was the specific technical
-    constraint that made this harder than a standard pipeline build?")
-  - What broke, failed, or was at stake ("What happened to downstream reporting or
-    decisions before this existed or when it failed?")
-  - Who depended on it and what they could or couldn't do without it
-  - What changed after it shipped ("What did the team gain access to that they
-    didn't have before?")
-  - Scope and ownership expressed as consequence, not inventory count
+A good question names a gap — something the paragraph claims but doesn't prove —
+and asks for the concrete moment that would prove it. The question should be
+answerable by saying "yes, here's what happened" and then telling a story.
 
-BAD questions (never ask these):
-  - "How many X did you build?" — inventory counts the person may not recall and
-    that prove nothing about ownership or impact
-  - "What percentage improvement?" — false precision; ask for the observable outcome
-  - "Can you add more detail?" — too vague to act on
-  - "What did you learn?" — produces generic, unhelpful answers
+GOOD questions:
+  - Ask what the person had to figure out that no one told them how to do
+    ("When you built the consent pipeline at UNITE HERE, what data handling
+    problem did you have to solve that wasn't in any spec or requirement?")
+  - Ask about a real decision that had a real alternative
+    ("When the Evergent fix came in broken, what did you do — escalate, work around
+    it, or fix it yourself, and why?")
+  - Ask what the person saw that others didn't
+    ("What did you notice about the materialized views that the VP didn't —
+    specifically what was wrong with the logic?")
+  - Ask who else was in the room and what the dynamic was
+    ("Who else was involved when you flagged the churn discrepancy, and what happened
+    when you raised it?")
+
+BAD questions (never write these):
+  - Consequence hypotheticals: "What would have happened if X" or "What would have
+    broken without it" — produces speculation, not stories
+  - Superlative framing: "What was the most consequential / hardest / most complex X"
+    — forces mental ranking before the person can answer; kills specificity
+  - Binary forks: "Did you do A or B?" — answers itself, eliminates the story
+  - Interrogating stated facts: asking "what specifically did you do" about something
+    already described — produces restatement, not new material
+  - Decontextualized jargon: quoting a phrase from the paragraph as the question premise
+    without explaining what it means in context
+  - "How many X did you build?" — inventory counts prove nothing about ownership
+  - "What percentage improvement?" — false precision
+  - "Can you add more detail?" — too vague
+  - "What did you learn?" — produces generic answers
   - Any question the person could only answer by checking records they no longer have
 
 The "role" field is the JOB TITLE this paragraph is relevant to — the actual role you would
@@ -188,7 +205,8 @@ def extract_from_material(
             # Validate and auto-fix paragraph — rejects injected superlatives,
             # evaluative spin, em-dashes, banned words, and source infidelity
             text, para_warnings = validate_and_fix_paragraph(
-                item["text"], material, api_key, model
+                item["text"], material, api_key, model,
+                check_writing_rules=False,
             )
             # Filter augmentation questions through the deterministic judge
             raw_augs = item.get("augmentations", [])
