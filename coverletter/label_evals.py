@@ -123,12 +123,12 @@ def _insert_claim_to_db(db_path: Path, para_hash: str, claim: dict, conclusion: 
         return False
 
 
-def _reextract_paragraph(para_text: str, api_key: str) -> tuple[list[dict], dict[int, tuple[bool, str]]]:
+def _reextract_paragraph(para_text: str, api_key: str, role: str = "", section: str = "") -> tuple[list[dict], dict[int, tuple[bool, str]]]:
     """Re-extract and judge claims from edited paragraph text. Returns (claims, judge_results)."""
     from coverletter.extract import (
         _extract_from_paragraph, _judge_claims_concurrent, _EXTRACT_MODEL,
     )
-    data = _extract_from_paragraph(para_text, None, api_key, _EXTRACT_MODEL)
+    data = _extract_from_paragraph(para_text, None, api_key, _EXTRACT_MODEL, role=role or None, section=section or None)
     claims = data.get("claims", [])
     judge_results = _judge_claims_concurrent(claims, para_text, api_key, max_workers=4)
     return claims, judge_results
@@ -173,21 +173,11 @@ with st.sidebar:
     else:
         st.caption("DB not found — approvals save to JSON only")
 
-    voyage_key = st.text_input(
-        "Voyage API key (embeddings, optional)", type="password",
-        value=st.session_state.get("voyage_api_key", ""),
-    )
-    if voyage_key:
-        st.session_state["voyage_api_key"] = voyage_key
-
-    # API key for re-extraction — load from .env automatically
-    default_api_key = os.getenv("ANTHROPIC_API_KEY", "")
-    anthropic_key = st.text_input(
-        "Anthropic API key (for re-extraction)", type="password",
-        value=st.session_state.get("anthropic_api_key", default_api_key),
-    )
-    if anthropic_key:
-        st.session_state["anthropic_api_key"] = anthropic_key
+    # API keys loaded from .env — not exposed in the UI
+    if "voyage_api_key" not in st.session_state:
+        st.session_state["voyage_api_key"] = os.getenv("VOYAGE_API_KEY", "")
+    if "anthropic_api_key" not in st.session_state:
+        st.session_state["anthropic_api_key"] = os.getenv("ANTHROPIC_API_KEY", "")
 
     # Load review file — restore cursor position if saved
     if "data" not in st.session_state or st.session_state.get("loaded_path") != str(file_path):
@@ -323,16 +313,14 @@ if not display_indices or judge_queue:
                 col1, col2 = st.columns(2)
                 with col1:
                     if st.button("✅ Approve", key=f"q_approve_{qi}"):
-                        qitem["claim"]["status"] = "approved"
                         if db_available:
                             _insert_claim_to_db(db_path_val, qitem["para_hash"], qitem["claim"], None)
-                        data["_judge_queue"][qi] = qitem
+                        data["_judge_queue"] = [q for j, q in enumerate(data["_judge_queue"]) if j != qi]
                         save_review(data, file_path)
                         st.rerun()
                 with col2:
                     if st.button("❌ Reject", key=f"q_reject_{qi}"):
-                        qitem["claim"]["status"] = "rejected"
-                        data["_judge_queue"][qi] = qitem
+                        data["_judge_queue"] = [q for j, q in enumerate(data["_judge_queue"]) if j != qi]
                         save_review(data, file_path)
                         st.rerun()
 
@@ -351,7 +339,7 @@ if not display_indices or judge_queue:
                     para = data["paragraphs"][pi]
                     para_text = para["para_text"]
                     try:
-                        new_claims, judge_results = _reextract_paragraph(para_text, api_key)
+                        new_claims, judge_results = _reextract_paragraph(para_text, api_key, role=para.get("role", ""), section=para.get("section", ""))
                         for i, claim in enumerate(new_claims):
                             passed, reason = judge_results.get(i, (True, ""))
                             claim["judge"] = {"pass": passed, "reason": reason or None}
@@ -390,21 +378,28 @@ if not display_indices or judge_queue:
             and c["text"] not in already_in_gs
         ]
 
-        if approved_candidates or rejected_candidates:
+        total_labeled = len(approved_candidates) + len(rejected_candidates)
+        if (approved_candidates or rejected_candidates) and total_labeled < 20:
             st.divider()
-            st.subheader("⭐ Gold standard candidates")
+            st.info(f"You've labeled {total_labeled} claims so far. Once you've labeled 20, you'll be able to mark some as gold standard reference examples.")
+
+        if (approved_candidates or rejected_candidates) and total_labeled >= 20:
+            st.divider()
+            st.subheader("⭐ Gold standard")
             st.caption(
-                "Claims you labeled this session that could calibrate the judge. "
-                "The judge is validated against approved AND rejected examples — both matter. "
-                "Only add the clearest, most unambiguous cases. "
-                "A borderline case is not a good calibration example."
+                "These are claims you labeled this session. For each one, ask: "
+                "**was I certain — zero hesitation?** If yes, add it. If you had to think, skip it.\n\n"
+                "Good approved: clear ownership/decision claim, or a character/disposition claim "
+                "where the paragraph obviously backs it up.\n\n"
+                "Good rejected: skill statement, system-did-it, resume-speak, too generic.\n\n"
+                "**For rejected examples, the failure category is required.**"
             )
 
             gs_added_this_pass = False
 
             if approved_candidates:
                 with st.expander(f"✅ Approved — {len(approved_candidates)} candidate(s)", expanded=False):
-                    st.caption("Clear ownership, method, disposition, or motivation claims at the right level.")
+                    st.caption("Only add cases where approval is obvious — concrete claim, specific context, right level of specificity.")
                     for pi, ci, c, p in approved_candidates:
                         st.markdown(f"> {c['text']}")
                         st.caption(f"{p.get('role', '')} / {p.get('section', '')}")
@@ -532,7 +527,16 @@ with left:
     st.subheader("🎯 Claim")
     status = claim.get("status", "pending")
     status_icon = {"approved": "✅", "rejected": "❌", "pending": "⏳"}.get(status, "⏳")
-    st.markdown(f"### {status_icon} {claim['text']}")
+    st.markdown(f"**{status_icon} Current:**")
+    edited_claim_text = st.text_area(
+        "Edit claim text",
+        value=claim["text"],
+        height=80,
+        key=f"claim_edit_{flat_idx}",
+        label_visibility="collapsed",
+    )
+    if edited_claim_text != claim["text"]:
+        st.caption("⚠️ Claim text edited — will save on Approve/Reject/Save")
 
     ctxs = claim.get("contexts", [])
     if ctxs:
@@ -561,6 +565,24 @@ with left:
 
 with right:
     st.subheader("🏷️ Label")
+    st.caption(
+        "**Five kinds of claim are valid. Approve any of these:**\n\n"
+        "1. **Ownership/Decision** — what they built or owned at a named employer. "
+        "*'At BritBox I owned the watch-duration pipeline end-to-end'*\n\n"
+        "2. **Approach/Method** — how they consistently work. "
+        "*'I work backwards from what someone needs to understand into the data model'*\n\n"
+        "3. **Disposition/Character** — who they are as an engineer. "
+        "*'My career has been defined by an unusually high degree of ownership'* — broad is fine "
+        "if the paragraph has specific evidence that backs it up.\n\n"
+        "4. **Motivation/Orientation** — what kind of work they find meaningful and why. "
+        "*'I'm most excited by work where careful engineering makes organizations more accountable'*\n\n"
+        "5. **Personal project** — context type is 'project', not employer.\n\n"
+        "**Reject if:**\n"
+        "- It's a skill/capability statement — names a tool but not what they did with it\n"
+        "- It's what a system did, not what the person owned (*'The pipeline processed events'*)\n"
+        "- It's pure resume-speak (*'demonstrates', 'showcases', 'strong background in'*)\n"
+        "- It's so generic it could be on anyone's resume with no specific evidence behind it"
+    )
 
     current_status = claim.get("status", "pending")
     label_choice = st.radio(
@@ -602,14 +624,16 @@ with right:
         expanded=False,
     ):
         st.caption(
-            "**What the gold standard is:** a set of reference examples the system uses to "
-            "check whether the judge is calibrated. Before each extraction run, the judge's "
-            "decisions are compared against these. If accuracy drops below 80%, you get a warning.\n\n"
-            "**When to add something here:** only when the decision is completely obvious — "
-            "no ambiguity, no 'it depends'. A clear ownership claim at the right level. "
-            "A pure capability statement that obviously cannot be proven. Do not add borderline cases.\n\n"
-            "**For rejected examples, the failure category is required** — that is the signal "
-            "that tells the system what pattern to watch for. 'Rejected' alone is not useful."
+            "**What the gold standard is:** reference examples the system uses to check whether "
+            "the judge is still calibrated. Before each extraction run, the judge's decisions are "
+            "compared against these. If accuracy drops below 80%, you get a warning.\n\n"
+            "**Only add it if you were certain — zero hesitation.** If you had to think about it, skip it.\n\n"
+            "Good approved examples: a clear ownership claim at the right employer+deliverable level, "
+            "or a disposition/character claim where the paragraph has obvious supporting evidence.\n\n"
+            "Good rejected examples: a pure skill statement ('I have experience with X'), "
+            "something a system did rather than the person, or obvious resume-speak.\n\n"
+            "**For rejected examples, the failure category is required** — that tells the system "
+            "what pattern to watch for. 'Rejected' alone is not useful."
         )
 
         if already_in_gs:
@@ -643,6 +667,9 @@ with right:
         data["paragraphs"][pi]["claims"][ci]["comment"] = comment
         if failure_cats:
             data["paragraphs"][pi]["claims"][ci]["failure_categories"] = failure_cats
+        # Persist any edits to the claim text
+        if edited_claim_text != claim["text"]:
+            data["paragraphs"][pi]["claims"][ci]["text"] = edited_claim_text
 
         # Save cursor position so session can be resumed
         data["_session_cursor"] = st.session_state.cursor
@@ -650,13 +677,15 @@ with right:
         save_review(data, file_path)
         st.session_state.data = data
 
+        # Use the (possibly edited) claim text for gold standard
+        final_claim_text = edited_claim_text if edited_claim_text != claim["text"] else claim["text"]
         if add_to_gs and not already_in_gs and new_status in ("approved", "rejected"):
             note = gs_note or (
                 "ownership/decision claim at the right level" if new_status == "approved"
                 else f"rejected: {', '.join(failure_cats)}" if failure_cats
                 else "rejected claim"
             )
-            _add_to_gold_standard(claim["text"], new_status, note, failure_cats)
+            _add_to_gold_standard(final_claim_text, new_status, note, failure_cats)
 
         if new_status == "approved" and db_available:
             claim_to_insert = data["paragraphs"][pi]["claims"][ci]

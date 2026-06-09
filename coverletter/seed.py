@@ -34,6 +34,30 @@ WHAT YOU MAY NOT DO:
   omit it entirely. Do NOT write placeholder text, refusal statements, or meta-commentary
   about missing content. Simply do not include that experience in the output array.
 
+SKIP THESE PARAGRAPH TYPES ENTIRELY:
+Some source content is structurally incapable of producing story material. Omit these:
+
+1. RESUME SUMMARIES / BIOS: A block of abstract sentences describing overall background
+   with no named project, decision, deliverable, or moment. Signals:
+   "X years of experience in Y", "proven track record of Z", "specializing in..."
+
+2. COVER LETTER OPENERS: Any paragraph whose primary job is introducing the letter.
+   Signals: "I am writing to apply for", "I am excited to apply", "I came across this role",
+   meta-commentary about the letter itself ("I know it is unusual to lead with...")
+
+3. COVER LETTER CLOSINGS: Any paragraph whose primary job is signing off.
+   Signals: "I would so appreciate the opportunity", "I look forward to hearing from you",
+   "it would be an honor", "thank you for your consideration", "please do not hesitate"
+
+4. PURE THESIS PARAGRAPHS: Every sentence is an abstract capability claim with nothing
+   beneath it to synthesize from — no named project, employer, decision, or episode
+   anywhere in the paragraph.
+
+If a paragraph is mostly boilerplate but contains specific buried facts
+("I write my own tickets", "routinely delivered idempotent pipelines despite never being
+asked to"), include it. Select and quote only the specific sentences. Drop the thesis
+wrapper. The specific sentences are the paragraph.
+
 The strength rating reflects what is actually in the source:
 - high: concrete claims with specifics, clear stakes, evidence
 - medium: solid claims but missing key specifics

@@ -69,7 +69,7 @@ def test_env_contains_voyage_key(tmp_path):
 
 def test_next_steps_uses_uv_run(tmp_path):
     result, _ = _run_init(tmp_path)
-    assert "uv run coverletter" in result.output
+    assert "uv run clio" in result.output
 
 
 def test_next_steps_mentions_build_jd(tmp_path):

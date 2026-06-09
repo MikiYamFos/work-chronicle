@@ -11,6 +11,7 @@ class Paragraph:
     meta: dict[str, str] = field(default_factory=dict)
     index: int = 0
     layer: int = 0        # source file priority — 0 is highest (loaded first)
+    db_id: int | None = None  # stable DB id — set after sync, used in prompt labels
 
 
 _META_RE = re.compile(r"<!--\s*meta:\s*(.+?)\s*-->", re.IGNORECASE)

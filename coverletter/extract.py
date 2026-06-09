@@ -146,20 +146,74 @@ A claim is what you would say to a hiring manager in one sentence to make them
 understand what this person DID, HOW THEY WORK, WHO THEY ARE, or WHY THIS WORK
 MATTERS TO THEM — and where specific evidence could back it up.
 
-A cover letter makes five kinds of arguments. Extract claims in all five categories:
+━━━ ANCHOR RULE ━━━
+
+Every claim must anchor on the most specific verifiable fact in the paragraph.
+Not the broadest true statement. The sharpest specific one.
+
+When a paragraph contains any of the following, that fact is the anchor — it belongs
+IN the claim, not dropped into support:
+  - A hard deadline ("four months", "before Q4 launch")
+  - A scale number ("1B+ daily events", "4M records", "12 states")
+  - A failure replaced or a problem diagnosed ("vendor's version failed regularly")
+  - A stability or outcome fact ("100% stable since go-live", "zero incidents")
+  - A scope constraint ("sole engineer", "no dedicated infra team", "first DE hire")
+  - A consequence to others if wrong ("if the data was wrong, the product was wrong")
+
+The broadest true statement about a paragraph ("I owned the data platform end-to-end")
+is not a claim — it is a topic sentence. The specific fact that makes the ownership
+remarkable is the claim. Build from the sharpest fact outward, not from the scope inward.
+
+A cover letter makes five kinds of arguments. Extract claims in all five categories.
+
+A single paragraph will often contain material for multiple claim types. Extract all of them.
+Do not collapse a paragraph into one claim when the source contains an ownership thread,
+a character/stakes thread, and a method thread — those are three separate claims and all three
+are valuable. Collapsing them loses material. Err toward more claims, not fewer.
 
 1. OWNERSHIP / DECISION — what the person built, owned, or decided at a specific employer
-   GOOD: "At Acme Corp, I owned the subscriber data pipeline end-to-end"
-   GOOD: "At Acme Corp, I determined what 'watch duration' meant before any engineering began"
+   GOOD: "At Meridian Health, I owned the patient outcomes pipeline end-to-end; every
+          metric the clinical team used to track readmission rates ran through my models"
+   GOOD: "At Meridian Health, I defined what 'readmission' meant for reporting purposes
+          before a single query was written; that decision shaped two years of analytics"
 
 2. APPROACH / METHOD — how the person thinks about and does the work, consistently
-   GOOD: "I work backwards from what someone needs to understand into the data model that produces it"
+   GOOD: "When the reporting requirements changed, I rebuilt the subscriber history model as an
+          effective-dated SCD2 so every discrepancy could be traced back to the customer state
+          that was valid for that reporting period; the design principle is explainability first,
+          then build back from there"
+         ↑ Names a specific design decision and the principle it demonstrates. Not a thesis sentence.
+   GOOD: "At Ironwood, I learned the compliance reporting requirements from the legal team,
+          built the audit trail system myself, then trained field offices in four cities on it;
+          domain learning followed by ownership followed by replication is how I consistently work"
+         ↑ Employer goes in contexts array; not invented in claim text if not named in paragraph
+   BAD:  "I learn a domain, build something solid, and make sure other people can use it"
+         ↑ Closing summary sentence lifted verbatim. Construct from the specific episode instead.
 
 3. DISPOSITION / CHARACTER — who the person IS as an engineer, their professional standing
    GOOD: "I had accountability for data integrity at a level that is rare for data engineers"
+   GOOD: "The trust I earned at Ironwood was unusual: I had autonomy to design the compliance
+          system from scratch and it became the standard across every regional office, audited
+          clean three years running"
+         ↑ Employer goes in contexts array; claim names what was unusual and what proved it
+   BAD:  "I earned trust and built reliable systems"
+         ↑ Too abstract. The good version names what made the trust unusual and what proved it.
 
 4. MOTIVATION / ORIENTATION — what kind of work the person finds meaningful and why
-   GOOD: "I am most excited by work where careful engineering makes organizations more accountable"
+   The claim must use the person's actual voice and name the specific biographical or career
+   context that explains the orientation. Do NOT flatten into polished "I find meaningful work
+   when..." language — that erases the voice and the evidence.
+
+   GOOD: "I grew up watching my mother navigate the immigration system without anyone to
+          advocate for her; I have been drawn to legal aid organizations ever since, and
+          I cannot think of many places where data engineering carries as much weight"
+         ↑ Uses their actual words. Names the biographical origin. Names the specific org type.
+   GOOD: "I am most excited by work where careful engineering makes organizations more
+          accountable; that is what drew me to public health data after years in finance"
+         ↑ Only acceptable when the paragraph names what specifically drew them and why
+   BAD:  "I find meaningful work when careful engineering helps organizations be accountable
+          to the people they serve"
+         ↑ Generic, polished, could describe anyone. No biographical grounding, no specific org.
 
 5. PERSONAL PROJECT — context type must be "project", not "employer".
 
@@ -168,16 +222,92 @@ A cover letter makes five kinds of arguments. Extract claims in all five categor
 The core test: CAN THIS BE BACKED UP WITH SPECIFIC EVIDENCE?
 
   INVALID: "I have experience with event-based data" — not provable, just said
-  VALID: "I work backwards from output requirements into data models" — provable across employers
+  VALID: "I designed an effective-dated subscriber history model when current-state tracking
+          could no longer serve the reporting we needed" — names a specific design decision, provable
   INVALID: "I care about data quality" — just words
   VALID: "I had data integrity accountability at a level rare for a DE" — specific standing, provable
 
 Granularity: a claim is at the RIGHT level if it could anchor a paragraph argument.
-  TOO SPECIFIC: "I implemented 30-minute gap logic" — that's a support item
   TOO GENERIC: "I am a data engineer" — says nothing specific
-  RIGHT: "At BritBox, I owned the watch-duration pipeline and defined the metric before writing code"
+  RIGHT: "At Meridian Health, I owned the patient outcomes pipeline; the numbers
+          read monthly by clinical leadership came from my models"
+  TOO SPECIFIC: "I found and fixed a logic error that was undercounting recoveries"
+          — this is a support item. It is the evidence that proves the ownership claim.
+          It goes in support[], not in claims.
+  TOO SPECIFIC: "I rebuilt the aggregation logic over a weekend to hit a deadline"
+          — also a support item. Impressive, but a single episode proving ownership.
+
+The rule: a single action, fix, or episode — even an impressive one — is a support item.
+A claim names what the person OWNED or STOOD FOR across time. The specific actions are
+what make the claim believable. Never extract a one-time fix as a claim.
 
 Use the person's actual words and register. Do not polish into resume-speak.
+
+━━━ CLAIM TEXT FORMATTING ━━━
+
+Never use em-dashes (—) in claim text. Use commas, semicolons, or periods instead.
+Never use the phrases: "not just", "not only", "not simply", "not merely".
+These appear in the bad examples above for a reason — they signal thesis-sentence construction.
+
+Never write a claim that is a comma-separated topic list. A claim like "I owned X, Y, Z,
+and W" with no stakes, no context, and no specific fact is a resume bullet, not a claim.
+If the paragraph contains a hard deadline, a failure replaced, a scale number, or a scope
+detail (sole engineer, no support team), those facts belong IN the claim, not dropped.
+
+  WRONG: "At Meridian Health I owned subscription metrics, session stitching, reconciliation,
+          and Spark optimization with no infra team"
+         -- topic list, all specific facts stripped
+  RIGHT: "At Meridian Health, as the sole hands-on data engineer, I designed and delivered a
+          Spark/PySpark replacement for a failing vendor pipeline processing 1B+ daily events;
+          I had four months and no infra team, and it has been 100% stable since launch"
+         -- names what was built, what it replaced, the constraint, the result
+
+━━━ SYNTHESIS RULE — DO NOT LIFT ABSTRACT THESIS SENTENCES ━━━
+
+Paragraphs often contain a thesis sentence — an abstract summary of what the person
+is like or how they work. It may appear at the start, end, or middle of the paragraph.
+Do NOT extract the thesis sentence as the claim. Construct the claim from the specific
+evidence instead.
+
+The test: could this sentence appear on almost anyone's strong resume? If yes, it is a
+thesis sentence. Find the specific facts that make it true for THIS person.
+
+  WEAK (lifted thesis, opening): "I distinguish myself as a data engineer through
+                          communication, curiosity, and technical depth"
+  STRONG (synthesized from the specific evidence in the same paragraph):
+                         "I hold myself to engineering standards nobody gave me;
+                          at Ironwood I designed the audit trail, the monitoring, and
+                          the runbooks before anyone knew to ask for them"
+
+  WEAK (lifted thesis, closing): "I learn a domain, build something solid, and make
+                          sure other people can use it"
+  STRONG (synthesized):  "At Ironwood, I learned compliance reporting requirements from
+                          the legal team, built the audit system from scratch, and trained
+                          field offices across four cities on it, without ever being told
+                          that replication and training were part of my job"
+                          (employer name goes in contexts, not invented in claim text)
+
+Strong versions carry their own evidence. A hiring manager could ask a follow-up.
+Weak versions say nothing that cannot be said about many people.
+
+Use thesis sentences as hints about what TYPE of claim to extract — then build the
+claim from the specific facts that make the thesis true for this specific person.
+
+━━━ VOICE RULE — DO NOT FLATTEN INTO RESUME-SPEAK ━━━
+
+The person's actual words are load-bearing. Do not polish them into generic professional
+language. The voice is part of what makes the claim usable.
+
+  WRONG: "I find meaningful work when careful engineering helps organizations be more
+          accountable to the people they serve"
+  RIGHT: "I grew up watching my mother navigate the immigration system without anyone
+          to advocate for her; I have been drawn to legal aid organizations ever since,
+          and I cannot think of many places where data engineering carries as much weight"
+
+The right version cannot appear on anyone else's resume. The wrong version can.
+If you have specific biographical language (a formative experience, a named organization,
+a specific turning point), that language must appear in the claim. Do not summarize it
+into a generic insight.
 
 {cat_block}━━━ SUPPORT ITEMS AND SUB-DETAILS ━━━
 
@@ -196,10 +326,35 @@ A conclusion is an insight that emerges from all the claims together — what th
 evidence MEANS about this person. Only include if the paragraph explicitly states one.
 If no conclusion is present, conclusion is null.
 
+━━━ RESUME SUMMARIES — DO NOT EXTRACT ━━━
+
+If the paragraph is a professional summary, resume objective, or bio — meaning every
+sentence is an abstract description of expertise with no named employer, no specific
+deliverable, and no concrete episode — return claims: [].
+
+A resume summary looks like:
+  "Engineer with N years of experience in X and Y, specializing in Z environments.
+   Proven track record owning W pipelines. Strong background in V."
+
+Every sentence in that paragraph is a thesis that requires a specific episode to prove.
+There is nothing beneath it to synthesize from. Extracting it produces claims that could
+appear on any strong resume — exactly what this system exists to avoid.
+
+Return claims: [] for resume summaries. The person will add specific narrative paragraphs
+about their actual experiences separately.
+
 ━━━ SOURCING RULES ━━━
 
-Extract ONLY what is explicitly stated. Do not infer, generalize, or add anything
-not directly present in the text.
+Every claim must be grounded in what the paragraph states — do not invent facts,
+add employers not mentioned, or assert outcomes not present in the text.
+
+Synthesis across sentences within the paragraph IS required. A claim that combines
+"the trust I earned was unusual" + "designed from scratch" + "replicated across
+campaigns" into one sentence is not inference — it is reading the paragraph as a whole.
+
+Do not add facts from outside the paragraph. Do not contradict the paragraph.
+Do not lift the paragraph's abstract closing sentence when the specific episode
+above it makes a stronger claim.
 
 When raw Q&A is provided: use it to find technical detail compressed in the paragraph.
 Do NOT extract claims from Q&A that aren't supported by the paragraph text itself.
@@ -310,13 +465,15 @@ alone would look thin.
    PASS: "I had data integrity accountability at a level rare for data engineers"
 
 3. APPROACH / METHOD: Describes HOW this person consistently works.
-   PASS: "I work backwards from what someone needs to understand into the data model"
+   PASS: "When current-state tracking could not serve the reporting we needed, I chose
+          an effective-dated history model; the data structure has to match what you need
+          to get from it, not just what is easiest to build"
    PASS: "I built production Python while staying deeply thoughtful about non-technical users"
         — broad, no employer named, but provable from the work history in the source paragraph
    FAIL: "I have strong skills in Python" — names a tool, not a way of working
 
 4. DISPOSITION / CHARACTER: Who the person IS — backed by real work history.
-   PASS: "I spent years caring for data where precision was non-negotiable — that's rare for a DE"
+   PASS: "I spent years caring for data where precision was non-negotiable; that's rare for a DE"
    PASS: "I am the kind of engineer who treats the question before the query as real work"
         — broad, but the source paragraph likely contains specific episodes that prove it
    FAIL: "I care about data quality" — says nothing a hiring manager could verify
@@ -428,16 +585,43 @@ def _extract_json_object(text: str) -> dict:
     return obj
 
 
-def _extract_from_paragraph(para_text: str, raw: str | None, api_key: str, model: str) -> dict:
+def _extract_from_paragraph(
+    para_text: str,
+    raw: str | None,
+    api_key: str,
+    model: str,
+    role: str | None = None,
+    section: str | None = None,
+) -> dict:
+    # Provide section context from library metadata so the model can populate the contexts
+    # array correctly for employer-specific claims without inventing names.
+    # IMPORTANT: only ownership/decision claims about this specific employer get this context.
+    # Approach/method, disposition/character, motivation/orientation claims that span the whole
+    # career get contexts: []. Personal project claims get context type "project".
+    employer_hint = ""
+    if role or section:
+        parts = [p for p in [role, section] if p]
+        employer_hint = (
+            f"=== SECTION CONTEXT (library metadata) ===\n"
+            f"{' — '.join(parts)}\n"
+            f"Use this name in the contexts array ONLY for claims that are specifically about "
+            f"work done at this employer — ownership, decisions, deliverables tied to this role.\n"
+            f"Do NOT apply it to cross-employer claims (approach/method, disposition/character, "
+            f"motivation) — those get contexts: [].\n"
+            f"Do NOT apply it to personal project claims — those get context type 'project'.\n"
+            f"Do NOT put this name in the claim text unless it appears in the paragraph.\n\n"
+        )
+
     if raw:
         content = (
+            f"{employer_hint}"
             "=== PARAGRAPH (refined — primary source; extract claims from here) ===\n"
             f"{para_text.strip()}\n\n"
             "=== RAW Q&A SESSION (use only to find technical detail compressed in paragraph) ===\n"
             f"{raw.strip()}"
         )
     else:
-        content = para_text.strip()
+        content = f"{employer_hint}{para_text.strip()}"
     raw_resp = _call_haiku(_EXTRACT_SYSTEM, content, api_key, model, max_tokens=2048)
     return _extract_json_object(raw_resp)
 
@@ -798,7 +982,7 @@ def _process_paragraph_for_review(
 ) -> dict:
     """Extract + judge one paragraph. Pure compute — no DB access. Thread-safe."""
     try:
-        data = _extract_from_paragraph(para_text, raw, api_key, model)
+        data = _extract_from_paragraph(para_text, raw, api_key, model, role=role, section=section)
     except Exception as e:
         data = {"claims": [], "conclusion": None, "_error": str(e)}
 
@@ -817,6 +1001,7 @@ def _process_paragraph_for_review(
 def _process_paragraph_for_insert(
     para_hash: str,
     para_text: str,
+    role: str,
     section: str,
     raw: str | None,
     api_key: str,
@@ -829,7 +1014,7 @@ def _process_paragraph_for_insert(
     Approved means: non-empty, grounded, judge-passed.
     """
     try:
-        data = _extract_from_paragraph(para_text, raw, api_key, model)
+        data = _extract_from_paragraph(para_text, raw, api_key, model, role=role, section=section)
     except Exception:
         return para_hash, [], None
 
@@ -1023,7 +1208,7 @@ def extract_claims_and_evidence(
 
     if force:
         rows = conn.execute(
-            "SELECT text_hash, text, section FROM paragraphs WHERE active = 1"
+            "SELECT text_hash, text, role, section FROM paragraphs WHERE active = 1"
         ).fetchall()
     else:
         already = {
@@ -1033,7 +1218,7 @@ def extract_claims_and_evidence(
         }
         rows = [
             r for r in conn.execute(
-                "SELECT text_hash, text, section FROM paragraphs WHERE active = 1"
+                "SELECT text_hash, text, role, section FROM paragraphs WHERE active = 1"
             ).fetchall()
             if r["text_hash"] not in already
         ]
@@ -1050,7 +1235,7 @@ def extract_claims_and_evidence(
             (row["text_hash"],),
         ).fetchone()
         para_inputs.append((
-            row["text_hash"], row["text"], row["section"],
+            row["text_hash"], row["text"], row["role"], row["section"],
             raw_row["responses_md"] if raw_row else None,
         ))
 
@@ -1060,16 +1245,16 @@ def extract_claims_and_evidence(
         futures = {
             pool.submit(
                 _process_paragraph_for_insert,
-                para_hash, para_text, section, raw,
+                para_hash, para_text, role, section, raw,
                 api_key, model, max_workers,
-            ): (para_hash, para_text, section, raw)
-            for para_hash, para_text, section, raw in para_inputs
+            ): (para_hash, para_text, role, section, raw)
+            for para_hash, para_text, role, section, raw in para_inputs
         }
         for future in as_completed(futures):
             try:
                 results.append(future.result())
             except Exception:
-                para_hash = futures[future][0]
+                para_hash = futures[future][0]  # index 0 is always para_hash
                 results.append((para_hash, [], None))
 
     # Serial DB writes — SQLite requires this.

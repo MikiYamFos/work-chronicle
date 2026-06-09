@@ -90,6 +90,23 @@ def read_job_description(
             raise SystemExit("\nNo input provided. Exiting.")
         return text
 
+    # If saved JDs exist, offer to pick one.
+    if jds_dir is not None:
+        _jds_dir = Path(jds_dir)
+        if _jds_dir.exists():
+            saved = sorted(_jds_dir.glob("*.txt"), key=lambda f: f.stat().st_mtime, reverse=True)
+            if saved:
+                console.print("\n[bold]Saved job descriptions:[/bold]")
+                for i, f in enumerate(saved, 1):
+                    console.print(f"  [cyan]{i}[/cyan]. {f.stem}")
+                console.print(f"  [cyan]n[/cyan]. Paste new JD from clipboard")
+                _flush_stdin()
+                pick = input("\nPick a number or n: ").strip().lower()
+                if pick.isdigit():
+                    idx = int(pick) - 1
+                    if 0 <= idx < len(saved):
+                        return saved[idx].read_text(encoding="utf-8")
+
     # Clipboard path.
     if prompt is not None:
         console.print(prompt)
@@ -289,20 +306,21 @@ def _gap_loop(
 
         # Guard against duplicate saves: search the current library for this gap
         # before starting Q&A. If we find a strong match, show it and let the user
-        # confirm it doesn't already cover the gap. This catches the common case of
-        # a session restart after interruption where the paragraph was already saved.
+        # confirm it doesn't already cover the gap.
         if all_paragraphs:
             from coverletter.build import _search_library
+            from rich.panel import Panel
             match_text = _search_library(gap, all_paragraphs, voyage_api_key=cfg.voyage_api_key)
             if match_text and match_text != "No matching paragraphs found.":
-                from rich.panel import Panel
                 console.print("\n[yellow]Library match found — may already cover this gap:[/yellow]")
                 console.print(Panel(match_text[:600] + ("…" if len(match_text) > 600 else ""), border_style="yellow"))
                 _flush_stdin()
-                confirm = input("[Y] yes, this covers it — skip   [Enter] no, build new paragraph → ").strip().lower()
+                confirm = input("[Y] yes, this covers it — skip   [Enter] no, build new paragraph   [done] exit → ").strip().lower()
                 if confirm == "y":
                     console.print("[dim]Skipped.[/dim]")
                     continue
+                if confirm == "done":
+                    break
 
         try:
             result = _qa_session(
@@ -351,7 +369,7 @@ def _coaching_pass(
         console.print(Panel(item.sentence, border_style="dim"))
 
         _flush_stdin()
-        user_input = input("> ").strip()
+        user_input = _read_multiline().strip()
 
         if not user_input:
             console.print("[dim]→ Kept.[/dim]\n")
@@ -675,18 +693,30 @@ def main(
     angle_evidence: list[dict] | None = None
     evidence_sentences: list[str] = []
     _conn = None  # DB connection — kept in scope for the post-gap-loop regeneration path
+
+    # Always attach stable DB ids so paragraph labels are traceable regardless of Voyage key.
+    from coverletter.db import open_db, db_path, paragraph_hash
+    _db = db_path(cfg.paragraphs_files)
+    if _db.exists():
+        _conn = open_db(_db)
+        hash_to_db_id = {
+            row[0]: row[1]
+            for row in _conn.execute("SELECT text_hash, id FROM paragraphs WHERE active=1")
+        }
+        for p in all_paragraphs:
+            p.db_id = hash_to_db_id.get(paragraph_hash(p.text))
+
     if cfg.voyage_api_key:
         try:
             from coverletter.db import (
-                open_db, db_path, paragraph_hash,
                 sync_from_markdown, compute_embeddings,
                 extract_and_store_sentences, compute_sentence_embeddings,
                 assign_angles_canonical,
                 rank_paragraphs_by_sentences, build_angle_evidence,
             )
-            _db = db_path(cfg.paragraphs_files)
-            if _db.exists():
+            if _conn is None and _db.exists():
                 _conn = open_db(_db)
+            if _conn is not None:
 
                 # Detect paragraphs added since the last sync
                 all_hashes = {paragraph_hash(p.text) for p in all_paragraphs}
@@ -813,6 +843,13 @@ def main(
             regen = input(f"\nSaved {new_paragraphs_saved} new paragraph(s). Regenerate letter with new material? [Y/n]: ").strip().lower()
             if regen in ("", "y", "yes"):
                 all_paragraphs = load_paragraphs(cfg.paragraphs_files)
+                if _conn is not None:
+                    hash_to_db_id_regen = {
+                        row[0]: row[1]
+                        for row in _conn.execute("SELECT text_hash, id FROM paragraphs WHERE active=1")
+                    }
+                    for p in all_paragraphs:
+                        p.db_id = hash_to_db_id_regen.get(paragraph_hash(p.text))
                 role_paragraphs = filter_by_role(all_paragraphs, role) if role else all_paragraphs
                 if cfg.voyage_api_key:
                     filtered = embed_prefilter(role_paragraphs, job_description, cfg.top_n, cfg.voyage_api_key)
@@ -920,7 +957,7 @@ def main(
             console.print(f"[dim]Previous rejection: {_rejection_note}[/dim]")
         console.print("[dim]Enter a paragraph number to target it, free text for global feedback, or Enter to finish:[/dim]")
         _flush_stdin()
-        feedback = input("> ").strip()
+        feedback = _read_multiline().strip()
 
         if not feedback:
             break
@@ -937,7 +974,7 @@ def main(
                 console.print()
                 console.print(Panel(target_para, border_style="cyan", title=f"Paragraph {para_idx + 1}"))
                 _flush_stdin()
-                targeted = input("How to revise this paragraph (or Enter to cancel): ").strip()
+                targeted = _read_multiline("How to revise this paragraph (or Enter to cancel): ").strip()
                 if not targeted:
                     continue
                 feedback = targeted
@@ -1034,7 +1071,7 @@ def _qa_session(
 ) -> str | None:
     """Interactive Q&A session. Returns accepted paragraph text or None."""
     from rich.panel import Panel
-    from coverletter.build import _build_initial_context, qa_turn, force_draft, append_to_library
+    from coverletter.build import _build_initial_context, qa_turn, force_draft, append_to_library, revise_draft
     from coverletter.experiences import load_experiences, find_experience, coverage_context
 
     experiences = load_experiences(cfg.experiences_file)
@@ -1082,33 +1119,27 @@ def _qa_session(
                 redirect = _read_multiline("Direction: ")
                 if not redirect:
                     continue
-                RULES_REMINDER = (
-                    "Revise the draft per the direction above.\n\n"
-                    "This is a CAPTURE revision — preserve everything, do not polish.\n"
-                    "DO NOT INVENT: every claim must trace to this conversation, not library results.\n"
-                    "USE THEIR WORDS: their language and level of abstraction, not resume speak.\n"
-                    "INCLUDE ALL DETAIL: every specific technical detail, fact, and explanation "
-                    "the person provided must appear in full — including everything in this redirect. "
-                    "Do not compress, summarize, or cut any of it. Length is fine.\n"
-                    "DO NOT EDITORIALIZE: do not add framing or conclusions the person did not provide."
-                )
-                history.append({"role": "assistant", "content": pending_draft})
-                history.append({"role": "user", "content": f"Revise the draft: {redirect}\n\n{RULES_REMINDER}"})
                 with Live(Spinner("dots", text="Revising..."), refresh_per_second=10, console=console):
-                    # Use qa_turn directly — history already ends with the revision instruction.
-                    # force_draft would append a second user message, causing the model to ignore the redirect.
-                    _draft_r, _raw_r = qa_turn(history, cfg.api_key, cfg.model, all_paragraphs, voyage_api_key=voyage_api_key)
-                    pending_draft = _draft_r or _raw_r or ""
+                    revised = revise_draft(pending_draft, redirect, history, cfg.api_key, cfg.model)
+                history.append({"role": "assistant", "content": pending_draft})
+                history.append({"role": "user", "content": f"Correction: {redirect}"})
+                history.append({"role": "assistant", "content": revised})
+                pending_draft = revised
 
             elif choice == "k":
-                history.append({"role": "assistant", "content": pending_draft})
-                history.append({"role": "user", "content": "Let's keep going — what else do you need?"})
-                pending_draft = None
-                with Live(Spinner("dots", text="Continuing..."), refresh_per_second=10, console=console):
-                    _, question = qa_turn(history, cfg.api_key, cfg.model, all_paragraphs, voyage_api_key=voyage_api_key)
-                if question:
-                    console.print(f"\n[cyan]{question}[/cyan]\n")
-                    history.append({"role": "assistant", "content": question})
+                if not pending_draft:
+                    # Draft is empty — force one from history instead of asking questions
+                    with Live(Spinner("dots", text="Drafting..."), refresh_per_second=10, console=console):
+                        pending_draft = force_draft(history, cfg.api_key, cfg.model, all_paragraphs, voyage_api_key=voyage_api_key)
+                else:
+                    history.append({"role": "assistant", "content": pending_draft})
+                    history.append({"role": "user", "content": "Let's keep going — what else do you need?"})
+                    pending_draft = None
+                    with Live(Spinner("dots", text="Continuing..."), refresh_per_second=10, console=console):
+                        _, question = qa_turn(history, cfg.api_key, cfg.model, all_paragraphs, voyage_api_key=voyage_api_key)
+                    if question:
+                        console.print(f"\n[cyan]{question}[/cyan]\n")
+                        history.append({"role": "assistant", "content": question})
 
         else:
             # Waiting for user answer — do NOT flush here; user may have typed while spinner ran
@@ -1263,7 +1294,7 @@ def reflect(
       coverletter reflect --about "shift from analyst to data engineer" --angle pivot
       coverletter reflect --about "through-line across all roles"
     """
-    from coverletter.build import PERSPECTIVE_SYSTEM, qa_turn, force_draft, append_to_library
+    from coverletter.build import PERSPECTIVE_SYSTEM, qa_turn, force_draft, append_to_library, revise_draft
     from rich.panel import Panel
     from rich.rule import Rule
 
@@ -1347,23 +1378,12 @@ def reflect(
                 redirect = _read_multiline("Direction: ")
                 if not redirect:
                     continue
-                RULES_REMINDER = (
-                    "Revise the draft per the direction above.\n\n"
-                    "This is a CAPTURE revision — preserve everything, do not polish.\n"
-                    "DO NOT INVENT: every claim must trace to this conversation, not library results.\n"
-                    "USE THEIR WORDS: their language and level of abstraction, not resume speak.\n"
-                    "INCLUDE ALL DETAIL: every specific technical detail, fact, and explanation "
-                    "the person provided must appear in full — including everything in this redirect. "
-                    "Do not compress, summarize, or cut any of it. Length is fine.\n"
-                    "DO NOT EDITORIALIZE: do not add framing or conclusions the person did not provide."
-                )
-                history.append({"role": "assistant", "content": pending_draft})
-                history.append({"role": "user", "content": f"Revise the draft: {redirect}\n\n{RULES_REMINDER}"})
                 with Live(Spinner("dots", text="Revising..."), refresh_per_second=10, console=console):
-                    # Use qa_turn directly — history already ends with the revision instruction.
-                    # force_draft would append a second user message, causing the model to ignore the redirect.
-                    _draft_r, _raw_r = qa_turn(history, cfg.api_key, cfg.model, all_paragraphs, voyage_api_key=cfg.voyage_api_key, system=PERSPECTIVE_SYSTEM)
-                    pending_draft = _draft_r or _raw_r or ""
+                    revised = revise_draft(pending_draft, redirect, history, cfg.api_key, cfg.model)
+                history.append({"role": "assistant", "content": pending_draft})
+                history.append({"role": "user", "content": f"Correction: {redirect}"})
+                history.append({"role": "assistant", "content": revised})
+                pending_draft = revised
             elif choice == "k":
                 history.append({"role": "assistant", "content": pending_draft})
                 history.append({"role": "user", "content": "Keep going — what else do you need to know?"})
@@ -1457,7 +1477,7 @@ def intake(
       coverletter intake --mission
       coverletter intake --evidence
     """
-    from coverletter.build import MISSION_SYSTEM, BUILD_SYSTEM, qa_turn, force_draft, append_to_library
+    from coverletter.build import MISSION_SYSTEM, build_system_prompt, qa_turn, force_draft, append_to_library
     from rich.panel import Panel
     from rich.rule import Rule
 
@@ -1545,7 +1565,7 @@ def _pick_location(
 
 def _intake_mission(cfg: "Config", all_paragraphs: list["Paragraph"], priority_file: "Path") -> None:
     """Q&A session to capture a mission alignment paragraph."""
-    from coverletter.build import MISSION_SYSTEM, qa_turn, force_draft, append_to_library
+    from coverletter.build import MISSION_SYSTEM, qa_turn, force_draft, append_to_library, revise_draft
     from rich.panel import Panel
 
     console.print("[bold]Mission frame[/bold]  [dim]— why a specific purpose or product resonates with you[/dim]\n")
@@ -1560,7 +1580,7 @@ def _intake_mission(cfg: "Config", all_paragraphs: list["Paragraph"], priority_f
         console.print("[yellow]Nothing to capture — exiting.[/yellow]")
         return
     _flush_stdin()
-    what_resonates = input("What specifically resonates? (your words, as much detail as you want): ").strip()
+    what_resonates = _read_multiline("What specifically resonates? (your words, as much detail as you want): ").strip()
 
     topic = company
     theme = company
@@ -1602,13 +1622,12 @@ def _intake_mission(cfg: "Config", all_paragraphs: list["Paragraph"], priority_f
                 redirect = _read_multiline("Direction: ")
                 if not redirect:
                     continue
-                history.append({"role": "assistant", "content": pending_draft})
-                history.append({"role": "user", "content": f"Revise the draft: {redirect}"})
                 with Live(Spinner("dots", text="Revising..."), refresh_per_second=10, console=console):
-                    pending_draft = force_draft(
-                        history, cfg.api_key, cfg.model, all_paragraphs,
-                        voyage_api_key=cfg.voyage_api_key, system=MISSION_SYSTEM,
-                    )
+                    revised = revise_draft(pending_draft, redirect, history, cfg.api_key, cfg.model)
+                history.append({"role": "assistant", "content": pending_draft})
+                history.append({"role": "user", "content": f"Correction: {redirect}"})
+                history.append({"role": "assistant", "content": revised})
+                pending_draft = revised
             elif choice == "k":
                 history.append({"role": "assistant", "content": pending_draft})
                 history.append({"role": "user", "content": "Keep going — what else do you need to know?"})
@@ -1659,8 +1678,9 @@ def _intake_mission(cfg: "Config", all_paragraphs: list["Paragraph"], priority_f
 
 def _intake_evidence(cfg: "Config", all_paragraphs: list["Paragraph"], priority_file: "Path") -> None:
     """Q&A session to capture an evidence paragraph."""
-    from coverletter.build import BUILD_SYSTEM, qa_turn, force_draft, append_to_library
+    from coverletter.build import build_system_prompt, qa_turn, force_draft, append_to_library
     from rich.panel import Panel
+    _build_system = build_system_prompt()
 
     console.print("[bold]Evidence[/bold]  [dim]— what you built or owned at a specific role[/dim]\n")
     console.print(
@@ -1686,7 +1706,7 @@ def _intake_evidence(cfg: "Config", all_paragraphs: list["Paragraph"], priority_
     with Live(Spinner("dots", text="Thinking..."), refresh_per_second=10, console=console):
         pending_draft, question = qa_turn(
             history, cfg.api_key, cfg.model, all_paragraphs,
-            voyage_api_key=cfg.voyage_api_key, system=BUILD_SYSTEM,
+            voyage_api_key=cfg.voyage_api_key, system=_build_system,
         )
     console.print(f"[dim]{running_total()}[/dim]")
 
@@ -1722,7 +1742,7 @@ def _intake_evidence(cfg: "Config", all_paragraphs: list["Paragraph"], priority_
                 with Live(Spinner("dots", text="Revising..."), refresh_per_second=10, console=console):
                     # Use qa_turn directly — history already ends with the revision instruction.
                     # force_draft would append a second user message, causing the model to ignore the redirect.
-                    _draft_r, _raw_r = qa_turn(history, cfg.api_key, cfg.model, all_paragraphs, voyage_api_key=cfg.voyage_api_key, system=BUILD_SYSTEM)
+                    _draft_r, _raw_r = qa_turn(history, cfg.api_key, cfg.model, all_paragraphs, voyage_api_key=cfg.voyage_api_key, system=_build_system)
                     pending_draft = _draft_r or _raw_r or ""
             elif choice == "k":
                 history.append({"role": "assistant", "content": pending_draft})
@@ -1731,7 +1751,7 @@ def _intake_evidence(cfg: "Config", all_paragraphs: list["Paragraph"], priority_
                 with Live(Spinner("dots", text="Continuing..."), refresh_per_second=10, console=console):
                     _, question = qa_turn(
                         history, cfg.api_key, cfg.model, all_paragraphs,
-                        voyage_api_key=cfg.voyage_api_key, system=BUILD_SYSTEM,
+                        voyage_api_key=cfg.voyage_api_key, system=_build_system,
                     )
                 if question:
                     console.print(f"\n[cyan]{question}[/cyan]\n")
@@ -1744,14 +1764,14 @@ def _intake_evidence(cfg: "Config", all_paragraphs: list["Paragraph"], priority_
                 with Live(Spinner("dots", text="Drafting..."), refresh_per_second=10, console=console):
                     pending_draft = force_draft(
                         history, cfg.api_key, cfg.model, all_paragraphs,
-                        voyage_api_key=cfg.voyage_api_key, system=BUILD_SYSTEM,
+                        voyage_api_key=cfg.voyage_api_key, system=_build_system,
                     )
             else:
                 history.append({"role": "user", "content": user_input})
                 with Live(Spinner("dots", text="Thinking..."), refresh_per_second=10, console=console):
                     pending_draft, question = qa_turn(
                         history, cfg.api_key, cfg.model, all_paragraphs,
-                        voyage_api_key=cfg.voyage_api_key, system=BUILD_SYSTEM,
+                        voyage_api_key=cfg.voyage_api_key, system=_build_system,
                     )
                 if question and pending_draft is None:
                     console.print(f"\n[cyan]{question}[/cyan]\n")
@@ -1956,15 +1976,11 @@ def blurb(
             section_map = {"1": "working_style", "2": "values"}
             target_section = section_map.get(section_choice, "working_style")
             console.print(
-                f"\nWrite {target_section} entries — one per line. Blank line when done.\n"
+                f"\nWrite {target_section} entries — one per line. Enter twice when done.\n"
             )
-            new_entries: list[str] = []
-            while True:
-                _flush_stdin()
-                entry = input("> ").strip()
-                if not entry:
-                    break
-                new_entries.append(entry)
+            _flush_stdin()
+            raw_entries = _read_multiline()
+            new_entries = [e.strip() for e in raw_entries.splitlines() if e.strip()]
             if new_entries:
                 getattr(profile, target_section).extend(new_entries)
                 from coverletter.profile import write_profile
@@ -1986,7 +2002,7 @@ def blurb(
     while True:
         console.print()
         _flush_stdin()
-        feedback = input("Revise (free text), or Enter to finish: ").strip()
+        feedback = _read_multiline("Revise (free text), or Enter to finish: ").strip()
         if not feedback:
             break
 
@@ -2061,6 +2077,12 @@ def init(ctx: click.Context) -> None:
             "# Optional: Voyage AI for semantic paragraph matching (better than keyword)\n"
             "# Get your key at https://www.voyageai.com\n"
             "VOYAGE_API_KEY=\n\n"
+            "# Optional: alternative providers (uncomment one to switch)\n"
+            "# MISTRAL_API_KEY=\n"
+            "# OPENAI_API_KEY=\n"
+            "# COHERE_API_KEY=\n\n"
+            "# Optional: local hybrid embeddings via BGE-M3 (no API key needed)\n"
+            "# EMBED_MODEL=bge-m3\n\n"
             "# Your name as it appears on the sign-off\n"
             "AUTHOR_NAME=\n\n"
             "# Absolute path to your resume PDF (or .md / .txt)\n"
@@ -2173,7 +2195,10 @@ def init(ctx: click.Context) -> None:
         for key, prompt_text, hint in needs_setup:
             hint_str = f" [dim](e.g. {hint})[/dim]" if hint else ""
             console.print(f"  {prompt_text}{hint_str}")
-            val = input(f"  {key}: ").strip()
+            try:
+                val = input(f"  {key}: ").strip()
+            except EOFError:
+                val = ""
             if val:
                 _set_env_val(key, val)
                 console.print(f"  [green]✓ saved[/green]\n")
@@ -2191,11 +2216,17 @@ def init(ctx: click.Context) -> None:
     console.print("  [B] I want to start a Q&A session to write a paragraph from scratch")
     console.print("  [S] Skip — I'll run clio seed or clio build manually later\n")
     _flush_stdin()
-    choice = input("Choice [A/B/S]: ").strip().lower()
+    try:
+        choice = input("Choice [A/B/S]: ").strip().lower()
+    except EOFError:
+        choice = "s"
 
     if choice == "a":
         console.print()
-        seed_file = input("Path to file (or press Enter to paste from clipboard): ").strip()
+        try:
+            seed_file = input("Path to file (or press Enter to paste from clipboard): ").strip()
+        except EOFError:
+            seed_file = ""
         console.print()
         try:
             ctx.invoke(seed_library, input_file=seed_file or None)
@@ -2216,7 +2247,10 @@ def init(ctx: click.Context) -> None:
         console.print("[bold]Next: build your candidate profile.[/bold]")
         console.print("[dim]This captures your goals, working style, and values. It drives the letter thesis and alignment report.[/dim]\n")
         _flush_stdin()
-        run_profile = input("Build your profile now? [Y/n]: ").strip().lower()
+        try:
+            run_profile = input("Build your profile now? [Y/n]: ").strip().lower()
+        except EOFError:
+            run_profile = "n"
         if run_profile not in ("n", "no"):
             try:
                 ctx.invoke(build_profile)
@@ -2227,11 +2261,13 @@ def init(ctx: click.Context) -> None:
 
     console.print()
     console.print("[bold]What's next:[/bold]")
-    console.print("  [cyan]uv run clio build[/cyan]         — add more paragraphs through Q&A")
-    console.print("  [cyan]uv run clio profile[/cyan]       — capture your goals and working style")
-    console.print("  [cyan]uv run clio sync[/cyan]          — load paragraphs into the DB")
-    console.print("  [cyan]uv run clio extract[/cyan]       — extract claims (needed for outline and interview)")
-    console.print("  [cyan]uv run clio generate[/cyan]      — generate a letter")
+    console.print("  [cyan]uv run clio seed[/cyan]           — bootstrap library from a resume or cover letter")
+    console.print("  [cyan]uv run clio build[/cyan]          — add paragraphs through Q&A")
+    console.print("  [cyan]uv run clio build --jd[/cyan]     — Q&A targeted at a specific job description")
+    console.print("  [cyan]uv run clio profile[/cyan]        — capture your goals and working style")
+    console.print("  [cyan]uv run clio sync[/cyan]           — load paragraphs into the DB")
+    console.print("  [cyan]uv run clio extract[/cyan]        — extract claims (needed for outline and interview)")
+    console.print("  [cyan]uv run clio generate[/cyan]       — generate a letter")
     console.print()
     console.print("[dim]Run [bold]uv run clio onboard[/bold] at any time to check setup status.[/dim]\n")
 
@@ -3092,6 +3128,137 @@ def sync_library(ctx: click.Context, paragraphs: str | None, embed: bool, angles
     console.print(table)
 
 
+@main.command("claims")
+@click.option("--source", default=None, help="Filter by source: manual, library, resume")
+@click.pass_context
+def list_claims(ctx: click.Context, source: str | None) -> None:
+    """List all claims in the DB."""
+    from coverletter.db import db_path
+    from coverletter.config import load_config
+    import sqlite3
+    cfg = load_config(None)
+    db = db_path(cfg.paragraphs_files)
+    if not db.exists():
+        console.print("[red]No database found. Run `clio sync` first.[/red]")
+        return
+    con = sqlite3.connect(db)
+    con.row_factory = sqlite3.Row
+    # source column may not exist in older DBs
+    cols = {r[1] for r in con.execute("PRAGMA table_info(claims)").fetchall()}
+    has_source = "source" in cols
+    if has_source:
+        where = "WHERE source = ?" if source else ""
+        params = (source,) if source else ()
+        rows = con.execute(
+            f"SELECT id, COALESCE(source,'extracted') as source, text, argument_categories FROM claims {where} ORDER BY source, id",
+            params,
+        ).fetchall()
+    else:
+        rows = con.execute(
+            "SELECT id, 'extracted' as source, text, argument_categories FROM claims ORDER BY id",
+        ).fetchall()
+    con.close()
+    if not rows:
+        console.print("[dim]No claims found.[/dim]")
+        return
+    console.print(f"\n[bold]{len(rows)} claim(s)[/bold]\n")
+    current_source = None
+    for row in rows:
+        if row["source"] != current_source:
+            current_source = row["source"]
+            console.print(f"[bold blue]── {current_source} ──[/bold blue]")
+        cats = row["argument_categories"] or ""
+        console.print(f"  [dim]{row['id']:>4}[/dim]  {row['text']}")
+        if cats:
+            console.print(f"        [dim]{cats}[/dim]")
+    console.print()
+
+
+@main.command("claim-add")
+@click.option("--paragraphs", "-p", default=None, help="Path to paragraphs MD file")
+@click.pass_context
+def claim_add(ctx: click.Context, paragraphs: str | None) -> None:
+    """Add a hand-crafted claim directly to the DB, bypassing extraction.
+
+    Use this for claims you've already written — motivation statements, career-level
+    disposition claims, or anything the extraction pipeline keeps mangling.
+    The claim goes straight into the claims table with source='manual'.
+    """
+    import sqlite3 as _sqlite3
+    from coverletter.extract import _insert_one_claim
+    from coverletter.db import db_path as _db_path
+
+    cfg = load_config(paragraphs)
+    db = _db_path(cfg.paragraphs_files)
+    if not db.exists():
+        console.print("[red]No database found. Run `clio sync` first.[/red]")
+        return
+
+    console.print("\n[bold blue]Add a claim[/bold blue]\n")
+    console.print("[dim]For claims you've written yourself — motivation statements, disposition claims, anything the extractor keeps flattening into resume-speak.[/dim]\n")
+
+    console.print("[bold]Claim text[/bold] [dim](your words, enter twice when done)[/dim]")
+    claim_text = _read_multiline().strip()
+    if not claim_text:
+        console.print("[yellow]Nothing entered — exiting.[/yellow]")
+        return
+
+    console.print()
+    console.print("[dim]Context type:[/dim]")
+    console.print("  [cyan]g[/cyan]  General / cross-career (no specific employer)")
+    console.print("  [cyan]e[/cyan]  Specific employer")
+    console.print("  [cyan]p[/cyan]  Personal project")
+    try:
+        ctx_choice = input("Context [g/e/p]: ").strip().lower()
+    except EOFError:
+        ctx_choice = "g"
+
+    contexts: list[dict] = []
+    if ctx_choice == "e":
+        try:
+            employer = input("Employer name: ").strip()
+        except EOFError:
+            employer = ""
+        if employer:
+            contexts = [{"type": "employer", "name": employer}]
+    elif ctx_choice == "p":
+        try:
+            project = input("Project name: ").strip()
+        except EOFError:
+            project = ""
+        if project:
+            contexts = [{"type": "project", "name": project}]
+
+    claim_dict = {
+        "text": claim_text,
+        "contexts": contexts,
+        "support": [],
+        "source": "manual",
+    }
+
+    conn = _sqlite3.connect(str(db))
+    conn.row_factory = _sqlite3.Row
+    try:
+        # Patch source to 'manual' — _insert_one_claim defaults to 'library'
+        conn.execute(
+            "INSERT INTO claims (text, source_para_hash, embedding, argument_categories, source) VALUES (?, ?, ?, ?, ?)",
+            (claim_text, None, None, None, "manual"),
+        )
+        claim_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        for ctx_item in contexts:
+            conn.execute(
+                "INSERT INTO claim_contexts (claim_id, context_type, context_name) VALUES (?, ?, ?)",
+                (claim_id, ctx_item["type"], ctx_item["name"]),
+            )
+        conn.commit()
+        console.print(f"\n[green]✓ Claim added (id {claim_id})[/green]")
+        console.print(f"[dim]{claim_text[:100]}{'...' if len(claim_text) > 100 else ''}[/dim]\n")
+    except Exception as e:
+        console.print(f"[red]Failed to insert claim: {e}[/red]")
+    finally:
+        conn.close()
+
+
 @main.command("extract")
 @click.option("--paragraphs", "-p", default=None, help="Path to paragraphs MD file")
 @click.option("--model", "-m", default=None, help="Claude model (default: Haiku)")
@@ -3535,7 +3702,7 @@ def generate_from_outline_command(
     while True:
         console.print()
         _flush_stdin()
-        feedback = input("Revise (free text), or Enter to finish: ").strip()
+        feedback = _read_multiline("Revise (free text), or Enter to finish: ").strip()
         if not feedback:
             break
 
@@ -3789,6 +3956,49 @@ def show_analytics(ctx: click.Context, paragraphs: str | None, min_gap_count: in
             console.print()
 
     conn.close()
+
+
+@main.command("para")
+@click.argument("id", type=int, required=False)
+@click.pass_context
+def show_paragraph(ctx: click.Context, id: int | None) -> None:
+    """Show all paragraphs in the DB, or the full text of one by ID.
+
+    \b
+    uv run clio para          # list all paragraphs with IDs
+    uv run clio para 15       # show full text of paragraph 15
+    """
+    import sqlite3
+    from coverletter.db import db_path
+    from coverletter.config import load_config
+    cfg = load_config(None)
+    db = db_path(cfg.paragraphs_files)
+    if not db.exists():
+        console.print("[red]No database found. Run `clio sync` first.[/red]")
+        return
+    con = sqlite3.connect(db)
+    con.row_factory = sqlite3.Row
+    if id is not None:
+        row = con.execute("SELECT id, role, section, text FROM paragraphs WHERE id=? AND active=1", (id,)).fetchone()
+        con.close()
+        if not row:
+            console.print(f"[red]No paragraph with id={id}[/red]")
+            return
+        console.print(f"\n[bold][{row['id']}] {row['role']} / {row['section']}[/bold]\n")
+        console.print(row["text"])
+        console.print()
+    else:
+        rows = con.execute("SELECT id, role, section, substr(text,1,100) as preview FROM paragraphs WHERE active=1 ORDER BY id").fetchall()
+        con.close()
+        if not rows:
+            console.print("[dim]No paragraphs found. Run `clio sync` first.[/dim]")
+            return
+        console.print(f"\n[bold]{len(rows)} paragraph(s)[/bold]\n")
+        for row in rows:
+            preview = row["preview"].replace("\n", " ")
+            console.print(f"  [dim]{row['id']:>3}[/dim]  [bold]{row['role']} / {row['section']}[/bold]")
+            console.print(f"       [dim]{preview}…[/dim]")
+        console.print(f"\n[dim]uv run clio para <id> to read full text[/dim]\n")
 
 
 @main.command("show-library")
