@@ -62,9 +62,9 @@ polished resume speak.
 NO PADDING. Every sentence carries a specific fact, decision, or consequence. Cut \
 anything that summarizes or editorializes.
 
-FIRST SENTENCE: names what the person BUILT, OWNED, or DECIDED at a specific place. \
-Stated as a fact, not framing. Reader knows what was done and where before end of \
-sentence.
+FIRST SENTENCE: names what the person BUILT, OWNED, or DECIDED. Stated as a fact, \
+not framing. DO NOT name an employer or company unless the person named it in this \
+conversation. Use only what they gave you.
 """
 
 _BUILD_TOOLS = """\
@@ -535,7 +535,14 @@ def _qa_turn_no_tools(
 
     messages = list(history)
     question_retries = 0
-    judge_context = search_query[:300]
+    def _build_judge_context(msgs: list[dict]) -> str:
+        parts = []
+        for m in msgs:
+            role = m["role"]
+            content = m["content"] if isinstance(m["content"], str) else ""
+            if content and role in ("user", "assistant"):
+                parts.append(f"{role}: {content[:400]}")
+        return "\n".join(parts)[-1200:]
 
     while True:
         # Build single user content string from the last user message
@@ -565,7 +572,7 @@ def _qa_turn_no_tools(
 
         if question and api_key:
             passes, reason = validate_question(
-                question, judge_context, api_key,
+                question, _build_judge_context(messages), api_key,
                 library_results=library_results,
             )
             if not passes:
@@ -637,11 +644,14 @@ def qa_turn(
     question_retries = 0
     last_library_results = ""  # tracks most recent search results for company accuracy check
 
-    # Extract brief context for the judge (first user message topic)
-    judge_context = next(
-        (m["content"] if isinstance(m["content"], str) else "" for m in history if m["role"] == "user"),
-        ""
-    )[:300]
+    def _build_judge_context(msgs: list[dict]) -> str:
+        parts = []
+        for m in msgs:
+            role = m["role"]
+            content = m["content"] if isinstance(m["content"], str) else ""
+            if content and role in ("user", "assistant"):
+                parts.append(f"{role}: {content[:400]}")
+        return "\n".join(parts)[-1200:]
 
     while True:
         response = _call_model(client, model, messages, system=system, use_tools=use_tools)
@@ -703,7 +713,7 @@ def qa_turn(
             # Validate the question before surfacing it — always validate, never leak a bad question
             if question and api_key:
                 passes, reason = validate_question(
-                    question, judge_context, api_key,
+                    question, _build_judge_context(messages), api_key,
                     library_results=last_library_results,
                 )
                 if not passes:
@@ -830,6 +840,65 @@ def needs_metadata_clarification(text: str) -> str | None:
         "Is this a personal project or work you did at an employer? "
         "If an employer, which one?"
     )
+
+
+_REVISION_SYSTEM = """\
+You are a revision assistant. Your only job is to rewrite the paragraph incorporating \
+the correction provided. Write DRAFT on its own line, then the revised paragraph.
+
+DO NOT ASK A QUESTION. DO NOT explain what you changed. Just write the paragraph.
+
+Rules:
+- Use the person's exact words and level of abstraction — do not translate into resume speak
+- Include every specific fact, detail, and explanation they provided — including in the correction
+- Do not invent anything not in the conversation
+- Do not name an employer unless the person named it in this conversation
+- No em-dashes. No "not just / not only / not simply". No fake contrast.
+- Do not start any sentence with "That"
+"""
+
+
+def revise_draft(
+    current_draft: str,
+    correction: str,
+    conversation_history: list[dict],
+    api_key: str,
+    model: str,
+) -> str:
+    """Direct revision call — bypasses Q&A machinery entirely.
+
+    Uses a revision-only system prompt so the model cannot ask questions.
+    Falls back to returning the original draft if the call fails.
+    """
+    from coverletter.provider import get_provider, parse_model
+    provider_name, _ = parse_model(model)
+
+    # Build a clean message sequence: conversation context + draft + correction
+    ctx_parts = []
+    for m in conversation_history:
+        role = m["role"]
+        content = m["content"] if isinstance(m["content"], str) else ""
+        if content and role in ("user", "assistant"):
+            ctx_parts.append(f"{role}: {content[:600]}")
+    ctx = "\n".join(ctx_parts)[-2000:]
+
+    user_msg = (
+        f"Conversation so far:\n{ctx}\n\n"
+        f"Current draft:\n{current_draft}\n\n"
+        f"Correction: {correction}\n\n"
+        f"Write DRAFT on its own line, then the revised paragraph."
+    )
+
+    try:
+        provider = get_provider(model, api_key)
+        text = provider.complete(_REVISION_SYSTEM, user_msg, max_tokens=4096, temperature=0.4)
+        draft, _ = _extract_draft(text)
+        if draft:
+            return draft
+        # Model wrote a paragraph without the DRAFT marker — acceptable
+        return text.strip() or current_draft
+    except Exception:
+        return current_draft
 
 
 def force_draft(

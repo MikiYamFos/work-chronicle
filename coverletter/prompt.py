@@ -125,22 +125,19 @@ BANNED STRUCTURES:
 
 ═══ ARGUMENT EVIDENCE ═══
 When `=== ARGUMENT TARGET ===` and `=== ARGUMENT EVIDENCE ===` appear in the user message,
-body paragraphs are WRITTEN from the evidence. The library contains only opener, closer,
-and narrative-frame paragraphs in this mode — no body paragraphs to select.
+use them to guide which library paragraphs to select and how to order the argument.
+The full paragraph library is always available — argument evidence identifies the most
+relevant angles, but the library paragraphs are the source of truth for what to include.
 
 ARGUMENT TARGET: the single argument every body paragraph builds toward. Every paragraph
 advances this argument — it is not enough to be topically related to it.
 
-ARGUMENT EVIDENCE: the required content for all body paragraphs.
-- Each `── ANGLE ──` block is the material for one body paragraph
+ARGUMENT EVIDENCE: guidance for body paragraph selection and ordering.
+- Each `── ANGLE ──` block identifies a required argument angle
 - `→` marks the primary claim or key evidence for that angle
-- Indented lines are supporting detail from the same source
-- EVERY claim and detail in the block must appear in the written paragraph
-- You are WRITING prose, not copying it. Use the evidence as the content requirement.
-  Connect claims within the paragraph — that is how paragraphs make arguments.
-- Do NOT invent claims, outcomes, or technical details not present in the block
-- Do NOT drop supporting details — they are required content, not optional color
-- Do NOT combine evidence from different angle blocks into one paragraph
+- Use this to SELECT the most relevant library paragraphs — do not drop library paragraphs
+  that cover a required angle just because they weren't surface in evidence retrieval
+- Do NOT invent claims, outcomes, or technical details not present in the library
 
 When no argument evidence is present: SELECT 3-4 body paragraphs from the library following
 STEP A (explicit JD requirements first) then STEP B (best argument fit).
@@ -148,10 +145,10 @@ STEP A (explicit JD requirements first) then STEP B (best argument fit).
 ═══ ASSEMBLY RULES ═══
 1. Write a fresh opener paragraph in the candidate's voice (see opener rules above).
    When an ARGUMENT TARGET is present, the opener must set up THAT specific argument.
-2. When ARGUMENT EVIDENCE is present: build 3-4 body paragraphs from the evidence sentences only.
-   The library contains no body paragraphs in this mode — do not try to select them.
-   See ARGUMENT EVIDENCE above for assembly rules.
-   When no ARGUMENT EVIDENCE is present: SELECT 3-4 body paragraphs from the library.
+2. SELECT 3-4 body paragraphs from the library. When ARGUMENT EVIDENCE is present, use it
+   to identify which angles are required and prefer library paragraphs that cover those angles.
+   Never drop a library paragraph that covers a required JD angle just because it wasn't
+   surfaced in argument evidence retrieval — retrieval is imperfect.
    Follow this priority order (library selection mode only):
 
    STEP A — COVER EXPLICIT JD REQUIREMENTS FIRST.
@@ -714,30 +711,26 @@ def build_user_message(
         for item in goals:
             library_lines.append(f"- {item}")
         library_lines.append("")
-    if angle_evidence:
-        library_lines.append(
-            "=== YOUR PARAGRAPH LIBRARY (VOICE REFERENCE — opener and closer only) ===\n"
-            "When argument evidence is present, do not select body paragraphs from this library.\n"
-            "Use it for opener voice, tone, and phrasing patterns. Use it for the closer.\n"
-        )
-    else:
-        library_lines.append("=== YOUR PARAGRAPH LIBRARY ===\n")
+    library_lines.append("=== YOUR PARAGRAPH LIBRARY ===\n")
     if role:
         library_lines.append(f"Target role: {role}\n")
     if company:
         library_lines.append(f"Company: {company}\n")
 
-    # In synthesis mode: show ONLY opener, closer, and narrative-frame paragraphs.
-    # Body evidence paragraphs are stripped — forcing the model to assemble body content
-    # from the ARGUMENT EVIDENCE block instead of reverting to blob paragraph selection.
     if angle_evidence:
-        display_paragraphs = [
+        # Paragraphs arrive pre-sorted by sentence-level relevance score.
+        # Always include openers/closers/frames; add top 8 body paragraphs by score.
+        _TOP_BODY = 8
+        priority = [
             p for p in paragraphs
             if p.meta.get("tone") in ("opener", "closer")
             or _is_perspective(p)
             or "why this role" in p.section.lower()
             or "closing" in p.section.lower()
         ]
+        priority_set = {id(p) for p in priority}
+        body = [p for p in paragraphs if id(p) not in priority_set]
+        display_paragraphs = priority + body[:_TOP_BODY]
     else:
         display_paragraphs = paragraphs
 
@@ -754,7 +747,8 @@ def build_user_message(
             or "closing" in _section_lower
         )
         closer_label = " [CLOSER ONLY]" if _is_closer else ""
-        library_lines.append(f"[{p.index}] {role_label}{p.section}{meta_str}{frame_label}{closer_label}")
+        id_label = p.db_id if p.db_id is not None else p.index
+        library_lines.append(f"[{id_label}] {role_label}{p.section}{meta_str}{frame_label}{closer_label}")
         library_lines.append(p.text)
         library_lines.append("")
     if template:

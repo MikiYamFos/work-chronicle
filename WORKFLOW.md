@@ -129,7 +129,7 @@ uv run clio profile --model opus    # use a more capable model for this
 Reads all configured `.md` files and upserts paragraphs into `library.db`. Run this:
 - After `seed` or `build` adds new paragraphs
 - After you edit any markdown file directly
-- Any time `clio claims` shows zero paragraphs
+- Any time the DB appears empty
 
 ```bash
 uv run clio sync
@@ -173,15 +173,6 @@ Session position saves on every action — reopen and it picks up where you left
 
 Same extraction and judging as dry-run; passing claims insert directly into the DB.
 Requires the gold standard threshold.
-
-### `clio claims`
-
-Zero-cost view of claim coverage across the library. Shows claim count and argument
-categories per paragraph.
-
-```bash
-uv run clio claims
-```
 
 ### Judge calibration
 
@@ -239,7 +230,7 @@ delta reporting (did your library coverage of this JD improve after adding parag
 ### Classic path (works with thin library, no claims required)
 
 ```bash
-uv run clio generate
+uv run clio
 ```
 
 Paste a JD when prompted. Streams a letter. After generation:
@@ -383,18 +374,16 @@ Use this on a fresh clone to confirm everything works.
 
 ### DB and extraction
 - [ ] `uv run clio sync` — runs without error, reports paragraph count
-- [ ] `uv run clio claims` — shows paragraph list with zero claims (extraction not yet run)
 - [ ] `uv run clio extract --dry-run` — writes `extractions_review.json`, no DB writes
 - [ ] `uv run streamlit run coverletter/label_evals.py` — loads claims, approve/reject works, gold standard checkbox works
 - [ ] `uv run clio extract` — runs after gold standard threshold met, claims land in DB
-- [ ] `uv run clio claims` — now shows claim counts per paragraph
 
 ### Resume extraction
-- [ ] `uv run clio generate` (first run with RESUME_FILE set) — prints `Indexing resume... N claims indexed (v1)` before letter streams
+- [ ] `uv run clio` (first run with RESUME_FILE set) — prints `Indexing resume... N claims indexed (v1)` before letter streams
 - [ ] `uv run clio resume-extract --force` — re-extracts, version increments
 
 ### Generation
-- [ ] `uv run clio generate` — letter streams, verification runs, alignment report prints, thesis prints
+- [ ] `uv run clio` — letter streams, verification runs, alignment report prints, thesis prints
 - [ ] Revision loop — enter gap number, add paragraph; `r` + feedback revises inline; `s` saves
 - [ ] `uv run clio outline jds/<file>.txt --company "Name"` — outline file written
 - [ ] Edit outline file, then `uv run clio generate --from-outline <outline> <jd>` — generates from outline

@@ -179,7 +179,7 @@ JDs are saved automatically when you paste one during `generate` or `blurb`. The
 | `uv run clio extract --dry-run` | Extract claims from library, write review files |
 | `uv run clio extract` | Extract, judge, and insert claims into DB (requires gold standard) |
 | `uv run streamlit run coverletter/label_evals.py` | Review extracted claims — approve/reject, build gold standard |
-| `uv run clio claims` | Show claim count, anchor count, and argument categories per paragraph |
+| `uv run clio extract --dry-run` | Show claim count, anchor count, and argument categories per paragraph |
 | `uv run clio outline <jd>` | Build editable outline from DB — three-stage retrieval, gaps shown after |
 | `uv run clio generate --from-outline <outline> <jd>` | Generate letter from edited outline |
 

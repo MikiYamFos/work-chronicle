@@ -1,15 +1,16 @@
 # End-to-End Test Flow
 
-Run all commands from the repo root. Complete each step before moving to the next.
+Run all commands from the repo root. Use `TEST_CONTENT.md` for source material if you don't have your own.
 
 ---
 
-## 0. Fresh clone
+## 0. Setup
 
 ```bash
 git clone <repo-url>
 cd work-chronicle
 uv sync
+cp .env.example .env   # then add your ANTHROPIC_API_KEY
 ```
 
 ---
@@ -22,116 +23,74 @@ uv run clio init
 
 - Prompts for ANTHROPIC_API_KEY → paste it
 - Prompts for AUTHOR_NAME → type your name
-- Prompts for RESUME_FILE → paste path to resume PDF
-- Offers to seed or build → choose A (seed) or B (build) or S (skip)
+- Prompts for RESUME_FILE → paste path to a PDF or hit Enter to skip
+- Offers to seed or build → choose S (skip) for now
 
 **Verify:**
 - `.env` exists and contains your key and name
-- `library.md` exists with just the comment block, no placeholder paragraphs
-- `experiences.md` exists
-- `custom_angles.toml` and `custom_categories.toml` exist
+- `library.md` exists (empty template)
 
 ---
 
-## 2. Seed from existing material
+## 2. Seed your library
+
+Paste one or more paragraphs from `TEST_CONTENT.md` (or your own resume/cover letter).
 
 ```bash
-uv run clio seed --file /path/to/resume.pdf
+uv run clio seed
 ```
 
-- Reviews each extracted paragraph: **[A]ccept / [E]dit / [S]kip**
-- Accept at least 3 paragraphs
+- Choose **P** (paste) when prompted for source type
+- Paste a paragraph or two from `TEST_CONTENT.md`
+- Review each extracted paragraph: **[A]ccept / [E]dit / [S]kip**
+- Accept at least 3
 
-**Verify:**
-- `library.md` has new paragraphs appended (no hard line breaks — prose is one continuous line)
-- `experiences.md` has Q&A agenda items written under each accepted paragraph
-- No em-dash violation errors on paragraphs you wrote yourself
-
----
-
-## 3. Build a paragraph from scratch
+Repeat with more paragraphs if you want more coverage:
 
 ```bash
-uv run clio build
+uv run clio seed
 ```
 
-- Enter a topic when prompted (e.g. a project or experience)
-- Answer the follow-up question
-- Type `draft` to force a draft, or wait for the auto-draft after 2 exchanges
-- At the draft: **[A]ccept / [R]edirect / [K]eep talking**
-- Accept it
-
 **Verify:**
-- `library_refined.md` has the new paragraph appended (no hard line breaks)
-- `experiences.md` updated with any new Q&A targets
+- `library.md` has paragraphs appended
+- `library_refined.md` exists with LLM-fixed versions
 
 ---
 
-## 4. Build your profile
-
-```bash
-uv run clio profile
-```
-
-- Press **G** to generate suggestions from your library
-- Review and edit each section
-- Save
-
-**Verify:**
-- `candidate_profile.toml` exists and has content in goals, working_style, values
-
----
-
-## 5. Sync to DB
+## 3. Sync to DB
 
 ```bash
 uv run clio sync
 ```
 
-**Verify:**
-- Runs without errors
-- Reports paragraph count > 0
+**Verify:** runs without errors, reports paragraph count > 0
 
 ---
 
-## 6. Check library
-
-```bash
-uv run clio show-library
-```
-
-**Verify:** paragraphs listed by role and section
-
----
-
-## 7. Extract claims — dry run
+## 4. Extract claims — dry run
 
 ```bash
 uv run clio extract --dry-run
 ```
 
-**Verify:**
-- `extractions_review.json` written
-- Claims look like real assertions, not summaries
+**Verify:** `extractions_review.json` written, no DB writes
 
 ---
 
-## 8. Label claims
+## 5. Label claims
 
 ```bash
 uv run streamlit run coverletter/label_evals.py
 ```
 
-- Approve good claims
-- Reject bad ones with a failure category
-- Check "Save as gold standard" on clear unambiguous cases
-- Need: 5 approved gold standard + 5 rejected gold standard minimum
+- Approve good claims, reject bad ones with a failure category
+- Mark "Save as gold standard" on at least 5 approved and 5 rejected — **required before live extraction**
 
 **Verify:** claim count updates as you approve
 
 ---
 
-## 9. Extract claims — live
+## 6. Extract claims — live
 
 ```bash
 uv run clio extract
@@ -141,125 +100,163 @@ uv run clio extract
 
 ---
 
-## 10. Check claims
+## 7. Check claims
 
 ```bash
 uv run clio claims
 ```
 
-**Verify:** claim counts per paragraph > 0
+**Verify:** claims listed by source, count > 0
 
 ---
 
-## 11. Generate a letter — classic path
+## 8. Build your profile
 
 ```bash
-uv run clio generate
+uv run clio profile
 ```
 
-- Paste a JD when prompted
-- Enter company name
+- Press **G** to generate suggestions from your library
+- Review and save
+
+**Verify:** `candidate_profile.toml` has content in goals, working_style, values
+
+---
+
+## 9. Generate a letter — main flow
+
+This is the primary flow. Copy the sample JD from `TEST_CONTENT.md` to your clipboard, then:
+
+```bash
+uv run clio
+```
+
+- Paste the JD when prompted (or paste from clipboard)
+- Enter company name: `Greenfield Analytics`
+
+**Inside generate — what to test:**
+
+1. **Gap list appears** — numbered list of JD requirements not covered by your library
+2. **Enter a gap number** (e.g. `2`) → Q&A session starts
+3. **Answer the questions** — give specific answers, not abstract ones
+4. **`draft`** — force a draft paragraph at any point
+5. **Accept the paragraph** → it appends to `library_refined.md` and fills the gap
+6. **Repeat** for 1-2 more gaps
+7. **`s`** → save the letter to `output/`
 
 **Verify:**
 - Letter streams without errors
-- `Indexing resume... N claims indexed (v1)` prints on first run (resume auto-extraction)
-- Verification pass runs after the letter
-- Alignment report prints with covered/gap breakdown
-- Thesis prints
-- Revision loop works: enter a gap number, do Q&A, accept a paragraph
-- `s` saves the letter to `output/`
+- Gap list shows covered items dimmed and uncovered items in red/yellow
+- Q&A follow-up question fires after first answer
+- Accepted paragraph appears in `library_refined.md`
+- Saved letter appears in `output/`
+- Alignment report prints at end showing covered/gap breakdown
 
 ---
 
-## 12. Generate a letter — argument-driven path
+## 10. Revision loop
+
+Run again on the same JD:
 
 ```bash
-uv run clio outline jds/<saved-jd>.txt --company "Company Name"
+uv run clio
 ```
 
-- Edit the outline file it produces (reorder, drop weak claims)
+After the letter streams:
+- Enter **`r`** → revision loop
+- Enter a paragraph number to revise
+- Give revision feedback
+- Accept the revised paragraph
+
+**Verify:** revised paragraph replaces the original in the letter
+
+---
+
+## 11. Add a manual claim
 
 ```bash
-uv run clio generate --from-outline output/<outline-file>.md jds/<saved-jd>.txt
+uv run clio claim-add
+```
+
+- Enter claim text in your own words
+- Choose context type (g = general, e = employer, p = project)
+- Confirm
+
+```bash
+uv run clio claims --source manual
+```
+
+**Verify:** your claim appears
+
+---
+
+## 12. Build a paragraph from scratch
+
+```bash
+uv run clio build --about "a specific project or experience"
+```
+
+- Answer the Q&A questions
+- Type `draft` to force a draft
+- Accept it
+
+**Verify:** paragraph appears in `library_refined.md`
+
+---
+
+## 13. File-based path (optional — if you have a saved JD file)
+
+```bash
+uv run clio generate jds/test_jd.txt --company "Greenfield Analytics"
+```
+
+**Verify:** letter streams, gap analysis runs, `s` saves it
+
+---
+
+## 14. Argument-driven path (optional, requires claims in DB)
+
+```bash
+uv run clio outline jds/test_jd.txt --company "Greenfield Analytics"
+```
+
+- Edit the outline file it produces
+
+```bash
+uv run clio generate --from-outline output/<outline-file>.md jds/test_jd.txt
 ```
 
 **Verify:** letter references anchor phrases from the outline
 
 ---
 
-## 13. Resume re-extraction
+## 15. Interview prep
 
 ```bash
-uv run clio resume-extract --force
+uv run clio interview jds/test_jd.txt --company "Greenfield Analytics"
 ```
-
-**Verify:** version number increments (v2), claim count printed
-
----
-
-## 14. Interview prep
-
-```bash
-uv run clio interview jds/<saved-jd>.txt --company "Company Name"
-```
-
-- Paste an optional recruiter note or hit Enter to skip
 
 **Verify:**
 - Briefing streams without errors
 - Coverage tags appear: `[RESUME]`, `[LIBRARY]`, `[GAP]`
 - Output file written to `output/`
 
+---
+
+## 16. Monitoring
+
 ```bash
-uv run clio interview jds/<saved-jd>.txt --company "Company Name" --summary
+uv run clio log --tail 20
 ```
 
-**Verify:** shorter version produced
+**Verify:** every API call appears with token counts and estimated cost
 
 ---
 
-## 15. JD management
+## 17. Outcome tracking
 
 ```bash
-uv run clio jd list
-uv run clio jd replace <name>    # paste updated JD
-```
-
-**Verify:** version change logged, list shows updated JD
-
----
-
-## 16. Paragraph editor
-
-```bash
-uv run streamlit run coverletter/library_diff.py
-```
-
-**Verify:**
-- Loads without error
-- Three columns render when `library_refined.md` exists
-- Level 1 coach button works (costs API call)
-- Level 2 coach button works (costs API call)
-- Save writes to `library_salvaged.md`
-
----
-
-## 17. Monitoring
-
-```bash
-uv run clio log
-uv run clio log --tail 50
-uv run clio log --sessions 5
-```
-
-**Verify:** every command that made API calls appears with token counts and cost
-
----
-
-## 18. Outcome tracking
-
-```bash
-uv run clio outcome "Company Name" interview
+uv run clio outcome "Greenfield Analytics" interview
 uv run clio analytics
 ```
 
@@ -267,10 +264,10 @@ uv run clio analytics
 
 ---
 
-## 19. Tests
+## 18. Tests
 
 ```bash
 uv run pytest tests/ -v
 ```
 
-**Verify:** all tests pass, no API calls made
+**Verify:** all pass, no API calls made
