@@ -24,7 +24,8 @@ _BAD_PATTERNS: list[tuple[str, str]] = [
     (r"^(can you )?(walk me through|take me through|describe the process of)", "asks for a process walkthrough — ask about a specific decision, failure, or consequence instead"),
     # Breakage/failure narrative imposed on tool competence gaps
     # These patterns assume a problem-solution story when none exists.
-    (r"\bwhat (broke|was breaking|was failing|was missing|was wrong|stopped working|went wrong|went down|crashed|wasn.t working)\b", "assumes a breakage narrative — only ask about failures if the person described a production incident; for tool/competence gaps ask what they BUILT"),
+    (r"\bwhat (broke|breaks|was breaking|was failing|is failing|was missing|was wrong|stopped working|went wrong|went down|crashed|wasn.t working)\b", "assumes a breakage narrative — only ask about failures if the person described a production incident; for tool/competence gaps ask what they BUILT"),
+    (r"\bwhat (breaks|would break|could break) downstream\b", "assumes a downstream breakage scenario — for competence gaps ask what they built and how, not what would fail"),
     (r"\bwhat (became|was) impossible\b", "assumes a failure narrative — ask what they built or owned instead"),
     (r"\bwhat (couldn.t|could not|can.t|cannot) (you |the team |the business )?(do|happen|work)", "assumes something was blocked — for competence gaps ask what they built, not what couldn't happen without them"),
     (r"\bbefore you (introduced|added|implemented|set up|built|created)\b", "assumes the tool was introduced to fix a problem — ask what they built with it instead"),
@@ -98,10 +99,19 @@ GAP TYPE CHANGES WHAT A GOOD QUESTION LOOKS LIKE:
 
 COMPETENCE/TOOL GAPS — context mentions "expertise in X", "proficiency with X", \
 "experience with X", or names specific tools (dbt, Airflow, GCP, AWS, Spark, etc.):
-  GOOD: asks what they built or owned using that tool — "What does the Airflow DAG do?"
+  GOOD: asks about a specific thing they built, owned, or decided using that tool.
+    "What specifically did you build in Airflow — what does the DAG do?"
+    "At Universe, what did the dbt models produce and who used them?"
+    "What was the hardest part of the Snowflake setup you owned?"
+  BAD: conceptual or definitional questions about how the tool works in general.
+    "What does the gold layer enforce that silver doesn't?" — this is a textbook
+    question, not a question about their work. It asks them to explain a concept,
+    not describe something they built. REJECT these.
   BAD: asks what broke, what was missing before, why they chose it over another tool,
        what the tool replaced, what became impossible without it.
-  Competence gaps are about demonstrating capability, not solving a crisis.
+  The test: does the question name or reference something specific the person said
+  they did, built, or owned? If it's asking about a general concept or pattern,
+  it is a conceptual question and should be rejected.
 
 PROJECT/PRODUCTION GAPS — context mentions "owns pipelines", "production experience", \
 "system design", "data modeling", incident response:
@@ -113,20 +123,51 @@ IMPACT/SENIORITY GAPS — context mentions "business impact", "drove decisions",
   GOOD: what changed or became possible after the work — decision made, team unblocked.
   BAD: what broke, what was missing — ask about what was ENABLED.
 
+TRAINING/TEACHING GAPS — context mentions "training", "teaching", "onboarding", \
+"explaining to non-technical", "supporting colleagues", "enabling others":
+  GOOD: what the person discovered about their audience's constraints, what they \
+        adapted, what a specific trainee struggled with and how they handled it, \
+        what happened when training was missing, what was at stake if people got it wrong.
+  BAD: general questions about training philosophy, how they "approach" training,
+       what makes training effective in general.
+  NOTE: "what kinds of X" is asking for EXAMPLES, not counts — always passes.
+
+VALUES/IDENTITY GAPS — context mentions "diversity", "equity", "inclusion", "justice", \
+"DEIJ", "DEI", "commitment to values", "mission-driven", "social impact", \
+"community", "anti-oppression", or similar:
+  These gaps require showing sustained, lived commitment — not technical capability.
+  GOOD: what a specific role or experience required the person to DO; what concrete \
+        choice, action, or sacrifice demonstrated that commitment; what they carried \
+        forward from one role into the next as a concrete practice or habit; \
+        who they served and what was at stake for those people. \
+        "What did you carry forward" IS good evidence here — the answer names a \
+        specific behavior or practice, not an abstract lesson.
+  BAD: "how do you define DEI?", "what does equity mean to you?", \
+       open-ended invitations to state values without grounding them in action.
+  CRITICAL: Do NOT reject questions asking what a specific role "required" them to do, \
+        what they "carried forward" as a practice, or who their work served — \
+        for values gaps these are CONCRETE EVIDENCE, not philosophizing.
+
 A GOOD question regardless of gap type:
 - Is answerable from memory without needing to check records
 - Gets a specific answer (situation, consequence, constraint, decision, or system)
 - Could produce a sentence that belongs in a strong cover letter
 
 A BAD question regardless of gap type:
-- Asks for counts, numbers, or percentages
+- Asks for counts, numbers, or percentages ("how many", "what percentage")
 - Asks for process walkthroughs ("walk me through")
-- Self-reflection that opens a topic for exploration — "what did this teach you about \
-  how X works?", "what did you learn about governance/scale/leadership?" These prompt \
-  the person to philosophize about a domain, not tell an experience. \
-  GOOD reflection asks what specifically CHANGED or SURPRISED them — those produce \
-  concrete answers. \
-  BAD reflection asks what something taught them ABOUT A TOPIC — that produces a lecture.
+- Asks for opinions or lessons about a general TOPIC or DOMAIN — \
+  "what did this experience teach you about governance/scale/leadership/training?" \
+  "how did that shape your thinking about X?" \
+  "what did you learn about how X works in general?" \
+  These invite an essay on a topic. \
+  DO NOT REJECT questions asking what the person figured out, discovered, or \
+  noticed about a SPECIFIC SITUATION or SPECIFIC PERSON/SYSTEM — \
+  "what did you have to figure out about how they worked?", \
+  "what did you realize about what they needed?", \
+  "what did you discover when you looked at the data?" \
+  These produce concrete memories, not essays. The test: could the answer be \
+  "I realized X about this specific situation"? If yes, it PASSES.
 - Is so vague the answer could apply to any job
 - Is a rephrasing of a question already asked in this conversation
 - Invents a premise the person never stated — "what made X hard to design" when \
@@ -151,7 +192,7 @@ def judge_question(
     import json
     from coverletter.provider import get_provider
 
-    prompt = f"Context: {context[:300]}\n\nQuestion to judge: {question}"
+    prompt = f"Context (gap being filled + recent conversation):\n{context[:3000]}\n\nQuestion to judge: {question}"
     raw = get_provider(_JUDGE_MODEL, api_key).complete(_JUDGE_SYSTEM, prompt, max_tokens=128)
     raw = re.sub(r"^```(?:json)?\s*", "", raw)
     raw = re.sub(r"\s*```$", "", raw)

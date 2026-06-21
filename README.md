@@ -262,27 +262,29 @@ The JD embedding is cached after the first run. If you run `generate`, then `blu
 
 ### 4. Letter generation
 
-The tool selects the most relevant paragraphs from your library (ranked by semantic similarity to the JD, capped at 2 paragraphs per experience) and assembles a letter. The opener and closer are written fresh for this specific role and company.
+Before generating, the tool derives a provisional argument from the JD. This becomes the thesis — no redundant second pass.
 
-**Opener rule:** the opener connects you to the target employer first — what the organization does, what about their work connects to yours, why this is the right fit. It does not name previous employers and does not open with credentials or employment history.
+Paragraphs from your library are organized by 18 canonical angles, each scored by cosine similarity against the JD:
+- **REQUIRED (★):** cosine ≥ 0.45 — must appear as at least one concrete claim in the letter
+- **SUPPORTING:** below 0.45 — woven in where they strengthen the argument
 
-### 5. Quality checks
+Paragraphs you wrote in a previous gap session for this exact JD are guaranteed in evidence via content-hash match, regardless of their angle classification. This prevents JD-targeted writing from being buried by miscategorization.
 
-**Hard check:** the letter fails immediately if it contains an em-dash.
+**Opener rule:** the opener states the thesis — both sides present: what the organization does + what this candidate has done = why this letter exists. No previous employer names. No credential lead.
 
-**LLM check:** scans for banned words, fake-contrast structures, weak opener, closer that doesn't name the company. On failure, the tool proposes a minimal fix:
+### 5. Quality checks *(opt-in)*
 
-```
-[A]ccept fix  [E]dit manually (revision loop)  [S]kip (keep current):
-```
+After generation you're asked: `Run quality check? [y/N]:`
 
-The model stays as close to your source language as possible — it prefers cutting or restructuring over rewriting. If it can't fix something without inventing new language, it flags the sentence: `COULD NOT FIX: [sentence]`.
+**Hard check:** the letter fails immediately if it contains an em-dash, a banned phrase, or a paragraph starting with "That".
 
-**Source check:** flags any body sentence where less than 72% of the words appear in your source paragraphs. Warnings, not blockers.
+**LLM check (Haiku):** scans for list-pile endings, generic body openers, and AI/template prose. On failure, a fix is proposed — also opt-in (`Propose fix? [Y/n]:`).
+
+**Source check:** flags any body sentence where less than 20% of the words appear in source paragraphs. Warnings, not blockers.
 
 ### 6. Letter thesis *(skipped with `--fast`)*
 
-The tool reads the letter and names the central argument it's making about you. If your profile is loaded, it also evaluates goal fit. Confirm it, adjust it, or reject it.
+Reused from the provisional argument derived before generation. If your profile is loaded, also evaluates goal fit.
 
 ### 7. Alignment report *(skipped with `--fast`)*
 
@@ -371,8 +373,9 @@ The library is split across several markdown files with distinct roles. The tool
 
 | File | What goes here | Priority |
 |---|---|---|
-| `library.md` | Your raw paragraphs — written directly, Q&A answers, anything you typed. Never rewritten by the tool. | Base |
-| `library_refined.md` | Paragraphs built through `clio build` and approved. Takes priority over `library.md` for the same section. | High |
+| `library_approved.md` | Paragraphs you've line-edited and explicitly approved. Highest priority at generation time. | Highest |
+| `library_refined.md` | Paragraphs built through `clio build` gap Q&A and approved. Higher priority than raw. | High |
+| `library.md` | Your raw paragraphs — written directly, seed extractions, anything you typed. Never rewritten by the tool. | Base |
 | `library_salvaged.md` | Paragraphs corrected via the diff tool — reviewed against raw source and approved. | High |
 | `library_rebuilt.md` | Paragraphs built from scratch through the correct workflow. | High |
 | `story_notes.md` | Raw material from conversations that hasn't been turned into paragraphs yet. Surfaced in the diff tool but not used in generation. | — |
@@ -475,14 +478,15 @@ Up to 400 words depending on prompt type. Revision loop retains rejected drafts 
 
 ## Writing rules (enforced)
 
-- No em-dash (`—`) anywhere
+- No em-dash (`—`) anywhere — generation or coaching rewrites
 - No sentence starting with "That"
-- No banned phrases: `actually`, `not just`, `not only`, `not simply`, `this matters because`, `the hard part was not`, `what stands out`, `the clearest connection`, `this is the kind of work`, `i am strongest in`, `i combine`
+- No present-progressive chaining: "I have been building", "I have been doing", "work I have been doing"
+- No banned phrases: `actually`, `not just`, `not only`, `not simply`, `this matters because`, `the hard part was not`, `what stands out`, `the clearest connection`, `this is the kind of work`, `i am strongest in`, `i combine`, `career-long pattern`, `building for the next`, `responsible for ingesting`
 - No generic bridge openers: `that experience fits`, `this role aligns`
 - No paragraph ending with a list of 3+ items
 - No generic body paragraph opener (must lead with a concrete fact)
-- Every body sentence must trace to source paragraphs
-- Opener connects to the target employer first — no previous employer names, no credential lead
+- Every body sentence must trace to source paragraphs (verbatim check threshold: 20%)
+- **Opener states the thesis** — both sides present: what the organization does + what this candidate has done = why this letter exists. No previous employer names. No credential lead.
 - Body paragraphs must not restate claims already made in the opener
 - `[CLOSER ONLY]` paragraphs must not appear as the first or second body paragraph
 

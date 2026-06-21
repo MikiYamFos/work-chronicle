@@ -338,7 +338,8 @@ def _cosine(a: list[float], b: list[float]) -> float:
 
 # Session-level embedding cache: paragraph index -> vector
 # Avoids re-embedding the same paragraphs on every search call within a session.
-_embed_cache: dict[int, list[float]] = {}
+# Key is (index, section) so section name is always part of the embedded text.
+_embed_cache: dict[tuple, list[float]] = {}
 
 
 def _voyage_search(
@@ -354,22 +355,22 @@ def _voyage_search(
         client = voyageai.Client(api_key=voyage_api_key)
 
         # Embed paragraphs not yet in cache
-        uncached = [p for p in paragraphs if p.index not in _embed_cache]
+        uncached = [p for p in paragraphs if (p.index, p.section) not in _embed_cache]
         if uncached:
             texts = [
-                p.text + (" " + p.meta["angle"].replace("-", " ") if p.meta.get("angle") else "")
+                p.section + " " + p.text + (" " + p.meta["angle"].replace("-", " ") if p.meta.get("angle") else "")
                 for p in uncached
             ]
             doc_result = client.embed(texts, model="voyage-3-lite", input_type="document")
             for p, vec in zip(uncached, doc_result.embeddings):
-                _embed_cache[p.index] = vec
+                _embed_cache[(p.index, p.section)] = vec
 
         # Embed query (queries are short — don't cache)
         q_result = client.embed([query], model="voyage-3-lite", input_type="query")
         q_vec = q_result.embeddings[0]
 
         scored = [
-            (_cosine(_embed_cache[p.index], q_vec), p)
+            (_cosine(_embed_cache[(p.index, p.section)], q_vec), p)
             for p in paragraphs
             if p.index in _embed_cache
         ]
@@ -390,12 +391,42 @@ def _angle_boost(query_words: set[str], paragraph: "Paragraph") -> float:
     return 1.0 + overlap * 1.5  # each overlapping angle word is a strong signal
 
 
+_STRUCTURAL_ANGLES = frozenset({"through-line", "pivot", "reframe", "synthesis"})
+_STRUCTURAL_TONES = frozenset({"opener", "closer"})
+
+
+def _is_structural(p: "Paragraph") -> bool:
+    """Return True if the paragraph is framing/narrative, not evidential.
+
+    Structural paragraphs (through-lines, openers, closers, pivots, career summaries)
+    contain no specific facts — they must never be returned as evidence matches.
+    """
+    angle = p.meta.get("angle", "").lower()
+    tone = p.meta.get("tone", "").lower()
+    section_lower = p.section.lower()
+    if angle in _STRUCTURAL_ANGLES or tone in _STRUCTURAL_TONES:
+        return True
+    # Section name heuristics for untagged summaries
+    if any(kw in section_lower for kw in ("career summary", "through-line", "summary", "overview", "closing", "opener")):
+        return True
+    return False
+
+
 def _search_library(
     query: str,
     paragraphs: list[Paragraph],
     voyage_api_key: str = "",
 ) -> str:
-    """Search the paragraph library. Priority: Voyage semantic > tag-boosted BM25 > keyword."""
+    """Search the paragraph library. Priority: Voyage semantic > tag-boosted BM25 > keyword.
+
+    Structural paragraphs (through-lines, openers, closers, summaries) are excluded —
+    they have no specific evidence and must not be suggested as library matches.
+    """
+    if not paragraphs:
+        return "No matching paragraphs found."
+
+    # Strip structural paragraphs before any search — they are never evidence
+    paragraphs = [p for p in paragraphs if not _is_structural(p)]
     if not paragraphs:
         return "No matching paragraphs found."
 
@@ -538,11 +569,13 @@ def _qa_turn_no_tools(
     def _build_judge_context(msgs: list[dict]) -> str:
         parts = []
         for m in msgs:
-            role = m["role"]
+            if m["role"] != "user":
+                continue
             content = m["content"] if isinstance(m["content"], str) else ""
-            if content and role in ("user", "assistant"):
-                parts.append(f"{role}: {content[:400]}")
-        return "\n".join(parts)[-1200:]
+            if not content or content.startswith("[JUDGE") or content.startswith("[DRAFT JUDGE"):
+                continue
+            parts.append(content)
+        return "\n\n".join(parts)
 
     while True:
         # Build single user content string from the last user message
@@ -588,13 +621,22 @@ def _qa_turn_no_tools(
                     )})
                     continue
                 else:
-                    return None, ""
+                    # All question retries exhausted — draft from what we have rather
+                    # than leaving the user with an empty prompt.
+                    messages.append({"role": "assistant", "content": question})
+                    messages.append({"role": "user", "content": (
+                        "[JUDGE: all question retries exhausted. "
+                        "Write DRAFT on its own line and draft the paragraph now "
+                        "from everything said in this conversation. Do not ask another question.]"
+                    )})
+                    continue
 
         return None, question or ""
 
 
 def _call_model(client, model: str, messages: list[dict], system: str = BUILD_SYSTEM, use_tools: bool = True) -> object:
-    """Single model call — separated so the retry loop can call it cleanly."""
+    """Single model call with retry on transient 500 errors."""
+    import time
     kwargs: dict = dict(
         model=model,
         max_tokens=4096,
@@ -605,7 +647,16 @@ def _call_model(client, model: str, messages: list[dict], system: str = BUILD_SY
         kwargs["tools"] = _TOOLS
     if supports_temperature(model):
         kwargs["temperature"] = 0.4
-    response = client.messages.create(**kwargs)
+    for attempt in range(3):
+        try:
+            response = client.messages.create(**kwargs)
+            break
+        except Exception as e:
+            status = getattr(getattr(e, "response", None), "status_code", None) or getattr(e, "status_code", None)
+            if status == 500 and attempt < 2:
+                time.sleep(2 ** attempt)
+                continue
+            raise
     usage = response.usage
     record(
         model, usage.input_tokens, usage.output_tokens,
@@ -647,11 +698,13 @@ def qa_turn(
     def _build_judge_context(msgs: list[dict]) -> str:
         parts = []
         for m in msgs:
-            role = m["role"]
+            if m["role"] != "user":
+                continue
             content = m["content"] if isinstance(m["content"], str) else ""
-            if content and role in ("user", "assistant"):
-                parts.append(f"{role}: {content[:400]}")
-        return "\n".join(parts)[-1200:]
+            if not content or content.startswith("[JUDGE") or content.startswith("[DRAFT JUDGE"):
+                continue
+            parts.append(content)
+        return "\n\n".join(parts)
 
     while True:
         response = _call_model(client, model, messages, system=system, use_tools=use_tools)
@@ -879,8 +932,8 @@ def revise_draft(
         role = m["role"]
         content = m["content"] if isinstance(m["content"], str) else ""
         if content and role in ("user", "assistant"):
-            ctx_parts.append(f"{role}: {content[:600]}")
-    ctx = "\n".join(ctx_parts)[-2000:]
+            ctx_parts.append(f"{role}: {content[:2000]}")
+    ctx = "\n".join(ctx_parts)[-6000:]
 
     user_msg = (
         f"Conversation so far:\n{ctx}\n\n"

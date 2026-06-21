@@ -19,9 +19,9 @@ uv run clio init          # interactive setup: API keys, seed, profile
 | View library by role and section | `uv run clio show-library` |
 
 **Library layers (priority order for generation):**
-1. `library_approved.md` — manually line-edited and approved
-2. `library_refined.md` — LLM-validated seed output + build drafts
-3. `library.md` — verbatim seed extractions (raw)
+1. `library_approved.md` — manually line-edited and approved (highest)
+2. `library_refined.md` — gap Q&A drafts, `clio build` output (high)
+3. `library.md` — verbatim seed extractions, raw paragraphs (base)
 
 ---
 
@@ -92,9 +92,14 @@ uv run python coverletter/evals/retrieval_eval.py  # BM25 vs semantic retrieval 
 ## Typical flow
 
 ```
-init → seed (repeat with different sources) → edit → profile → sync → extract → generate
+init → seed (repeat with different sources) → profile → sync → extract → generate
 ```
 
 ```
-generate → gap Q&A → accept paragraph → save letter → outcome
+generate → [quality check? y/N] → gap Q&A → accept paragraph → regen → save letter → outcome
 ```
+
+**Evidence retrieval — what the model sees:**
+- Angles scored against JD: ★ REQUIRED (≥ 0.45 cosine) must appear as claims; SUPPORTING woven in
+- Paragraphs written in a previous gap session for this JD are guaranteed in evidence (by JD hash)
+- Quality check is opt-in; fix proposal is opt-in — skip both to keep costs down

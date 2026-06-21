@@ -14,21 +14,43 @@ You are a cover letter strategist. Be direct and specific. No filler.
 ARGUMENT_PROMPT = """\
 === JOB DESCRIPTION ===
 {jd}
-{candidate_section}
+{candidate_section}{evidence_section}
 What is the single strongest argument for this candidate at this role?
 
 Complete this sentence:
-"This letter should argue that [describe the candidate's specific capability or experience type] \
-is exactly what this role needs because [what the JD is specifically seeking that this candidate \
-uniquely provides]."
+"This letter should argue that [candidate clause] is exactly what this role needs because \
+[employer clause]."
 
-Rules:
-- Name the specific technical or domain capability the JD centers on — not generic credentials
-- Ground the claim in the JD's actual requirements, not resume summary language
-- The candidate clause must describe a specific kind of work, role, or constraint — not a
-  quality-adjective ("high-stakes data," "consequential systems," "critical environments").
-  Adjectives are not arguments. What did they BUILD, OWN, or DECIDE that is specific to them?
-- One sentence. Output only the sentence. No preamble.
+Rules for the CANDIDATE CLAUSE:
+- Read the CANDIDATE PROFILE — including working style, values, and what draws them to
+  certain kinds of work. The candidate clause should reflect who this person actually is
+  and what motivates them, not just a list of technical outputs.
+  If this employer has a mission, find the overlap between the candidate's drives and that
+  mission — that is the argument. "Someone who has spent their career building systems that
+  change what decision-makers can see" connects to a healthcare data mission. A pure technical
+  credential list does not.
+- Name specific things they built, owned, or decided — not paraphrases of the JD
+- Ground it in the evidence sentences above. The strongest arguments name what was at stake:
+  what would have broken, who would have been harmed, what the output was used for.
+  "shipping data that ran live in production applications where wrong data meant a broken product"
+  is an argument. "owning every layer from ingestion to serving" is a list.
+- Lead with what the candidate owned and delivered. Never frame around what was absent:
+  WRONG: "with no team beneath them", "without a senior engineer to catch errors"
+  RIGHT: "as the sole practitioner responsible for..." / "owning the full platform end-to-end..."
+- No adjectives as arguments: "high-stakes", "consequential", "critical" are empty.
+  Name the actual stake. What broke when it was wrong?
+
+Rules for the EMPLOYER CLAUSE:
+- Read the full JD — including any "About" or mission sections at the top. If the employer
+  states a mission (what problem they exist to solve, who they serve, why it matters),
+  the employer clause should reflect that — not just the technical requirements list.
+  A mission-driven employer clause names what this organization is trying to do in the world
+  and why this candidate's background makes them the right person to build for it.
+- State what the JD is specifically seeking that this candidate uniquely provides
+- No false comparisons: never "not inherit them", "not just X", "rather than Y"
+  State what the role IS, not what it isn't.
+
+- One sentence. Output only the sentence. No preamble. No em-dash.
 """
 
 THESIS_SYSTEM = """\
@@ -106,13 +128,16 @@ Analyze how well the letter addresses the JD. Output exactly {num_sections} sect
 SCORE: [N covered] of [M total] JD requirements
 
 COVERED
-One line per covered requirement.
+One line per requirement the LETTER itself addresses — not the library.
+A requirement is covered only if the letter contains sentences that address it.
+A paragraph sitting in the library but absent from the letter does NOT count as covered.
 Format: ✓ [requirement] — [how the letter covers it]
 
 GAPS
-One line per gap. Only real gaps — things the JD explicitly requires or prefers that the letter
-does not address.
-Format: ✗ [requirement] — [why it matters for this role]
+One line per gap. A gap is anything the JD explicitly requires or prefers that the letter
+does not address. If a library paragraph covers the gap but the letter omits it, it is
+still a gap — note that the paragraph exists so the writer knows to include it.
+Format: ✗ [requirement] — [why it matters; note "paragraph [N] covers this" if applicable]
 {seniority_gaps_section}{goal_alignment_section}
 Do not add encouragement, filler, or any sections beyond these {num_sections}.
 """
@@ -261,15 +286,18 @@ def generate_argument(
     model: str,
     profile: CandidateProfile | None = None,
     company_values: str | None = None,
+    evidence_sentences: list[str] | None = None,
 ) -> str:
-    """Generate a provisional argument target from the JD alone — before the letter exists.
+    """Generate a provisional argument target.
 
-    This is the beacon: a single sentence stating what the letter SHOULD argue.
-    Used to focus sentence retrieval and anchor the model's assembly.
+    When evidence_sentences are provided (post-retrieval), the argument is grounded in what
+    the candidate actually wrote, not just what the JD asks for.
+    When called without evidence (pre-retrieval fallback), the argument is JD-derived only.
     """
 
     if profile and not profile.is_empty:
-        candidate_section = f"\n=== CANDIDATE PROFILE ===\n{profile.as_goals_text()}\n"
+        parts = [profile.as_goals_text(), profile.as_working_style_text(), profile.as_values_text(), profile.as_differentiators_text()]
+        candidate_section = "\n=== CANDIDATE PROFILE ===\n" + "\n\n".join(p for p in parts if p) + "\n"
     else:
         candidate_section = ""
 
@@ -278,9 +306,18 @@ def generate_argument(
         if company_values else ""
     )
 
+    if evidence_sentences:
+        # Cap to avoid ballooning the prompt — top sentences are highest-scored
+        sample = evidence_sentences[:20]
+        evidence_section = "\n=== CANDIDATE'S STRONGEST EVIDENCE (from their paragraph library) ===\n"
+        evidence_section += "\n".join(f"- {s}" for s in sample) + "\n"
+    else:
+        evidence_section = ""
+
     prompt = ARGUMENT_PROMPT.format(
         jd=jd.strip() + values_section,
         candidate_section=candidate_section,
+        evidence_section=evidence_section,
     )
     from coverletter.provider import get_provider
     return get_provider(model, api_key).complete(ARGUMENT_SYSTEM, prompt, max_tokens=200)

@@ -8,7 +8,7 @@ from rich.spinner import Spinner
 from rich.table import Table
 from rich.live import Live
 
-from coverletter.align import AlignmentResult, alignment_report, generate_argument, generate_thesis, has_library_coverage
+from coverletter.align import AlignmentResult, alignment_report, generate_argument, generate_thesis
 from coverletter.profile import CandidateProfile, load_profile
 from coverletter.costs import running_total
 from coverletter.coach import WeakSentence, analyze_letter, get_context, rewrite_sentence
@@ -21,6 +21,9 @@ from coverletter.resume import load_resume
 from coverletter.verify import verbatim_check, verify_letter
 
 console = Console()
+
+# Cheap model for quality/alignment checks — does not need Sonnet
+CHEAP_MODEL = "claude-haiku-4-5-20251001"
 
 
 def _read_from_clipboard() -> str:
@@ -192,19 +195,62 @@ def _find_template(output_dir: "Path", name: str) -> "Path | None":
 
 
 
-def _read_multiline(prompt: str = "> ") -> str:
-    """Read multiline input. Uses prompt_toolkit (no line-length limit, paste-safe).
+def _suggest_angle(text: str, voyage_api_key: str = "") -> str:
+    """Return the best-matching canonical angle name for a paragraph text."""
+    from coverletter.db import CANONICAL_ANGLES
+    if voyage_api_key:
+        try:
+            import voyageai  # type: ignore
+            client = voyageai.Client(api_key=voyage_api_key)
+            angle_names = list(CANONICAL_ANGLES.keys())
+            desc_vecs = client.embed(list(CANONICAL_ANGLES.values()), model="voyage-3-lite", input_type="document").embeddings
+            text_vec = client.embed([text], model="voyage-3-lite", input_type="document").embeddings[0]
+            import json as _json
+            best = max(range(len(angle_names)), key=lambda i: sum(a * b for a, b in zip(text_vec, desc_vecs[i])))
+            return angle_names[best]
+        except Exception:
+            pass
+    # Keyword fallback
+    t = text.lower()
+    scores: dict[str, int] = {
+        "ownership": sum(t.count(w) for w in ["owned", "built", "responsible for", "end-to-end", "sole"]),
+        "autonomy": sum(t.count(w) for w in ["independently", "no direction", "figured out", "on my own"]),
+        "business-impact": sum(t.count(w) for w in ["cfo", "cto", "revenue", "cost", "decision", "executive"]),
+        "compliance": sum(t.count(w) for w in ["legal", "nlrb", "audit", "regulated", "pii", "governance"]),
+        "through-line": sum(t.count(w) for w in ["career", "throughout", "across roles", "consistently"]),
+        "training": sum(t.count(w) for w in ["trained", "training", "taught", "intern", "onboard", "upskill"]),
+        "system-design": sum(t.count(w) for w in ["architecture", "designed", "schema", "model", "structure"]),
+        "technical-depth": sum(t.count(w) for w in ["debugging", "diagnosed", "root cause", "performance"]),
+    }
+    best = max(scores, key=lambda k: scores[k])
+    return best if scores[best] > 0 else "ownership"
 
-    Enter adds a newline. Ctrl-D or Meta-Enter submits. Ctrl-C cancels.
-    Falls back to double-Enter if prompt_toolkit is unavailable.
+
+def _read_multiline(prompt: str = "> ") -> str:
+    """Read multiline input. Double-Enter or Ctrl-D submits.
+
+    Type 'paste' on a blank line to read from clipboard instead (avoids PTY
+    buffer truncation for long pastes).
     """
     console.print(
         f"[dim]{prompt}Press Enter for new lines. Enter twice or Ctrl-D to submit.[/dim]"
+        " [dim]Type [bold]paste[/bold] to read from clipboard.[/dim]"
     )
     lines: list[str] = []
     try:
         while True:
             line = input()
+            if line.strip().lower() == "paste" and not lines:
+                import subprocess
+                result = subprocess.run(
+                    ["pbpaste"], capture_output=True, text=True
+                )
+                if result.returncode == 0 and result.stdout.strip():
+                    console.print(f"[dim]Read {len(result.stdout)} chars from clipboard.[/dim]")
+                    return result.stdout.strip()
+                else:
+                    console.print("[yellow]Clipboard empty or pbpaste failed.[/yellow]")
+                    continue
             if line == "" and lines and lines[-1] == "":
                 lines.pop()
                 break
@@ -240,6 +286,23 @@ def _show_alignment(report: "AlignmentResult") -> None:
     console.print(Panel("\n".join(lines), title="JD Alignment", border_style="yellow"))
 
 
+def _gap_has_library_ref(gap_text: str) -> bool:
+    """Return True if the alignment model affirmatively cited a library paragraph.
+
+    The alignment model writes 'paragraph [3] covers ...' when it finds coverage.
+    It also writes 'paragraph [4] does not cover this' when it doesn't — that must
+    NOT be treated as coverage. Check that the citation isn't preceded by a negation.
+    """
+    import re
+    for m in re.finditer(r"paragraph(?:s)?\s*\[\d+\]", gap_text, re.IGNORECASE):
+        # Look at the 30 characters before the match for negation words
+        prefix = gap_text[max(0, m.start() - 30):m.start()].lower()
+        if any(neg in prefix for neg in ("does not", "doesn't", "do not", "don't", "no ", "not ")):
+            continue
+        return True
+    return False
+
+
 def _gap_loop(
     gaps: "list[str]",
     all_paragraphs: "list[Paragraph]",
@@ -247,94 +310,109 @@ def _gap_loop(
     cfg: "Config",
     job_description: str,
     seniority_gaps: "list[str] | None" = None,
-) -> int:
-    """Show all gaps at once, let user pick which to address. Returns count of paragraphs saved."""
+    company: str | None = None,
+) -> tuple[int, list[str]]:
+    """Show all gaps at once, let user pick which to address. Returns (count, covered_gaps)."""
     import re
     saved = 0
+    covered_gaps: list[str] = []
     console.print()
 
     all_gaps = [(g, "JD") for g in gaps] + [(g, "Seniority") for g in (seniority_gaps or [])]
     if not all_gaps:
-        return 0
+        return 0, []
 
-    # Separate library-covered (already have material, just need regen) from truly missing
-    actionable: list[tuple[int, str, str]] = []
-    covered_by_library: list[int] = []
+    # Separate library-covered gaps from truly actionable ones.
+    # Only trust explicit paragraph citations from the alignment model.
+    # Semantic search over-matches (e.g. Snowflake gap → Redshift paragraph) and produces
+    # false positives that bypass Q&A for gaps the candidate actually has experience to fill.
+    library_covered: list[str] = []   # have library paragraphs — regen pulls them in
+    actionable: list[tuple[str, str]] = []  # (gap, kind) — user needs to act
 
-    console.print(f"[bold]{len(all_gaps)} gap(s):[/bold]\n")
-    for i, (gap, kind) in enumerate(all_gaps, 1):
-        if has_library_coverage(gap):
-            console.print(f"  [dim]{i}. [in library] {gap}[/dim]")
-            covered_by_library.append(i)
-        elif kind == "Seniority":
-            console.print(f"  [yellow]{i}.[/yellow] [Seniority] {gap}")
-            actionable.append((i, gap, kind))
+    for gap, kind in all_gaps:
+        if _gap_has_library_ref(gap):
+            library_covered.append(gap)
+            covered_gaps.append(gap)
         else:
-            console.print(f"  [red]{i}.[/red] {gap}")
-            actionable.append((i, gap, kind))
+            actionable.append((gap, kind))
 
-    if covered_by_library:
-        console.print(f"\n[dim]Gaps {', '.join(str(n) for n in covered_by_library)} already have library paragraphs — they'll be pulled in on regen.[/dim]")
+    # Show library-covered gaps as a quiet informational block — no user action needed
+    if library_covered:
+        console.print(f"[dim]Pulled in on regen ({len(library_covered)}):[/dim]")
+        for gap in library_covered:
+            short = gap[:120] + ("..." if len(gap) > 120 else "")
+            console.print(f"  [dim]• {short}[/dim]")
+        console.print()
 
     if not actionable:
-        console.print("[dim]No actionable gaps — all have library coverage.[/dim]")
-        return 0
+        console.print("[dim]No actionable gaps — all have library coverage. Regen will include them.[/dim]")
+        return 0, covered_gaps
 
-    actionable_nums = ", ".join(str(i) for i, _, _ in actionable)
-    console.print(f"\n[dim]Actionable: {actionable_nums}[/dim]")
+    # Number only actionable gaps — starting from 1 — so the user's input maps directly
+    console.print(f"[bold]{len(actionable)} gap(s) to address:[/bold]\n")
+    for i, (gap, kind) in enumerate(actionable, 1):
+        if kind == "Seniority":
+            console.print(f"  [yellow]{i}.[/yellow] [Seniority] {gap}")
+        else:
+            console.print(f"  [red]{i}.[/red] {gap}")
+
     _flush_stdin()
-    raw = input("Address which gaps? (e.g. 1,3 or 'all' or Enter to skip all): ").strip()
+    raw = input("\nAddress which? (e.g. 1,2 or 'all' or Enter to skip): ").strip()
 
     if not raw:
-        return 0
+        return 0, covered_gaps
 
     if raw.lower() in ("all", "a"):
-        selected = {i for i, _, _ in actionable}
+        selected = set(range(1, len(actionable) + 1))
     else:
         try:
             selected = {int(n.strip()) for n in raw.replace(" ", "").split(",") if n.strip().isdigit()}
         except ValueError:
             selected = set()
 
-    for i, gap, kind in actionable:
+    for i, (gap, kind) in enumerate(actionable, 1):
         if i not in selected:
             continue
+
         if kind == "Seniority":
-            console.print(f"\n[yellow]Seniority gap {i}: {gap}[/yellow]")
+            console.print(f"\n[yellow]Seniority gap {i}:[/yellow] {gap}")
+            console.print(
+                "[dim]Seniority gaps are usually about framing existing content more explicitly, "
+                "not missing material.[/dim]"
+            )
+            console.print(
+                "[dim]  W = open Q&A to write a new paragraph on this topic\n"
+                "  N = pass this as framing direction to the letter (no Q&A — uses content already in library)\n"
+                "  S = skip[/dim]"
+            )
+            _flush_stdin()
+            choice = input("[W]rite paragraph  [N]ote for letter  [S]kip: ").strip().lower()
+            if choice in ("s", "skip", ""):
+                continue
+            elif choice in ("n", "note"):
+                # Pass this as editorial direction to the regen, not a new paragraph
+                covered_gaps.append(gap)
+                continue
+            # "w" falls through to Q&A below
         else:
             console.print(f"\n[bold]Gap {i}:[/bold] {gap}")
-
-        # Guard against duplicate saves: search the current library for this gap
-        # before starting Q&A. If we find a strong match, show it and let the user
-        # confirm it doesn't already cover the gap.
-        if all_paragraphs:
-            from coverletter.build import _search_library
-            from rich.panel import Panel
-            match_text = _search_library(gap, all_paragraphs, voyage_api_key=cfg.voyage_api_key)
-            if match_text and match_text != "No matching paragraphs found.":
-                console.print("\n[yellow]Library match found — may already cover this gap:[/yellow]")
-                console.print(Panel(match_text[:600] + ("…" if len(match_text) > 600 else ""), border_style="yellow"))
-                _flush_stdin()
-                confirm = input("[Y] yes, this covers it — skip   [Enter] no, build new paragraph   [done] exit → ").strip().lower()
-                if confirm == "y":
-                    console.print("[dim]Skipped.[/dim]")
-                    continue
-                if confirm == "done":
-                    break
 
         try:
             result = _qa_session(
                 gap, all_paragraphs, priority_file, cfg,
                 job_description=job_description, gap_description=gap,
                 voyage_api_key=cfg.voyage_api_key,
+                company=company,
+                driving_angle=kind,
             )
         except KeyboardInterrupt:
             console.print("\n[dim]Stopped. Any paragraphs saved above are in the library.[/dim]")
             break
         if result:
             saved += 1
+            covered_gaps.append(gap)
 
-    return saved
+    return saved, covered_gaps
 
 
 def _coaching_pass(
@@ -358,7 +436,7 @@ def _coaching_pass(
         return letter_text
 
     console.print(f"\n[bold]{len(issues)} sentence(s) flagged.[/bold]\n")
-    console.print("[dim]For each: type a direction, type your replacement, or mix both. Press Enter to keep.[/dim]\n")
+    console.print("[dim]For each: type a direction, type your replacement, or mix both. Press Enter to keep. 'd' alone to delete.[/dim]\n")
 
     current = letter_text
     for i, item in enumerate(issues, 1):
@@ -375,14 +453,28 @@ def _coaching_pass(
             console.print("[dim]→ Kept.[/dim]\n")
             continue
 
+        if user_input.lower() == "d":
+            import re as _re
+            current = current.replace(item.sentence, "", 1)
+            # Clean up any double spaces left by deletion
+            current = _re.sub(r"  +", " ", current)
+            console.print("[dim]→ Deleted.[/dim]\n")
+            continue
+
         with Live(Spinner("dots", text="Revising..."), refresh_per_second=10, console=console):
             context = get_context(current, item.sentence)
             rewritten = rewrite_sentence(item.sentence, context, item.issue, user_input, api_key, model)
 
         while True:
             console.print(f"[green]→ {rewritten}[/green]")
-            confirm = _prompt_choice("[A]ccept  [K]eep original  [R]edirect: ", {"a", "k", "r"})
-            if confirm == "a":
+            confirm = _prompt_choice("[A]ccept  [K]eep original  [R]edirect  [D]elete: ", {"a", "k", "r", "d"})
+            if confirm == "d":
+                import re as _re
+                current = current.replace(item.sentence, "", 1)
+                current = _re.sub(r"  +", " ", current)
+                console.print("[dim]→ Deleted.[/dim]\n")
+                break
+            elif confirm == "a":
                 current = current.replace(item.sentence, rewritten, 1)
                 console.print("[dim]→ Applied.[/dim]\n")
                 # Offer to persist if sentence came from source (search corrected text first, then originals)
@@ -402,13 +494,19 @@ def _coaching_pass(
                 break
             else:
                 _flush_stdin()
-                new_direction = input("New direction: ").strip()
+                new_direction = _read_multiline("New direction: ").strip()
                 if not new_direction:
                     console.print("[dim]→ Kept original.[/dim]\n")
                     break
+                accumulated = (
+                    f"Prior direction: {user_input}\n\nPrevious rewrite: {rewritten}\n\nNew direction: {new_direction}"
+                    if user_input and user_input != new_direction
+                    else new_direction
+                )
+                user_input = accumulated
                 with Live(Spinner("dots", text="Revising..."), refresh_per_second=10, console=console):
                     context = get_context(current, item.sentence)
-                    rewritten = rewrite_sentence(item.sentence, context, item.issue, new_direction, api_key, model)
+                    rewritten = rewrite_sentence(item.sentence, context, item.issue, accumulated, api_key, model)
 
     return current
 
@@ -451,7 +549,7 @@ def _run_verification(
     current = messages[-1]["content"]
 
     with Live(Spinner("dots", text="Checking quality and evidence grounding..."), refresh_per_second=10, console=console):
-        result = verify_letter(current, api_key, model)
+        result = verify_letter(current, api_key, CHEAP_MODEL)
         verbatim_violations = verbatim_check(
             current, source_paragraphs or [],
             evidence_sentences=evidence_sentences,
@@ -502,9 +600,19 @@ def _run_verification(
         "If a violation cannot be fixed without inventing new language, leave the sentence "
         "as-is and add a comment after the letter: 'COULD NOT FIX: [quote the sentence]'"
     )
+    feedback_parts.append(
+        "\nOutput ONLY the complete revised cover letter. "
+        "No reasoning, no preamble, no 'Wait', no thinking out loud. "
+        "The letter starts with 'Dear' and ends with the closing line."
+    )
     feedback = "\n".join(feedback_parts)
 
     console.print()
+    _flush_stdin()
+    propose = _prompt_choice("Propose fix? [Y/n]: ", {"y", "n", ""})
+    if propose == "n":
+        return
+
     with Live(Spinner("dots", text="Proposing fixes..."), refresh_per_second=10, console=console):
         parts: list[str] = []
         for chunk in stream_revision(SYSTEM_PROMPT, messages, feedback, api_key, model):
@@ -545,7 +653,7 @@ def _run_verification(
         messages.append({"role": "assistant", "content": proposed_clean})
         # Re-check both after accepting
         with Live(Spinner("dots", text="Re-checking..."), refresh_per_second=10, console=console):
-            recheck = verify_letter(proposed_clean, api_key, model)
+            recheck = verify_letter(proposed_clean, api_key, CHEAP_MODEL)
             recheck_verbatim = verbatim_check(
                 proposed_clean, source_paragraphs or [],
                 evidence_sentences=evidence_sentences,
@@ -673,19 +781,7 @@ def main(
         if n_applied:
             console.print(f"[dim]Applied {n_applied} correction(s) from corrections.md[/dim]\n")
 
-    # Generate provisional argument (beacon) from JD alone — before the letter exists.
-    # This seeds sentence retrieval so the evidence is focused on what the letter must argue.
     provisional_argument: str | None = None
-    if cfg.voyage_api_key and not fast:
-        with Live(Spinner("dots", text="Deriving argument target..."), refresh_per_second=10, console=console):
-            try:
-                provisional_argument = generate_argument(
-                    job_description, cfg.api_key, cfg.model, profile=profile
-                )
-            except Exception:
-                provisional_argument = None
-        if provisional_argument:
-            console.print(f"[dim]Argument: {provisional_argument}[/dim]")
 
     # Re-rank corrected paragraphs by sentence-level relevance (for library ordering)
     # and build angle-organized argument evidence (for synthesis).
@@ -747,28 +843,85 @@ def main(
                         return sentence_scores.get(paragraph_hash(p.text), 0.0)
                     corrected = sorted(corrected, key=_sent_score, reverse=True)
 
-                # Build argument evidence organized by angle.
-                # thesis_text focuses retrieval on the argument target — not just JD vocabulary.
+                # Build argument evidence organized by angle (no thesis yet — first pass).
                 angle_evidence = build_angle_evidence(
                     _conn, job_description, cfg.voyage_api_key,
-                    top_angles=4, sentences_per_angle=3,
-                    thesis_text=provisional_argument,
+                    top_angles=10, sentences_per_angle=3,
                 )
                 if angle_evidence:
-                    n_sents = sum(len(a["sentences"]) for a in angle_evidence)
-                    console.print(f"[dim]Argument evidence: {len(angle_evidence)} angles, {n_sents} sentences[/dim]")
-                    # Extract the flat sentence list as evidence grounding for verification.
-                    # Model was given exactly these sentences; any body sentence not
-                    # matching them is genuinely invented.
                     for block in angle_evidence:
                         for entry in block["sentences"]:
-                            if entry["context_before"]:
-                                evidence_sentences.append(entry["context_before"])
                             evidence_sentences.append(entry["text"])
-                            if entry["context_after"]:
-                                evidence_sentences.append(entry["context_after"])
+                            if entry.get("source_paragraph"):
+                                evidence_sentences.append(entry["source_paragraph"])
         except Exception:
             pass
+
+    # Derive argument AFTER evidence is built so it can be grounded in what the candidate
+    # actually wrote, not just what the JD asks for.
+    if cfg.voyage_api_key and not fast:
+        with Live(Spinner("dots", text="Deriving argument target..."), refresh_per_second=10, console=console):
+            try:
+                provisional_argument = generate_argument(
+                    job_description, cfg.api_key, cfg.model,
+                    profile=profile,
+                    evidence_sentences=evidence_sentences if evidence_sentences else None,
+                )
+            except Exception:
+                provisional_argument = None
+        if provisional_argument:
+            console.print(f"[dim]Argument: {provisional_argument}[/dim]")
+
+    # Re-retrieve evidence with argument as focus beacon (if we got one).
+    if cfg.voyage_api_key and provisional_argument and _conn is not None:
+        try:
+            from coverletter.db import build_angle_evidence as _bae
+            focused = _bae(
+                _conn, job_description, cfg.voyage_api_key,
+                top_angles=10, sentences_per_angle=3,
+                thesis_text=provisional_argument,
+            )
+            if focused:
+                angle_evidence = focused
+                evidence_sentences = []
+                for block in angle_evidence:
+                    for entry in block["sentences"]:
+                        evidence_sentences.append(entry["text"])
+                        if entry.get("source_paragraph"):
+                            evidence_sentences.append(entry["source_paragraph"])
+        except Exception:
+            pass
+
+    if angle_evidence:
+        n_sents = sum(len(a["sentences"]) for a in angle_evidence)
+        n_req = sum(1 for a in angle_evidence if a.get("required"))
+        console.print(f"[dim]Argument evidence: {len(angle_evidence)} angles ({n_req} required), {n_sents} sentences[/dim]")
+
+    # Ask how the user wants to approach this letter — their answer shapes generation
+    # and can be saved to working_style so the model has it in future runs.
+    _flush_stdin()
+    approach = _read_multiline(
+        "How do you want to approach this letter? (angle, tone, what to emphasize — Enter to skip): "
+    ).strip()
+    if approach:
+        notes = (notes + "\n\n" + approach) if notes else approach
+        console.print("[green]Got it — this will shape your letter.[/green]")
+        _flush_stdin()
+        console.print("Save this to your profile so future letters can use it?")
+        save_approach = input("  Category [working_style / values / goals] or Enter to use for this letter only: ").strip().lower()
+        if save_approach in ("working_style", "values", "goals", "differentiators", "avoid") and save_approach:
+            from coverletter.profile import load_profile as _lp, write_profile as _wp
+            _cur = _lp(cfg.profile_file)
+            _lst = list(getattr(_cur, save_approach))
+            _lst.append(approach)
+            _wp(cfg.profile_file, {
+                "goals": _cur.goals, "differentiators": _cur.differentiators,
+                "focus_areas": _cur.focus_areas, "avoid": _cur.avoid,
+                "seniority_signals": _cur.seniority_signals,
+                "working_style": _cur.working_style, "values": _cur.values,
+                save_approach: _lst,
+            })
+            console.print(f"[green]Saved to {save_approach}.[/green]")
 
     user_message = build_user_message(
         job_description, corrected, role=role, company=company,
@@ -791,21 +944,42 @@ def main(
     letter_text = "".join(parts)
     messages.append({"role": "assistant", "content": letter_text})
     console.print(f"[dim]{running_total()}[/dim]")
-    render_letter(letter_text)
 
-    _run_verification(
-        letter_text, messages, cfg.api_key, cfg.model,
-        source_paragraphs=filtered,
-        evidence_sentences=evidence_sentences or None,
-    )
-    letter_text = messages[-1]["content"]
+    # Auto-run hard check before showing the letter — deterministic violations
+    # (em-dashes, banned phrases) must not reach the user unfixed.
+    from coverletter.verify import _hard_check
+    hard_failures = _hard_check(letter_text)
+    if hard_failures:
+        console.print(f"\n[yellow]Auto-fixing {len(hard_failures)} hard violation(s) before display...[/yellow]")
+        _run_verification(
+            letter_text, messages, cfg.api_key, cfg.model,
+            source_paragraphs=filtered,
+            evidence_sentences=evidence_sentences or None,
+        )
+        letter_text = messages[-1]["content"]
+    else:
+        render_letter(letter_text)
+
+    _flush_stdin()
+    do_verify = input("\nRun quality check? [y/N]: ").strip().lower()
+    if do_verify in ("y", "yes"):
+        _run_verification(
+            letter_text, messages, cfg.api_key, cfg.model,
+            source_paragraphs=filtered,
+            evidence_sentences=evidence_sentences or None,
+        )
+        letter_text = messages[-1]["content"]
 
     if not fast:
-        # Letter thesis — what argument is this letter actually making?
+        # Reuse the pre-generation argument if available — no need to re-derive from the letter.
+        # Only call generate_thesis when there was no provisional_argument (no voyage key, fast mode).
         console.print()
-        with Live(Spinner("dots", text="Identifying letter thesis..."), refresh_per_second=10, console=console):
-            thesis = generate_thesis(job_description, letter_text, cfg.api_key, cfg.model, profile=profile)
-        console.print(f"[dim]{running_total()}[/dim]")
+        if provisional_argument:
+            thesis = provisional_argument
+        else:
+            with Live(Spinner("dots", text="Identifying letter thesis..."), refresh_per_second=10, console=console):
+                thesis = generate_thesis(job_description, letter_text, cfg.api_key, cfg.model, profile=profile)
+            console.print(f"[dim]{running_total()}[/dim]")
         from rich.panel import Panel
         console.print(Panel(f"[bold]Letter thesis:[/bold] {thesis}", border_style="cyan", title="Argument"))
         _flush_stdin()
@@ -829,18 +1003,46 @@ def main(
         from rich.panel import Panel
         _show_alignment(report)
 
+        # Record application and gaps in DB for graph traversal and analytics.
+        _app_id: int | None = None
+        if _conn is not None:
+            try:
+                from coverletter.db import record_application, record_gaps
+                _app_id = record_application(_conn, company or "unknown", role or "", job_description)
+                all_gaps = [
+                    {"requirement_text": g, "inferred_category": None, "had_db_coverage": False, "addressed_in_letter": False}
+                    for g in (report.gaps or []) + (report.seniority_gaps or [])
+                ]
+                if all_gaps:
+                    record_gaps(_conn, _app_id, all_gaps)
+            except Exception:
+                pass
+
         new_paragraphs_saved = 0
+        gap_covered_topics: list[str] = []
+        skipped_gap_topics: list[str] = []
         if report.gaps or report.seniority_gaps:
             gap_priority_file = cfg.paragraphs_files[-1].parent / "library_refined.md"
-            new_paragraphs_saved = _gap_loop(
+            all_gap_texts = list(report.gaps) + list(report.seniority_gaps or [])
+            new_paragraphs_saved, gap_covered_topics = _gap_loop(
                 report.gaps, all_paragraphs, gap_priority_file, cfg, job_description,
                 seniority_gaps=report.seniority_gaps,
+                company=company,
             )
+            # Gaps the user saw but did not address — may be acknowledged in the letter
+            covered_set = set(gap_covered_topics)
+            skipped_gap_topics = [g for g in all_gap_texts if g not in covered_set]
 
-        # Regenerate if new paragraphs were saved
-        if new_paragraphs_saved:
+        # Regenerate if new paragraphs were saved OR if library gaps were identified
+        # (library gaps already have material — regen is what pulls them into the letter)
+        should_regen = new_paragraphs_saved > 0 or bool(gap_covered_topics)
+        if should_regen:
+            if new_paragraphs_saved:
+                regen_prompt = f"\nSaved {new_paragraphs_saved} new paragraph(s). Regenerate letter to include new material and {len(gap_covered_topics) - new_paragraphs_saved if len(gap_covered_topics) > new_paragraphs_saved else ''} library-covered gaps? [Y/n]: ".strip()
+            else:
+                regen_prompt = f"\n{len(gap_covered_topics)} gap(s) have library coverage. Regenerate letter to pull them in? [Y/n]: "
             _flush_stdin()
-            regen = input(f"\nSaved {new_paragraphs_saved} new paragraph(s). Regenerate letter with new material? [Y/n]: ").strip().lower()
+            regen = input(regen_prompt).strip().lower()
             if regen in ("", "y", "yes"):
                 all_paragraphs = load_paragraphs(cfg.paragraphs_files)
                 if _conn is not None:
@@ -876,27 +1078,28 @@ def main(
                                 Spinner("dots", text=f"Syncing {new_regen_count} new paragraph(s)..."),
                                 refresh_per_second=10, console=console,
                             ):
+                                from coverletter.db import link_claims_to_graph
                                 sync_from_markdown(_conn, all_paragraphs, cfg.paragraphs_files)
                                 compute_embeddings(_conn, cfg.voyage_api_key)
                                 extract_and_store_sentences(_conn)
                                 compute_sentence_embeddings(_conn, cfg.voyage_api_key)
                                 assign_angles_canonical(_conn, cfg.voyage_api_key)
+                                link_claims_to_graph(_conn, cfg.voyage_api_key)
                         # Rebuild angle evidence with newly-added paragraphs
                         with Live(Spinner("dots", text="Rebuilding argument evidence..."), refresh_per_second=10, console=console):
                             regen_angle_evidence = build_angle_evidence(
                                 _conn, job_description, cfg.voyage_api_key,
-                                top_angles=4, sentences_per_angle=3,
+                                top_angles=10, sentences_per_angle=3,
                                 thesis_text=provisional_argument,
+                                required_gap_queries=gap_covered_topics or None,
                             )
                         regen_evidence_sentences = []
                         if regen_angle_evidence:
                             for block in regen_angle_evidence:
                                 for entry in block["sentences"]:
-                                    if entry["context_before"]:
-                                        regen_evidence_sentences.append(entry["context_before"])
                                     regen_evidence_sentences.append(entry["text"])
-                                    if entry["context_after"]:
-                                        regen_evidence_sentences.append(entry["context_after"])
+                                    if entry.get("source_paragraph"):
+                                        regen_evidence_sentences.append(entry["source_paragraph"])
                             n_sents = sum(len(a["sentences"]) for a in regen_angle_evidence)
                             console.print(f"[dim]Argument evidence: {len(regen_angle_evidence)} angles, {n_sents} sentences[/dim]")
                     except Exception:
@@ -907,6 +1110,8 @@ def main(
                     resume=resume_text or None, template=template_text, notes=notes,
                     angle_evidence=regen_angle_evidence,
                     argument=provisional_argument,
+                    required_coverage=gap_covered_topics or None,
+                    unaddressed_gaps=skipped_gap_topics or None,
                 )
                 messages = [{"role": "user", "content": user_message}]
                 console.print()
@@ -917,16 +1122,6 @@ def main(
                 letter_text = "".join(parts)
                 messages.append({"role": "assistant", "content": letter_text})
                 render_letter(letter_text)
-                _run_verification(
-                    letter_text, messages, cfg.api_key, cfg.model,
-                    source_paragraphs=filtered,
-                    evidence_sentences=regen_evidence_sentences or None,
-                )
-                letter_text = messages[-1]["content"]
-                console.print()
-                with Live(Spinner("dots", text="Re-analyzing alignment..."), refresh_per_second=10, console=console):
-                    new_report = alignment_report(job_description, letter_text, filtered, cfg.api_key, cfg.model, profile=profile)
-                _show_alignment(new_report)
 
     # Optional coaching pass
     _flush_stdin()
@@ -982,6 +1177,8 @@ def main(
                     f"{rejection_prefix}REVISE ONLY paragraph {para_idx + 1} of the letter. "
                     f"That paragraph currently reads:\n\n{target_para}\n\n"
                     f"Instruction: {targeted}\n\n"
+                    "If the instruction contains sample language or draft text, that is the candidate's voice. "
+                    "Use it. Shape it. Do not discard it and write something different.\n"
                     "Leave every other paragraph completely unchanged. "
                     "Output only the complete revised cover letter — no questions, no commentary, no preamble."
                 )
@@ -990,6 +1187,8 @@ def main(
         except ValueError:
             wrapped_feedback = (
                 f"{rejection_prefix}REVISE THE LETTER using the information below. "
+                "If the feedback contains sample language or draft text, that is the candidate's voice — use it, "
+                "do not discard it and write something different. "
                 "Output only the complete revised cover letter — no questions, no commentary, no preamble.\n\n"
                 + feedback
             )
@@ -1068,24 +1267,53 @@ def _qa_session(
     job_description: str | None = None,
     gap_description: str | None = None,
     voyage_api_key: str = "",
+    company: str | None = None,
+    driving_angle: str | None = None,
 ) -> str | None:
     """Interactive Q&A session. Returns accepted paragraph text or None."""
     from rich.panel import Panel
     from coverletter.build import _build_initial_context, qa_turn, force_draft, append_to_library, revise_draft
-    from coverletter.experiences import load_experiences, find_experience, coverage_context
+    from coverletter.experiences import load_experiences, find_experience, find_experiences, coverage_context, framing_coverage
 
+    framing_ctx = ""
     experiences = load_experiences(cfg.experiences_file)
-    exp = find_experience(experiences, topic)
-    framing_ctx = coverage_context(exp, all_paragraphs) if exp else ""
 
-    if exp and framing_ctx:
-        console.print(f"[dim]Experience matched: {exp.name}[/dim]")
-        coverage = {}
-        from coverletter.experiences import framing_coverage
-        coverage = framing_coverage(exp, all_paragraphs)
-        missing = [a for a, c in coverage.items() if not c]
-        if missing:
-            console.print(f"[dim]Missing angles: {', '.join(missing)}[/dim]")
+    if gap_description:
+        # For gaps: show all matching experiences and let the user pick.
+        # Don't assume — the user knows what they want to draw on.
+        candidates = find_experiences(experiences, topic)
+        exp = None
+        if candidates:
+            if len(candidates) == 1:
+                console.print(f"\n[dim]Matched experience: {candidates[0].name}[/dim]")
+                _flush_stdin()
+                confirm = input("Draw on this? [Y] yes  [n] no / different: ").strip().lower()
+                if confirm != "n":
+                    exp = candidates[0]
+            else:
+                console.print(f"\n[dim]Matched {len(candidates)} experience(s):[/dim]")
+                for i, c in enumerate(candidates, 1):
+                    console.print(f"  [dim]{i}. {c.name}[/dim]")
+                _flush_stdin()
+                pick = input(f"Which to draw on? (1-{len(candidates)}, or Enter for none / let model ask): ").strip()
+                if pick.isdigit() and 1 <= int(pick) <= len(candidates):
+                    exp = candidates[int(pick) - 1]
+        if not exp:
+            _flush_stdin()
+            override = input("What experience or context do you want to draw on? (or Enter to let the model ask): ").strip()
+            if override:
+                framing_ctx = f"User wants to draw on: {override}"
+        if exp:
+            framing_ctx = coverage_context(exp, all_paragraphs)
+    else:
+        exp = find_experience(experiences, topic)
+        framing_ctx = coverage_context(exp, all_paragraphs) if exp else ""
+        if exp and framing_ctx:
+            console.print(f"[dim]Experience matched: {exp.name}[/dim]")
+            coverage = framing_coverage(exp, all_paragraphs)
+            missing = [a for a, c in coverage.items() if not c]
+            if missing:
+                console.print(f"[dim]Missing angles: {', '.join(missing)}[/dim]")
 
     context = _build_initial_context(topic, job_description, gap_description, framing_context=framing_ctx)
     history: list[dict] = [{"role": "user", "content": context}]
@@ -1182,7 +1410,9 @@ def _qa_session(
     _flush_stdin()
     save_section = input(f"Section [{short_topic}]: ").strip() or short_topic
     _flush_stdin()
-    angle = input("Angle tag (optional, e.g. compliance, ownership): ").strip()
+    suggested_angle = _suggest_angle(accepted, cfg.voyage_api_key)
+    angle_prompt = f"Angle [{suggested_angle}]: " if suggested_angle else "Angle tag: "
+    angle = input(angle_prompt).strip() or suggested_angle or ""
     _flush_stdin()
     strength = input("Strength [high]: ").strip() or "high"
 
@@ -1192,6 +1422,24 @@ def _qa_session(
 
     append_to_library(priority_file, save_role, save_section, accepted, meta)
     console.print(f"\n[green]Saved to {priority_file.name}[/green] under {save_role} / {save_section}\n")
+
+    # Record gap provenance — JD score + origin stored at write time, not inferred later.
+    if job_description and company and voyage_api_key:
+        try:
+            from coverletter.db import open_db, db_path, record_gap_provenance
+            _prov_db = db_path(cfg.paragraphs_files)
+            if _prov_db.exists():
+                _prov_conn = open_db(_prov_db)
+                record_gap_provenance(
+                    _prov_conn, accepted,
+                    jd_company=company,
+                    jd_text=job_description,
+                    gap_question=gap_description,
+                    driving_angle=driving_angle,
+                    voyage_api_key=voyage_api_key,
+                )
+        except Exception:
+            pass  # provenance is best-effort — never block the save
 
     # Save raw Q&A responses to DB — preserves the user's exact words before
     # they get compressed into the refined paragraph. Used by claim extraction.
@@ -1233,13 +1481,20 @@ def build_library(ctx: click.Context, paragraphs: str | None, about: str | None)
     if not topic:
         _flush_stdin()
         topic = input(
-            "What do you want to build a paragraph about?\n"
-            "(project name, experience, angle you haven't written yet, or gap to fill): "
+            "Topic (short name — project, experience, or gap): "
         ).strip()
 
     if not topic:
         console.print("[yellow]Nothing to explore — exiting.[/yellow]")
         return
+
+    _flush_stdin()
+    seed_notes = _read_multiline(
+        "Anything to tell me before we start? "
+        "(what you built, what was hard, what the stakes were — or just press Enter to skip): "
+    ).strip()
+    if seed_notes:
+        topic = f"{topic}\n\nContext from me before we start:\n{seed_notes}"
 
     while True:
         _qa_session(topic, all_paragraphs, priority_file, cfg, voyage_api_key=cfg.voyage_api_key)
@@ -3259,6 +3514,35 @@ def claim_add(ctx: click.Context, paragraphs: str | None) -> None:
         conn.close()
 
 
+@main.command("link-graph")
+@click.option("--paragraphs", "-p", default=None, help="Path to paragraphs MD file")
+@click.option("--force", is_flag=True, default=False, help="Re-link claims already in sentence_claims / claim_angles")
+@click.pass_context
+def link_graph_command(ctx: click.Context, paragraphs: str | None, force: bool) -> None:
+    """Wire existing claims into the sentence → claim → angle graph tables.
+
+    Run this after `clio extract` to activate graph-based evidence retrieval.
+    Safe to re-run; skips already-linked claims unless --force.
+    """
+    from coverletter.config import load_config
+    from coverletter.db import open_db, db_path, link_claims_to_graph
+    cfg = load_config(paragraphs)
+    db = db_path(cfg.paragraphs_files)
+    if not db.exists():
+        console.print("[red]No database found. Run `clio sync` then `clio extract` first.[/red]")
+        return
+    conn = open_db(db)
+    if not cfg.voyage_api_key:
+        console.print("[red]VOYAGE_API_KEY required for graph linking.[/red]")
+        conn.close()
+        return
+    with Live(Spinner("dots", text="Linking claims to sentences and angles..."), refresh_per_second=10, console=console):
+        sent_links, angle_links = link_claims_to_graph(conn, cfg.voyage_api_key, force=force)
+    conn.close()
+    console.print(f"[green]Graph linked:[/green] {sent_links} sentence→claim edges, {angle_links} claim→angle edges")
+    console.print("[dim]Evidence retrieval will now traverse: gap → angle → claim → sentence[/dim]")
+
+
 @main.command("extract")
 @click.option("--paragraphs", "-p", default=None, help="Path to paragraphs MD file")
 @click.option("--model", "-m", default=None, help="Claude model (default: Haiku)")
@@ -3498,6 +3782,7 @@ def build_outline_command(
       coverletter outline jobs/acme_jd.md --company Acme
       coverletter outline jobs/acme_jd.md -c Acme -o outlines/acme_outline.md
     """
+    import re
     from coverletter.db import open_db, db_path
     from coverletter.align import generate_argument
     from coverletter.outline import build_outline
@@ -3526,7 +3811,7 @@ def build_outline_command(
     company_name = company or jd_file.stem.replace("_", " ").title()
 
     # Generate thesis from JD
-    profile = load_profile(cfg.paragraphs_files)
+    profile = load_profile(cfg.profile_file)
     console.print(f"Building outline for [cyan]{company_name}[/cyan] — {n_claims} claims in DB\n")
 
     with Live(Spinner("dots", text="Generating thesis..."), refresh_per_second=10, console=console):
@@ -3535,7 +3820,7 @@ def build_outline_command(
     console.print(f"[dim]Thesis:[/dim] {thesis}\n")
 
     with Live(Spinner("dots", text="Assembling outline..."), refresh_per_second=10, console=console):
-        outline_md = build_outline(
+        outline_md, _claims, _cat_scores, _gaps = build_outline(
             conn, jd, thesis,
             api_key=cfg.api_key,
             model=use_model,
@@ -4114,6 +4399,188 @@ def show_library(ctx: click.Context, paragraphs: str | None) -> None:
             console.print()
 
 
+@main.command("bullets-gen")
+@click.option("--paragraphs", "-p", default=None, help="Path to paragraphs file")
+@click.option("--base", default=None, help="Path to base resume.typ (overrides config)")
+@click.option("--bullets-file", default=None, help="Output path for resume_bullets.md (overrides config)")
+@click.option("--variants", default=2, show_default=True, help="Number of alternative bullet sets per role")
+@click.pass_context
+def generate_bullets_command(ctx: click.Context, paragraphs: str | None, base: str | None, bullets_file: str | None, variants: int) -> None:
+    """Generate alternative resume bullet sets from library paragraphs.
+
+    For each role in your base resume.typ, pulls relevant library paragraphs
+    and generates N variants with different angles. Writes to resume_bullets.md.
+
+      uv run clio bullets-gen
+      uv run clio bullets-gen --variants 3
+    """
+    paragraphs = paragraphs or (ctx.obj or {}).get("paragraphs")
+    cfg = load_config(paragraphs)
+
+    if not cfg.api_key:
+        console.print("[red]No API key — set ANTHROPIC_API_KEY in .env[/red]")
+        return
+
+    typ_path = Path(base) if base else cfg.resume_typ_file
+    if not typ_path.exists():
+        console.print(f"[red]Base resume not found:[/red] {typ_path}")
+        return
+
+    out_path = Path(bullets_file) if bullets_file else cfg.resume_bullets_file
+    all_paragraphs = load_paragraphs(cfg.paragraphs_files)
+
+    from coverletter.typst_builder import extract_companies_from_typ
+    typ_content = typ_path.read_text(encoding="utf-8")
+    companies = extract_companies_from_typ(typ_content)
+
+    if not companies:
+        console.print("[red]No #role() entries found in resume.typ[/red]")
+        return
+
+    # Extract current bullets per company from .typ for grounding context
+    import re as _re
+    def _current_bullets(company: str) -> list[str]:
+        lines = typ_content.splitlines()
+        in_role = False
+        in_bullets = False
+        bullets: list[str] = []
+        role_pat = _re.compile(r'#role\(\s*"' + _re.escape(company) + r'"')
+        for line in lines:
+            if role_pat.search(line):
+                in_role = True
+            if in_role and line.strip().startswith("#bullets(("):
+                in_bullets = True
+                continue
+            if in_bullets:
+                if line.strip() == "))":
+                    break
+                m = _re.match(r'\s*\[(.+)\],?\s*$', line)
+                if m:
+                    bullets.append(m.group(1))
+        return bullets
+
+    _BULLETS_GEN_SYSTEM = """\
+You are writing alternative resume bullet sets for a data engineering candidate.
+
+You will receive:
+- The company name and role
+- The current resume bullets (what exists now)
+- Relevant library paragraphs (the candidate's real experiences, in their voice)
+
+Your job: write EXACTLY {n} alternative bullet sets, each leading with a different angle.
+Each set has 4-6 bullets. Each bullet must:
+- Be grounded in specific facts from the library paragraphs or current bullets
+- Start with a strong active verb
+- Be 1-2 sentences max
+- Not invent tools, metrics, or outcomes not present in the source material
+
+ANGLES to vary across sets (pick different primary angles per set):
+- ownership: end-to-end accountability for a system or pipeline
+- business-impact: outcomes that mattered to the org (execs, decisions, revenue)
+- technical-depth: specific hard technical problems solved
+- autonomy: self-directed work, no platform team, solo ownership
+- compliance: legal/regulated data, correctness requirements
+- training: supporting and upskilling colleagues
+
+Output ONLY valid JSON — no prose, no markdown fences:
+{{
+  "role_title": "...",
+  "sets": [
+    {{
+      "label": "Option A — leads with ownership",
+      "angle": "ownership",
+      "bullets": ["bullet text", "bullet text", ...]
+    }},
+    ...
+  ]
+}}
+"""
+
+    output_sections: list[str] = []
+    output_sections.append("# Resume Bullets\n")
+    output_sections.append(
+        "<!--\n"
+        "  Generated by `clio bullets-gen` — edit freely, add/remove options.\n"
+        "  Each option must stay under ## Company / ### Section / **Label** structure.\n"
+        "  meta: angle=X tags let the resume command surface matching cover letter paragraphs.\n"
+        "-->\n"
+    )
+
+    for company in companies:
+        console.print(f"\n[bold]Generating bullets for:[/bold] [cyan]{company}[/cyan]")
+        current = _current_bullets(company)
+
+        # Find library paragraphs matching this company
+        company_words = set(company.lower().split())
+        relevant = [
+            p for p in all_paragraphs
+            if company_words & set(p.role.lower().split() + p.section.lower().split())
+            or company.lower() in (p.role + p.section).lower()
+        ]
+        # Fallback: grab paragraphs whose section/role overlaps
+        if not relevant:
+            relevant = [p for p in all_paragraphs if p.role and p.role.lower() != "general"][:6]
+
+        library_text = "\n\n".join(
+            f"[{p.role} / {p.section}]\n{p.text}"
+            for p in relevant[:10]
+        )
+
+        prompt = (
+            f"Company: {company}\n\n"
+            f"Current resume bullets:\n" +
+            "\n".join(f"- {b}" for b in current) +
+            f"\n\nLibrary paragraphs (candidate's real experiences):\n{library_text}"
+        )
+
+        system = _BULLETS_GEN_SYSTEM.replace("{n}", str(variants))
+
+        import json as _json
+        with Live(Spinner("dots", text=f"Generating {variants} variant(s)..."), refresh_per_second=10, console=console):
+            from coverletter.provider import get_provider
+            raw = get_provider(cfg.model, cfg.api_key).complete(system, prompt, max_tokens=2048)
+
+        m = _re.search(r"\{.*\}", raw, _re.DOTALL)
+        if not m:
+            console.print(f"[red]Could not parse response for {company}[/red]")
+            continue
+
+        try:
+            data = _json.loads(m.group(0))
+        except Exception as e:
+            console.print(f"[red]JSON parse error for {company}: {e}[/red]")
+            continue
+
+        role_title = data.get("role_title", "")
+        sets = data.get("sets", [])
+
+        # Extract years from .typ
+        years_m = _re.search(r'#role\(\s*"' + _re.escape(company) + r'"\s*,\s*"([^"]+)"\s*,\s*"([^"]+)"', typ_content)
+        years = years_m.group(2) if years_m else ""
+        role_display = f"{company} ({role_title}, {years})" if role_title and years else company
+
+        output_sections.append(f"## {role_display}\n")
+        output_sections.append(f"### {role_title or 'Work'}\n")
+
+        for s in sets:
+            label = s.get("label", "Option")
+            angle = s.get("angle", "")
+            bullets = s.get("bullets", [])
+            if not bullets:
+                continue
+            output_sections.append(f"<!-- meta: angle={angle} -->")
+            output_sections.append(f"**{label}**")
+            for b in bullets:
+                output_sections.append(b)
+            output_sections.append("")
+
+        console.print(f"  [dim]{len(sets)} variant(s) written[/dim]")
+
+    out_path.write_text("\n".join(output_sections), encoding="utf-8")
+    console.print(f"\n[green]Written:[/green] {out_path}")
+    console.print(f"[dim]Edit the file to refine, then run `clio resume` to apply.[/dim]")
+
+
 @main.command("resume")
 @click.option("--paragraphs", "-p", default=None, help="Path to paragraphs file")
 @click.option("--company", "-c", default=None, help="Company name for output filename")
@@ -4178,32 +4645,11 @@ def build_resume(
         if not all_options:
             continue
 
-        console.print(f"[bold]{typ_company}[/bold] — {len(all_options)} alternative bullet option(s)\n")
-
-        for i, opt in enumerate(all_options, 1):
-            preview = opt.text[:120] + ("..." if len(opt.text) > 120 else "")
-            console.print(f"  [cyan]{i}[/cyan]. [dim]{opt.label}[/dim]")
-            console.print(f"     {preview}\n")
-
-        console.print(f"  [cyan]K[/cyan]. Keep current resume bullets")
-        _flush_stdin()
-        raw = input(f"Select [1–{len(all_options)}/K]: ").strip().lower()
-
-        if raw in ("k", ""):
-            console.print("[dim]→ Keeping current bullets.[/dim]\n")
-            continue
-
-        try:
-            choice = int(raw) - 1
-            if 0 <= choice < len(all_options):
-                selected = [all_options[choice]]
-                modified = replace_company_bullets(modified, typ_company, selected)
-                console.print(f"[green]→ Using: {all_options[choice].label}[/green]\n")
-                any_changed = True
-            else:
-                console.print("[yellow]Invalid choice — keeping current.[/yellow]\n")
-        except ValueError:
-            console.print("[yellow]Invalid input — keeping current.[/yellow]\n")
+        # Include ALL options — no prompt. The tailored resume gets every alternative
+        # bullet; the user deletes whichever they don't want from the PDF/typ.
+        modified = replace_company_bullets(modified, typ_company, all_options)
+        console.print(f"[green]{typ_company}[/green] — added {len(all_options)} bullet(s)\n")
+        any_changed = True
 
     if not any_changed:
         console.print("[dim]No bullets changed — compiling base resume as-is.[/dim]\n")

@@ -37,8 +37,39 @@ Return JSON array. If nothing is weak, return [].
 """
 
 REWRITE_SYSTEM = """\
-You are a cover letter editor. Rewrite a single sentence according to a direction.
-Preserve the factual content and the writer's voice. Output only the rewritten sentence — nothing else.
+You are a cover letter editor. Rewrite the flagged passage according to a direction.
+The passage may be one sentence or several. Output only the rewritten passage — nothing else.
+Preserve the factual content and the writer's voice. If the content requires multiple sentences, write multiple sentences.
+
+ABSOLUTE CONSTRAINTS — these apply to every rewrite, no exceptions:
+
+No em-dash (—) anywhere. Use a comma, semicolon, or period instead.
+
+No present progressive or progressive chains. This is the most common failure mode in rewrites.
+WRONG: "I have been building toward", "work I have been doing", "I have been developing"
+RIGHT: "I built", "I have built", "this is work I have done", "I have spent years building"
+The writer speaks declaratively. Simple past or simple present. Never progressive.
+
+No filler adjectives before verbs: "genuinely welcome", "truly appreciate" — cut the adverb.
+
+No "actually", "not just", "not only", "not simply".
+
+No fake contrast structure: "not X; they are Y", "not X, but Y", "not X — they are Y".
+These are AI rhetorical moves. Cut them entirely.
+
+No sentence starting with "That".
+
+The user's direction often mixes three things in one message:
+1. Reactions and frustration ("I hate this", "this says nothing", "this is vague bullshit")
+2. Instructions about what to do ("delete this", "replace with a bold claim", "don't rephrase so much")
+3. Actual prose they want in the letter
+
+Your job: identify which parts are prose and use those. Ignore the reactions and instructions — they tell
+you what to do, not what to write. Do not include instructions or reactions as sentences in the rewrite.
+
+If the direction contains prose that sounds like it belongs in a cover letter, use it directly or shape it
+minimally to fit. Do not discard the user's words and invent something else. The user's prose is the source.
+Your job is to shape it, not replace it.
 """
 
 REWRITE_PROMPT = """\
@@ -49,14 +80,14 @@ Surrounding context (do not rewrite this, just use it for tone and flow):
 
 Direction: {direction}
 
-Rewrite the sentence according to the direction. Output only the rewritten sentence.
+Rewrite the passage according to the direction. Output only the rewritten passage — no preamble, no commentary.
 """
 
 REWRITE_DIRECTION = """\
 Fix the issue identified. Use the user's input as your guide — if they wrote a direction
 (e.g. "make this hit harder", "add the consequence"), rewrite accordingly. If they wrote
-a replacement sentence, use it directly or refine it to fit the context. Output only the
-revised sentence."""
+replacement content, use it directly or refine it to fit the context. The rewrite may be
+one sentence or several — however many the content requires. Output only the revised passage."""
 
 
 @dataclass
@@ -80,7 +111,7 @@ def analyze_letter(letter: str, api_key: str, model: str) -> list[WeakSentence]:
 def rewrite_sentence(sentence: str, context: str, issue: str, user_input: str, api_key: str, model: str) -> str:
     direction = f"Issue: {issue}\nUser input: {user_input}\n\n{REWRITE_DIRECTION}"
     prompt = REWRITE_PROMPT.format(sentence=sentence, context=context, direction=direction)
-    return get_provider(model, api_key).complete(REWRITE_SYSTEM, prompt, max_tokens=256, temperature=0.3)
+    return get_provider(model, api_key).complete(REWRITE_SYSTEM, prompt, max_tokens=512, temperature=0.3)
 
 
 def get_context(letter: str, sentence: str, window: int = 200) -> str:

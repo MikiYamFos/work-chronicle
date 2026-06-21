@@ -472,6 +472,37 @@ with st.expander("📓 Story notes — abandoned material that may be relevant")
     else:
         st.info("No relevant story notes found for this section.")
 
+with st.expander("💬 Raw Q&A — your exact words before drafting"):
+    try:
+        import sqlite3 as _sq
+        import hashlib as _hl
+        _db_path = project_root / "library.db"
+        if _db_path.exists():
+            _text_to_hash = para.text.strip()
+            _h = _hl.sha256(_text_to_hash.encode()).hexdigest()
+            _con = _sq.connect(_db_path)
+            # Try matching via raw text hash (library.md text)
+            _rows = _con.execute(
+                "SELECT session_topic, responses_md FROM raw_responses WHERE para_text_hash = ? LIMIT 1",
+                (_h,)
+            ).fetchall()
+            if not _rows:
+                # Try matching via section name keyword search
+                _rows = _con.execute(
+                    "SELECT session_topic, responses_md FROM raw_responses WHERE session_topic LIKE ? LIMIT 1",
+                    (f"%{para.section[:20]}%",)
+                ).fetchall()
+            _con.close()
+            if _rows:
+                st.caption(f"Session: {_rows[0][0]}")
+                st.markdown(_rows[0][1])
+            else:
+                st.info("No raw Q&A found for this paragraph. (Only build sessions save Q&A — seed paragraphs don't have it.)")
+        else:
+            st.info("library.db not found — run `clio sync` first.")
+    except Exception as _e:
+        st.info(f"Could not load raw Q&A: {_e}")
+
 # ---------------------------------------------------------------------------
 # Coaching buttons — manual trigger, not automatic
 # ---------------------------------------------------------------------------

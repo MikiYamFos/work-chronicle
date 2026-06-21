@@ -404,9 +404,11 @@ def _group_claims(
 
     from coverletter.provider import get_provider
     raw = get_provider(model, api_key).complete(_GROUP_SYSTEM, content, max_tokens=1024)
-    raw = re.sub(r"^```(?:json)?\s*", "", raw)
-    raw = re.sub(r"\s*```$", "", raw)
-    return json.loads(raw)
+    # Extract JSON object from response (handles markdown fences and trailing prose)
+    m = re.search(r"\{.*\}", raw, re.DOTALL)
+    if not m:
+        raise ValueError(f"No JSON object found in _group_claims response:\n{raw}")
+    return json.loads(m.group(0))
 
 
 # ---------------------------------------------------------------------------
@@ -819,8 +821,9 @@ def build_outline(
 
     jd_embedding = get_or_embed_jd(conn, jd + "\n" + thesis, voyage_api_key, embed_provider)
 
-    from coverletter.db import ensure_category_embeddings
-    category_embeddings = ensure_category_embeddings(conn, voyage_api_key, embed_provider)
+    from coverletter.db import ensure_category_embeddings, get_category_embeddings
+    ensure_category_embeddings(conn, voyage_api_key, embed_provider)
+    category_embeddings = get_category_embeddings(conn)
     reranker = provider if provider.supports_rerank() else None
     relevant_claims, category_scores = _category_aware_retrieval(
         all_claims, conn, jd_embedding, category_embeddings, relevance_threshold,
