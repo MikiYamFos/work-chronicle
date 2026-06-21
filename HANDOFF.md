@@ -1,234 +1,135 @@
----
-name: handoff-2026-06-09
-description: "Session handoff — three-layer library, seed multi-round, clio edit, build paste fix, label_evals criteria rewrite"
-metadata: 
-  node_type: memory
-  type: project
-  updated: 2026-06-09
-  branch: flow_bugs
----
+# Handoff — 2026-06-17
 
-# Session Handoff — 2026-06-09
+## Branch: `flow_bugs`
 
-All work uncommitted. User does their own commits.
+## Critical principle — DO NOT VIOLATE
+
+**Diagnose root cause before writing any code. Never patch a symptom.**
+When the user reports a pattern failure (judge blocking, rewrites ignoring input, content truncated), find
+the actual structural cause in the code and fix that. Do not increase a number, add a filter, or inject
+a workaround without understanding exactly what the flow does and why the symptom appears. The user pays
+for every model call and cannot afford broken runs caused by wrong fixes.
 
 ---
 
-## What was built this session
+## Fixes this session (2026-06-17)
 
-### 1. Three-layer library architecture (config.py)
+### Gap loop display overhaul (`cli.py` `_gap_loop`)
+- Library-covered gaps were numbered alongside actionable ones — confusing because typing "all"
+  only processed actionable items but the user didn't know which numbers those were
+- Seniority gaps were routed straight to Q&A ("what experience to draw on?") even when the
+  issue was framing existing content more explicitly, not missing material — the user had no
+  idea what paragraph to write
+- Fix: library-covered gaps shown separately as "Pulled in on regen (N):" bullet list — no
+  numbers, no action needed, completely separate from the actionable section
+- Fix: actionable gaps renumbered starting from 1 so "1,2" maps to exactly what user sees
+- Fix: seniority gaps now offer [W]rite paragraph / [N]ote for regen / [S]kip — "Note" adds
+  the gap to covered_gaps so regen receives it as editorial direction without opening Q&A
 
-`_resolve_paragraphs_files` now returns up to three files in priority order:
+### Argument generator missing candidate motivation (`align.py`)
+- `generate_argument()` was passing only `profile.as_goals_text()` as the candidate section
+- working_style, values, and differentiators were not included — the model had no access to
+  the candidate's drives, what draws them to certain work, or their perspective on data quality
+- Result: argument always came out as a purely technical credential list with no connection
+  to employer mission, so the letter opener had nothing authentic to open from
+- Fix: candidate section now includes goals + working_style + values + differentiators
+- ARGUMENT_PROMPT updated: candidate clause rules now explicitly instruct the model to read
+  the candidate's drives and working style to find mission overlap, not just list credentials
 
-- Layer 3 (approved): `library_approved.md` — manually line-edited via `clio edit`
-- Layer 2 (refined): `library_refined.md` — LLM-validated seed output + build drafts
-- Layer 1 (raw): `library.md` — verbatim seed extractions
+### ARGUMENT_PROMPT mission connection rule added (`align.py`)
+- Employer clause already had a rule to read the full JD including mission sections (prior session)
+- Candidate clause had no corresponding instruction — model defaulted to listing outputs
+- Fix: added explicit instruction to read working style and values, find overlap with employer
+  mission, and use that overlap as the argument (not a credential list)
 
-Critical bug fixed: `os.environ.get("LIBRARY_APPROVED_FILE", "")` returns `""`, `Path("")` is `Path('.')` which is a directory → `IsADirectoryError`. Fixed with `if _approved_env` guard before constructing Path.
+### SYSTEM_PROMPT bio block framing (`prompt.py`)
+- Bio block was labeled "for biographical prompts" — model skipped it when writing letters
+- Fix: relabeled as source of genuine opener connection; explicit instruction to read before
+  writing the opener
 
-### 2. Seed multi-round loop (cli.py)
+### VERIFY_PROMPT opener check (`verify.py`)
+- Added check 1: opener paragraph — flags generic industry statements with no candidate present,
+  or opener containing previous employer names
 
-`clio seed` now loops: after each accept/reject round, asks "Add more material?" and continues until user declines. `_confirm_role` is defined BEFORE the `while True` loop (4-space indent). `all_session_accepted` accumulates across rounds.
+### Hard check additions (`verify.py`)
+- Progressive tense regex: catches "have been building", "was building", etc.
+- Auto-fix flow in cli.py: `_hard_check` runs post-generation; if violations found,
+  auto-propose-fix before rendering the letter to user
 
-### 3. Dual-file save in seed (cli.py, seed.py)
-
-Each seed round saves to BOTH:
-- `library.md` — raw verbatim extraction (`text` field)
-- `library_refined.md` — LLM-validated/fixed extraction (`text_fixed` field)
-
-`extract_from_material` in seed.py returns both `text` (raw) and `text_fixed` (LLM-fixed) per paragraph.
-
-### 4. clio edit command (cli.py)
-
-New `clio edit` command. Opens each paragraph in `library_refined.md` (or `library.md` if no refined exists) for line-editing in the terminal. Saves edited result to `library_approved.md` (Layer 3).
-
-### 5. Build paste interleaving fix (cli.py)
-
-"What next?" in build changed to clipboard-based input. Avoids stdin paste interleaving with spinner:
-
-```python
-console.print("[dim]Copy your next topic or material to your clipboard, then press Enter. Just press Enter to exit.[/dim]")
-_flush_stdin()
-sentinel = input()
-topic = _read_from_clipboard().strip()
-if not topic:
-    topic = sentinel.strip()
-if not topic:
-    break
-try:
-    sys.stdin = open("/dev/tty", "r")
-except OSError:
-    _flush_stdin()
-```
-
-### 6. Profile generation moved to clio init (cli.py)
-
-Profile generation prompt removed from end of `clio seed`. Added as a deliberate step in `clio init` onboarding flow after seed/build completes. Seed now shows a reminder: "Run `clio init` to generate your candidate profile."
-
-### 7. label_evals.py: API keys removed (label_evals.py)
-
-Anthropic and Voyage API key text_input fields removed from sidebar. Keys load silently from `.env`. No UI clutter.
-
-### 8. label_evals.py: approve/reject criteria rewritten (label_evals.py)
-
-Previous copy said "approve if it names something specific the person did, built, or owned" — only described ownership claims (1 of 5 types). Rewrote to show all five valid claim types:
-
-1. Ownership/Decision — named employer + deliverable
-2. Approach/Method — how they consistently work
-3. Disposition/Character — who they are as an engineer (broad is fine if paragraph backs it up)
-4. Motivation/Orientation — what kind of work they find meaningful
-5. Personal project
-
-Reject criteria made explicit: skill/capability statement, system-did-it, resume-speak, too generic.
-
-### 9. label_evals.py: gold standard criteria rewritten (label_evals.py)
-
-Gold standard copy updated to match actual claim taxonomy. Disposition/character claims now explicitly called out as valid gold standard approved examples. "Only add if zero hesitation" rule made explicit.
-
-### 10. CHEATSHEET.md (CHEATSHEET.md)
-
-New quick-reference doc: all commands, library layers, typical flows.
-
-### 11. library.md cleaned (work-chronicle)
-
-Removed placeholder template block, bad BritBox/Watch Duration paragraph (wrong facts), hallucinated Universe paragraph. File now starts directly with `## Senior Data Engineer`.
-
-### 12. .gitignore: library_approved.md added
+### Propose-fix output constraint (`cli.py`)
+- Model was leaking chain-of-thought ("Wait. Let me re-read...") into propose-fix output
+- Fix: feedback string now ends with explicit output-only constraint
 
 ---
 
-## Bugs found and fixed this session
+## Prior session fixes (still in effect)
 
-- **`Path("")` → IsADirectoryError**: fixed with `if _approved_env` guard in config.py
-- **`_confirm_role` unreachable code**: multiple times during seed refactor — fixed by ensuring `_confirm_role` is defined at 4-space indent BEFORE the `while True` loop
-- **Seed not looping**: `while True` multi-round loop added
-- **Raw text not saved**: seed was only saving refined text; now saves both to separate files
-- **Build paste interleaving**: clipboard-based input at "What next?"
-- **Profile generated at end of every seed**: moved to init onboarding
-- **API keys showing in Streamlit**: removed, load silently from .env
-- **Gold standard UI text incomprehensible**: rewritten based on actual extract.py taxonomy
+### Revision context truncation (`build.py` ~line 923)
+- `_revise_paragraph` (direct revision bypass) was truncating user messages to 600 chars, total context to 2000
+- Fix: 2000 chars per message, 6000 total
 
----
+### Judge context — wrong approach then correct fix (`build.py`)
+- Initial (wrong) fix: bumped `[-4000:]` to `[-12000:]` — still the full bloated conversation
+- User identified the real design error: the judge only needs to know what the user actually said
+- Correct fix: `_build_judge_context` now includes ONLY user-role messages that are real answers
+  — skips `[JUDGE:...]` and `[DRAFT JUDGE:...]` injections (code noise, not user content)
+  — skips non-string content (tool results)
+  — no total truncation: user answers are small, the judge gets all of them
+- Both instances of `_build_judge_context` in build.py fixed identically (lines ~569 and ~688)
 
-## Files changed this session
+### Coaching redirect loses prior content (`cli.py` `_coaching_pass`)
+- When user hit [R]edirect, `new_direction` was passed to `rewrite_sentence` with no memory of the
+  original direction — "keep more of my response" had no response to reference
+- Also: redirect used `input()` (single-line) instead of `_read_multiline`
+- Fix: redirect now accumulates `f"Prior direction: {user_input}\n\nPrevious rewrite: {rewritten}\n\nNew direction: {new_direction}"`
+  and updates `user_input` so each subsequent redirect carries the full history
+- Fix: `_read_multiline` instead of `input()` for the redirect prompt
 
-```
-coverletter/config.py         — three-layer _resolve_paragraphs_files, Path("") guard
-coverletter/seed.py           — extract_from_material returns text + text_fixed
-coverletter/cli.py            — seed loop, dual save, clio edit, build clipboard input, profile in init
-coverletter/label_evals.py    — API keys removed, criteria rewritten, gold standard rewritten
-CHEATSHEET.md                 — new quick reference
-.gitignore                    — library_approved.md added
-```
-
-Work-chronicle clone:
-```
-library.md                    — placeholder + bad paragraphs removed
-```
-
----
-
-## State of the two repos
-
-**cover-letter-generator** (dev) — branch `flow_bugs`
-All changes above. Uncommitted. This is the source of truth for code.
-
-**work-chronicle** (user's working clone) — branch `flow_bugs`
-Needs a `git pull origin flow_bugs` after dev is committed and pushed to get the code changes.
-`library.md` was cleaned directly in the clone.
+### Coaching constrained to single sentence (`coach.py`)
+- `REWRITE_SYSTEM` said "rewrite a single sentence" — output was always forced to one sentence
+  even when the original content or user's direction spanned multiple sentences
+- `REWRITE_PROMPT` and `REWRITE_DIRECTION` also said "sentence" throughout
+- Fix: all three updated to "passage" — output is however many sentences the content requires
+- `max_tokens` bumped 256 → 512
 
 ---
 
-## Session 2 additions (continued from context overflow)
+## Prior session fixes (still in effect)
 
-### Extraction prompt quality fixes (extract.py)
-- Added `━━━ ANCHOR RULE ━━━`: claims must anchor on sharpest specific fact (deadline, scale, failure replaced, consequence to others)
-- Added `━━━ CLAIM TEXT FORMATTING ━━━`: no em-dashes, no "not just/only/simply/merely", no topic lists
-- All em-dashes inside GOOD/STRONG/RIGHT quoted examples replaced with semicolons/commas
-- Removed "work backwards" phrasing from both locations (was being hallucinated verbatim by model)
-- Added multiple-claims-per-paragraph rule
-- WRONG/RIGHT example uses Meridian Health (fictional, not user's real employer)
+### SYSTEM_PROMPT full rewrite (`prompt.py`)
+- Prior prompt had opener rule stated THREE times with contradictory language
+- ASSEMBLY RULES STEP A told model to scan JD for gaps — produced gap apology sentences
+- Rewrite: single opener rule, SYNTHESIS MODE and LIBRARY MODE explicitly separated,
+  "do NOT scan the JD for gaps" in synthesis mode, foundational "ARGUMENT IS THE COMPASS" section
 
-### Mixed paragraph handling (seed.py)
-- Skip rule stays narrow: RESUME SUMMARIES only (thesis-only openers/closers excluded from skip)
-- Mixed paragraphs instruction: "select and quote only the specific sentences. Drop the thesis wrapper."
+### Gap apology logic (`cli.py`, `prompt.py`)
+- Gaps user skips after seeing them → `skipped_gap_topics` → `unaddressed_gaps` param
+  → model may acknowledge one sentence only
+- Gaps model infers from JD on its own → hard banned
 
-### Stable paragraph DB ids (parser.py, cli.py, prompt.py)
-- `Paragraph.db_id: int | None = None` added to dataclass
-- **Universal db_id attachment** in `generate` command: opens DB unconditionally (not gated on Voyage key), stamps every paragraph with its stable DB id from `text_hash` lookup
-- Regen path also re-stamps db_ids after loading new paragraphs
-- Prompt labels now use `db_id` when set, fall back to `index` only if not in DB
-- `clio para` command: `uv run clio para` lists all paragraphs with DB ids; `uv run clio para <id>` shows full text
+### `_gap_has_library_ref` negation fix (`cli.py`)
+- Was matching `paragraph [N]` inside "paragraph [4] does not cover this"
+- Fix: checks 30 chars before citation for negation words
 
-### Library stripping fix (prompt.py)
-- Body paragraphs were being stripped when Voyage key set (only openers/closers/frames kept)
-- Fixed to hybrid: openers/closers/frames + top 8 body paragraphs pre-sorted by relevance
+### Semantic pre-classification removed (`cli.py`)
+- Semantic search was matching Snowflake gap to Redshift/BigQuery paragraph
+- Fix: only explicit alignment citations mark a gap as library-covered
 
-### Question judge fix (build.py)
-- `judge_context` was only first 300 chars of initial topic — never saw user's answers
-- Fixed: `_build_judge_context(messages)` passes full conversation history (last 1200 chars) to `validate_question`
+### 500 retry (`build.py`)
+- `_call_model` now retries up to 3 times with exponential backoff on status 500
 
-### Other fixes
-- `clio claim-add` Rich markup crash: `[dim]` tag split across two print calls — merged
-- `clio claims` command: restored as proper DB-querying command
-- label_evals.py judge queue approve/reject: items now removed from queue on action
-- TEST_CONTENT.md: fictional candidate (Alex Rivera) for peer graders to test full app
-- TEST_FLOW.md rewritten: main flow is `uv run clio` (paste), not `clio generate` (file)
-- WORKFLOW.md + CHEATSHEET.md + README.md: `uv run clio generate` → `uv run clio` for interactive path
+### Argument prompt (`align.py`)
+- False comparisons banned in thesis
+- Stakes-grounding required in candidate clause
 
-### Rename `generate` → `gen-letter` (PENDING — user approved, not done yet)
-User wants `uv run clio gen-letter jds/file.txt` for the file-based path. Hold until stable.
+### Coaching loop delete (`cli.py`)
+- Added `[D]elete` option at initial prompt and after seeing a rewrite
 
 ---
 
-## Files changed in session 2
-
-```
-coverletter/extract.py        — anchor rule, formatting rules, em-dash cleanup, WRONG/RIGHT example
-coverletter/seed.py           — mixed paragraph handling, skip rule scope
-coverletter/parser.py         — Paragraph.db_id field
-coverletter/cli.py            — universal db_id attachment, clio para, clio claims, claim-add fix, regen db_ids
-coverletter/prompt.py         — library hybrid (top 8 body), db_id labels, system prompt note
-coverletter/build.py          — _build_judge_context, full conversation history to judge
-coverletter/label_evals.py    — judge queue button fix
-TEST_CONTENT.md               — new (fictional candidate)
-TEST_FLOW.md                  — rewritten (main flow = uv run clio)
-WORKFLOW.md, CHEATSHEET.md    — generate → interactive path corrections
-README.md                     — same
-```
-
----
-
-## Pending tasks
-
-### Immediate
-1. **Commit cover-letter-generator** (all changes from this session) and push to `flow_bugs`
-2. **Pull work-chronicle**: `git pull origin flow_bugs` after push
-3. **Run full test suite**: `uv run pytest` — verify nothing broken
-
-### Extraction flow (content work)
-4. **Run `clio seed`** with more sources to build up library
-5. **Run `clio edit`** — line-edit refined paragraphs → library_approved.md
-6. **Run `clio extract --dry-run`** — generate extractions_review.json
-7. **Label claims** in label_evals.py — now with correct criteria
-8. **Run `clio extract`** — write approved claims to DB
-
-### Engineering backlog
-- GitHub Actions CI (+2 points toward scoring) — not built
-- Streamlit monitoring dashboard (+1 point) — not built
-- Continue TEST_FLOW.md end-to-end validation
-
----
-
-## Key file map
-
-- `coverletter/config.py` — `_resolve_paragraphs_files`, three-layer priority
-- `coverletter/seed.py` — `extract_from_material` returns `text` + `text_fixed`
-- `coverletter/cli.py` — ~3700 lines; grep before reading
-  - `seed` command — multi-round while loop, dual-file save
-  - `edit` command — Layer 3 approval flow
-  - `_qa_session` — central Q&A hub
-  - `build_library` — `clio build` command
-- `coverletter/extract.py` — claim taxonomy (5 types), judge prompt, gold standard logic
-- `coverletter/label_evals.py` — Streamlit labeling app
-- `CHEATSHEET.md` — user-facing quick reference
+## Still to watch
+- Letter quality with new SYSTEM_PROMPT — needs a clean end-to-end test run
+- `driving_angle` in provenance passes gap kind not canonical angle name
+- `clio outline` → `clio generate --from-outline` path not tested end-to-end
+- Paragraphs without canonical angles: bulk-assign still needed
+- Coaching judge (the sentence coach `analyze_letter`) has separate context — not the same as QA judge

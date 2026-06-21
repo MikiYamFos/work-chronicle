@@ -233,10 +233,23 @@ delta reporting (did your library coverage of this JD improve after adding parag
 uv run clio
 ```
 
-Paste a JD when prompted. Streams a letter. After generation:
-1. Verification — LLM pass for invented facts and banned constructs
-2. Alignment report — JD requirements covered, gaps, seniority signal gaps, goal alignment
-3. Thesis — one sentence stating what the letter argues
+Paste a JD when prompted. Streams a letter. The tool derives a provisional argument
+from the JD before generating — this becomes the thesis without a redundant second pass.
+
+**Evidence block:** paragraphs from your library are organized by 18 canonical angles and
+scored against the JD. Angles with cosine similarity ≥ 0.45 are marked REQUIRED (★) and
+must each appear as at least one concrete claim in the letter. Angles below 0.45 are
+SUPPORTING — woven in where they strengthen.
+
+**Provenance-first retrieval:** paragraphs you wrote during a previous gap session for this
+same JD are guaranteed in evidence (matched by JD content hash + stored cosine score),
+regardless of how they were angle-classified. This prevents JD-targeted writing from being
+buried by miscategorization.
+
+After generation:
+1. **Quality check** (opt-in — `Run quality check? [y/N]:`) — LLM pass for invented facts and banned constructs; fix proposal also opt-in
+2. **Alignment report** — JD requirements covered, gaps, seniority signal gaps, goal alignment
+3. **Thesis** — one sentence stating what the letter argues (reused from provisional argument)
 
 Revision loop: enter a gap number to Q&A and add a paragraph; `r` + feedback to revise
 inline; `s` to save; `q` to quit.
@@ -422,6 +435,37 @@ Use this on a fresh clone to confirm everything works.
 
 Set via `COVERLETTER_MODEL` env var or `--model` flag. Set `EMBED_MODEL=bge-m3` for
 local hybrid embeddings (requires `uv add FlagEmbedding`, ~2GB download on first use).
+
+---
+
+## Gap Q&A and provenance
+
+When you address a gap during letter generation, the Q&A session saves a new paragraph to
+`library_refined.md` AND records provenance: `para_hash`, `jd_hash`, `jd_score`,
+`gap_question`, `driving_angle` into the `paragraph_gap_provenance` table.
+
+On the next generation run for the same JD, the provenance-first retrieval pass queries
+this table and pulls those paragraphs directly — bypassing angle scoring. They appear at
+the top of the evidence block.
+
+**What this means in practice:** writing gap paragraphs for a JD during one session makes
+every subsequent session for that JD automatically stronger. The library compounds by JD,
+not just globally.
+
+---
+
+## Writing rules (enforced)
+
+- No em-dash (`—`) anywhere — generation or coaching rewrites
+- No sentence starting with "That"
+- No present-progressive chaining: "I have been building", "I have been doing", "work I have been doing"
+- No banned phrases: `actually`, `not just`, `not only`, `not simply`, `this matters because`, `the hard part was not`, `that experience fits`, `this role aligns`, `what stands out`, `the clearest connection`, `this is the kind of work`, `i am strongest in`, `i combine`, `career-long pattern`, `building for the next`, `responsible for ingesting`
+- No paragraph ending with a list of 3+ items
+- No generic body paragraph opener (must lead with a concrete fact)
+- **Opener states the thesis** — both sides present: what the organization does + what this candidate has done = why this letter exists. No previous employer names in opener. No credential lead.
+- Body paragraphs must not restate claims already made in the opener
+
+These are checked by `_hard_check()` (deterministic) and `verify_letter()` (LLM, runs on Haiku for cost).
 
 ---
 

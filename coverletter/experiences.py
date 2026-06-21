@@ -114,32 +114,35 @@ def _words(text: str) -> set[str]:
 
 
 def find_experience(experiences: list[Experience], topic: str) -> Experience | None:
-    """Find the experience most relevant to a topic string. Returns None if no match."""
+    """Find the single best matching experience. Returns None if no match above threshold."""
+    matches = find_experiences(experiences, topic)
+    return matches[0] if matches else None
+
+
+def find_experiences(experiences: list[Experience], topic: str, min_score: int = 4) -> list[Experience]:
+    """Return all experiences that match the topic above the score threshold, best first."""
     if not experiences:
-        return None
+        return []
 
     topic_words = _words(topic)
-    best_score = 0
-    best: Experience | None = None
+    scored: list[tuple[int, Experience]] = []
 
     for exp in experiences:
         name_words = _words(exp.name)
         company_words = _words(exp.company)
 
-        # Word overlap between topic and experience name + company
         score = len(topic_words & (name_words | company_words))
 
-        # Substring match is a strong signal
         if exp.name.lower() in topic.lower() or topic.lower() in exp.name.lower():
             score += 10
         if exp.company and exp.company.lower() in topic.lower():
             score += 5
 
-        if score > best_score:
-            best_score = score
-            best = exp
+        if score >= min_score:
+            scored.append((score, exp))
 
-    return best if best_score >= 2 else None
+    scored.sort(key=lambda x: x[0], reverse=True)
+    return [exp for _, exp in scored]
 
 
 def framing_coverage(exp: Experience, paragraphs: list[Paragraph]) -> dict[str, bool]:

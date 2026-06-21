@@ -324,6 +324,20 @@ CREATE TABLE IF NOT EXISTS paragraph_provenance (
     inferred_at     TEXT DEFAULT (datetime('now'))
 );
 
+-- Gap-driven provenance: written at save time when a paragraph comes from the gap loop.
+-- jd_score = cosine similarity of paragraph against the originating JD at write time.
+-- This is the authoritative signal for retrieval — beats inferred angle assignment.
+CREATE TABLE IF NOT EXISTS paragraph_gap_provenance (
+    id              INTEGER PRIMARY KEY,
+    para_hash       TEXT NOT NULL,      -- paragraph_hash(text) — survives layer moves
+    jd_company      TEXT NOT NULL,
+    jd_hash         TEXT NOT NULL,
+    jd_score        REAL NOT NULL,      -- cosine sim of paragraph vs JD at write time
+    gap_question    TEXT,               -- the alignment gap that triggered writing
+    driving_angle   TEXT,               -- canonical angle the gap was filed under
+    recorded_at     TEXT DEFAULT (datetime('now'))
+);
+
 -- Precomputed category description embeddings — stable, recomputed only when categories change
 CREATE TABLE IF NOT EXISTS category_embeddings (
     category_name   TEXT PRIMARY KEY,
@@ -358,6 +372,23 @@ CREATE TABLE IF NOT EXISTS jd_embedding_cache (
     cached_at       TEXT DEFAULT (datetime('now'))
 );
 
+-- Graph join tables: sentences → claims → canonical angles
+-- These power the traversal: gap → angles → claims → sentences → assemble.
+-- sentence_claims: which sentences prove which claims (many-to-many).
+-- claim_angles: which canonical angles a claim supports (derived from argument_categories).
+CREATE TABLE IF NOT EXISTS sentence_claims (
+    sentence_id INTEGER NOT NULL REFERENCES sentences(id) ON DELETE CASCADE,
+    claim_id    INTEGER NOT NULL REFERENCES claims(id) ON DELETE CASCADE,
+    score       REAL,   -- cosine similarity between sentence and claim embeddings
+    PRIMARY KEY (sentence_id, claim_id)
+);
+
+CREATE TABLE IF NOT EXISTS claim_angles (
+    claim_id INTEGER NOT NULL REFERENCES claims(id) ON DELETE CASCADE,
+    angle    TEXT NOT NULL,
+    PRIMARY KEY (claim_id, angle)
+);
+
 CREATE INDEX IF NOT EXISTS idx_para_hash          ON paragraphs(text_hash);
 CREATE INDEX IF NOT EXISTS idx_para_source        ON paragraphs(source_file, active);
 CREATE INDEX IF NOT EXISTS idx_para_type          ON paragraphs(type, active);
@@ -372,6 +403,9 @@ CREATE INDEX IF NOT EXISTS idx_app_claim_scores   ON application_claim_scores(ap
 CREATE INDEX IF NOT EXISTS idx_app_gaps           ON application_gaps(application_id);
 CREATE INDEX IF NOT EXISTS idx_gap_actions        ON gap_library_actions(gap_id);
 CREATE INDEX IF NOT EXISTS idx_para_provenance    ON paragraph_provenance(source_type);
+CREATE INDEX IF NOT EXISTS idx_sent_claims_claim  ON sentence_claims(claim_id);
+CREATE INDEX IF NOT EXISTS idx_sent_claims_sent   ON sentence_claims(sentence_id);
+CREATE INDEX IF NOT EXISTS idx_claim_angles_angle ON claim_angles(angle);
 """
 
 
@@ -665,6 +699,52 @@ def open_db(path: Path) -> sqlite3.Connection:
     return conn
 
 
+def record_gap_provenance(
+    conn: sqlite3.Connection,
+    para_text: str,
+    jd_company: str,
+    jd_text: str,
+    gap_question: str | None,
+    driving_angle: str | None,
+    voyage_api_key: str,
+    model: str = "voyage-3-lite",
+) -> None:
+    """Record provenance for a paragraph written in response to a JD gap.
+
+    Computes and stores the cosine similarity of the paragraph against the JD
+    at write time — this is the authoritative retrieval signal, more reliable
+    than inferred canonical angle assignment.
+    """
+    para_hash = _hash(para_text.strip())
+    jd_hash = _hash(jd_text.strip())
+
+    # Check for duplicate (same paragraph + same JD)
+    existing = conn.execute(
+        "SELECT id FROM paragraph_gap_provenance WHERE para_hash = ? AND jd_hash = ?",
+        (para_hash, jd_hash),
+    ).fetchone()
+    if existing:
+        return
+
+    jd_score = 0.0
+    try:
+        import voyageai  # type: ignore
+        client = voyageai.Client(api_key=voyage_api_key)
+        para_result = client.embed([para_text], model=model, input_type="document")
+        jd_result = client.embed([jd_text], model=model, input_type="query")
+        jd_score = _cosine(para_result.embeddings[0], jd_result.embeddings[0])
+    except Exception:
+        pass
+
+    conn.execute(
+        """INSERT INTO paragraph_gap_provenance
+           (para_hash, jd_company, jd_hash, jd_score, gap_question, driving_angle)
+           VALUES (?, ?, ?, ?, ?, ?)""",
+        (para_hash, jd_company, jd_hash, jd_score, gap_question, driving_angle),
+    )
+    conn.commit()
+
+
 def save_raw_response(
     conn: "sqlite3.Connection",
     history: list[dict],
@@ -935,8 +1015,8 @@ def assign_angles_canonical(
     conn: sqlite3.Connection,
     voyage_api_key: str,
     model: str = "voyage-3-lite",
-    primary_threshold: float = 0.45,
-    secondary_threshold: float = 0.40,
+    primary_threshold: float = 0.30,
+    secondary_threshold: float = 0.25,
 ) -> dict[str, int]:
     """Classify every active paragraph against canonical angle descriptions.
 
@@ -972,14 +1052,6 @@ def assign_angles_canonical(
            WHERE p.active = 1"""
     ).fetchall()
 
-    # Track which paragraphs have human-labeled primary angles (don't override)
-    human_primaries: set[int] = {
-        row[0]
-        for row in conn.execute(
-            "SELECT paragraph_id FROM paragraph_angles WHERE is_primary=1 AND angle_auto=0"
-        )
-    }
-
     assigned: dict[str, int] = {}
 
     for row in rows:
@@ -997,21 +1069,26 @@ def assign_angles_canonical(
         if best_score < primary_threshold:
             continue
 
-        # Assign primary angle if no human label exists
-        if para_id not in human_primaries:
-            conn.execute(
-                """INSERT INTO paragraph_angles (paragraph_id, angle, is_primary, confidence, angle_auto)
-                   VALUES (?, ?, 1, ?, 1)
-                   ON CONFLICT(paragraph_id, angle) DO UPDATE SET
-                       is_primary=1, confidence=excluded.confidence, angle_auto=1""",
-                (para_id, best_angle, best_score),
-            )
-            # Update denormalized column on paragraphs for quick lookup
-            conn.execute(
-                "UPDATE paragraphs SET angle=?, angle_auto=1 WHERE id=?",
-                (best_angle, para_id),
-            )
-            assigned[best_angle] = assigned.get(best_angle, 0) + 1
+        # Always assign the canonical primary angle — angle tags in markdown are written
+        # by the seed/extract process, not the user, so there are no human labels to protect.
+        # Clear any existing non-canonical primary flag first so retrieval isn't confused.
+        conn.execute(
+            "UPDATE paragraph_angles SET is_primary=0 WHERE paragraph_id=? AND angle NOT IN (%s)"
+            % ",".join("?" * len(angle_names)),
+            (para_id, *angle_names),
+        )
+        conn.execute(
+            """INSERT INTO paragraph_angles (paragraph_id, angle, is_primary, confidence, angle_auto)
+               VALUES (?, ?, 1, ?, 1)
+               ON CONFLICT(paragraph_id, angle) DO UPDATE SET
+                   is_primary=1, confidence=excluded.confidence, angle_auto=1""",
+            (para_id, best_angle, best_score),
+        )
+        conn.execute(
+            "UPDATE paragraphs SET angle=?, angle_auto=1 WHERE id=?",
+            (best_angle, para_id),
+        )
+        assigned[best_angle] = assigned.get(best_angle, 0) + 1
 
         # Assign secondary angles for all others above secondary threshold
         for angle, score in scores.items():
@@ -1174,12 +1251,17 @@ def build_angle_evidence(
     sentences_per_angle: int = 3,
     model: str = "voyage-3-lite",
     thesis_text: str | None = None,
+    required_gap_queries: list[str] | None = None,
 ) -> list[dict]:
     """Return angle-organized evidence for letter synthesis.
 
     Scores canonical angles against the JD to find the top argument categories
     the role needs, then retrieves the most JD-relevant sentences from paragraphs
     tagged with each angle — with a sentence of context on each side for grounding.
+
+    required_gap_queries: gap descriptions that were filled during Q&A. For each,
+    a direct sentence search is run against all paragraphs (bypassing angle selection)
+    so gap-filling content always enters the evidence pool.
 
     One sentence per source paragraph (forces diversity across experiences).
 
@@ -1224,69 +1306,413 @@ def build_angle_evidence(
         return []
 
     angle_scores = sorted(
-        zip(angle_names, desc_result.embeddings),
-        key=lambda x: _cosine(jd_vec, x[1]),
+        [(name, _cosine(jd_vec, vec)) for name, vec in zip(angle_names, desc_result.embeddings)],
+        key=lambda x: x[1],
         reverse=True,
     )
     top_angle_names = [name for name, _ in angle_scores[:top_angles]]
+    angle_score_map = {name: score for name, score in angle_scores}
+
+    # Determine if graph traversal is available (sentence_claims + claim_angles populated)
+    graph_ready = conn.execute("SELECT COUNT(*) FROM sentence_claims").fetchone()[0] > 0
+
+    # Provenance-first pass: paragraphs written specifically for this JD, ordered by
+    # stored jd_score. These are guaranteed into the evidence pool before angle scoring.
+    jd_hash = _hash(jd_text.strip())
+    provenance_para_ids: set[int] = set()
+    provenance_texts: set[str] = set()
+    try:
+        prov_rows = conn.execute(
+            """SELECT pgp.para_hash, pgp.jd_score, pgp.gap_question, pgp.driving_angle,
+                      p.id as para_id, p.role, p.section, p.text as para_text
+               FROM paragraph_gap_provenance pgp
+               JOIN paragraphs p ON p.text_hash = pgp.para_hash
+               WHERE pgp.jd_hash = ? AND p.active = 1
+               ORDER BY pgp.jd_score DESC""",
+            (jd_hash,),
+        ).fetchall()
+        if prov_rows:
+            prov_sentences = []
+            for row in prov_rows:
+                # Best sentence from this paragraph
+                sent_rows = conn.execute(
+                    """SELECT s.text, s.position, se.vector
+                       FROM sentences s
+                       JOIN sentence_embeddings se ON s.id = se.sentence_id
+                       WHERE s.paragraph_id = ?
+                       ORDER BY s.position""",
+                    (row["para_id"],),
+                ).fetchall()
+                best_sent = max(
+                    sent_rows,
+                    key=lambda r: _cosine(jd_vec, json.loads(r["vector"])),
+                    default=None,
+                ) if sent_rows else None
+                sent_text = best_sent["text"] if best_sent else row["para_text"][:120]
+                provenance_para_ids.add(row["para_id"])
+                provenance_texts.add(sent_text)
+                src = row["para_text"]
+                prov_sentences.append({
+                    "text": sent_text,
+                    "source_paragraph": src[:250] + ("..." if len(src) > 250 else ""),
+                    "role": row["role"],
+                    "section": row["section"],
+                    "claim": f"[written for this JD — score {row['jd_score']:.2f}] {row['gap_question'] or ''}",
+                })
+            if prov_sentences:
+                result_provenance = [{
+                    "angle": "provenance-match",
+                    "sentences": prov_sentences,
+                    "jd_score": 1.0,
+                    "required": True,
+                    "rank": 0,
+                }]
+            else:
+                result_provenance = []
+        else:
+            result_provenance = []
+    except Exception:
+        result_provenance = []
 
     result = []
     for angle in top_angle_names:
-        # Fetch all sentences from paragraphs tagged with this angle
-        rows = conn.execute(
+        # Graph path: angle → claims → sentences → source paragraph
+        # This is the full layered traversal the design intends.
+        claim_rows = conn.execute(
+            """SELECT DISTINCT c.id, c.text as claim_text, c.source_para_hash,
+                      s.id as sent_id, s.text as sent_text, s.position,
+                      s.paragraph_id, p.role, p.section, p.text as para_text,
+                      se.vector
+               FROM claim_angles ca
+               JOIN claims c ON ca.claim_id = c.id
+               JOIN sentence_claims sc ON sc.claim_id = c.id
+               JOIN sentences s ON sc.sentence_id = s.id
+               JOIN sentence_embeddings se ON s.id = se.sentence_id
+               JOIN paragraphs p ON s.paragraph_id = p.id
+               WHERE ca.angle = ? AND p.active = 1""",
+            (angle,),
+        ).fetchall()
+
+        if not claim_rows:
+            # Fallback: paragraph_angles path — at least get the paragraph
+            claim_rows = conn.execute(
+                """SELECT NULL as claim_text, NULL as source_para_hash,
+                          s.id as sent_id, s.text as sent_text, s.position,
+                          s.paragraph_id, p.role, p.section, p.text as para_text,
+                          se.vector
+                   FROM sentences s
+                   JOIN sentence_embeddings se ON s.id = se.sentence_id
+                   JOIN paragraphs p ON s.paragraph_id = p.id
+                   JOIN paragraph_angles pa ON p.id = pa.paragraph_id
+                   WHERE pa.angle = ? AND pa.is_primary = 1 AND p.active = 1""",
+                (angle,),
+            ).fetchall()
+
+        if not claim_rows:
+            continue
+
+        # Score each sentence against the JD
+        scored = sorted(
+            claim_rows,
+            key=lambda r: _cosine(jd_vec, json.loads(r["vector"])),
+            reverse=True,
+        )
+
+        # Take top sentences_per_angle — one per source paragraph for diversity.
+        # Skip paragraphs already in the provenance block to avoid duplication.
+        entries = []
+        seen_paragraphs: set[int] = set(provenance_para_ids)
+        for row in scored:
+            if len(entries) >= sentences_per_angle:
+                break
+            if row["paragraph_id"] in seen_paragraphs:
+                continue
+            seen_paragraphs.add(row["paragraph_id"])
+            entries.append({
+                "claim": row["claim_text"] or "",
+                "text": row["sent_text"],
+                "source_paragraph": row["para_text"],
+                "role": row["role"],
+                "section": row["section"],
+            })
+
+        if entries:
+            rank = top_angle_names.index(angle) + 1  # 1-based rank by JD relevance
+            score = angle_score_map.get(angle, 0.0)
+            # Required = scores strongly against the JD, not an arbitrary top-N count.
+            # Angles above 0.45 cosine similarity are explicit JD requirements.
+            # Angles 0.35-0.45 are supporting — relevant but not the core ask.
+            required = score >= 0.45
+            result.append({
+                "angle": angle,
+                "sentences": entries,
+                "jd_score": score,
+                "required": required,
+                "rank": rank,
+            })
+
+    # For each gap that was filled during Q&A, do a direct sentence search
+    # against all active paragraphs — bypassing angle selection so gap-filling
+    # evidence enters the pool even if its angle didn't rank in the top N.
+    if required_gap_queries:
+        existing_sentence_ids: set[int] = {
+            s_row["id"]
+            for block in result
+            for s_row in block["sentences"]
+            # sentences in result dicts don't carry id — track by text instead
+        }
+        existing_texts: set[str] = {
+            s["text"] for block in result for s in block["sentences"]
+        }
+        all_sent_rows = conn.execute(
             """SELECT s.id, s.text, s.position, s.paragraph_id,
                       p.role, p.section, se.vector
                FROM sentences s
                JOIN sentence_embeddings se ON s.id = se.sentence_id
                JOIN paragraphs p ON s.paragraph_id = p.id
-               JOIN paragraph_angles pa ON p.id = pa.paragraph_id
-               WHERE pa.angle = ? AND p.active = 1""",
-            (angle,),
+               WHERE p.active = 1"""
         ).fetchall()
-
-        if not rows:
-            continue
-
-        # Score each sentence against the JD and sort best first
-        scored = sorted(
-            rows,
-            key=lambda r: _cosine(jd_vec, json.loads(r["vector"])),
-            reverse=True,
-        )
-
-        # Take top sentences_per_angle sentences — at most one per source paragraph
-        # to force diversity of evidence across different experiences
-        sentences = []
-        seen_paragraphs: set[int] = set()
-        for row in scored:
-            if len(sentences) >= sentences_per_angle:
-                break
-            if row["paragraph_id"] in seen_paragraphs:
-                continue
-            seen_paragraphs.add(row["paragraph_id"])
-
-            # Get one sentence of context on each side (by stored position)
-            ctx = {
-                r["position"]: r["text"]
-                for r in conn.execute(
-                    """SELECT position, text FROM sentences
-                       WHERE paragraph_id = ? AND position BETWEEN ? AND ?
-                       ORDER BY position""",
-                    (row["paragraph_id"], row["position"] - 1, row["position"] + 1),
+        if all_sent_rows:
+            for gap_query in required_gap_queries:
+                try:
+                    gap_result = client.embed([gap_query], model=model, input_type="query")
+                    gap_vec = gap_result.embeddings[0]
+                except Exception:
+                    continue
+                scored_gap = sorted(
+                    all_sent_rows,
+                    key=lambda r: _cosine(gap_vec, json.loads(r["vector"])),
+                    reverse=True,
                 )
-            }
-            sentences.append({
-                "text": row["text"],
-                "context_before": ctx.get(row["position"] - 1, ""),
-                "context_after": ctx.get(row["position"] + 1, ""),
-                "role": row["role"],
-                "section": row["section"],
-            })
+                gap_sentences = []
+                seen_paragraphs_gap: set[int] = set()
+                for row in scored_gap:
+                    if len(gap_sentences) >= sentences_per_angle:
+                        break
+                    if row["paragraph_id"] in seen_paragraphs_gap:
+                        continue
+                    if row["text"] in existing_texts:
+                        continue
+                    seen_paragraphs_gap.add(row["paragraph_id"])
+                    existing_texts.add(row["text"])
+                    ctx = {
+                        r["position"]: r["text"]
+                        for r in conn.execute(
+                            """SELECT position, text FROM sentences
+                               WHERE paragraph_id = ? AND position BETWEEN ? AND ?
+                               ORDER BY position""",
+                            (row["paragraph_id"], row["position"] - 1, row["position"] + 1),
+                        )
+                    }
+                    gap_sentences.append({
+                        "text": row["text"],
+                        "context_before": ctx.get(row["position"] - 1, ""),
+                        "context_after": ctx.get(row["position"] + 1, ""),
+                        "role": row["role"],
+                        "section": row["section"],
+                    })
+                if gap_sentences:
+                    result.append({"angle": f"gap: {gap_query[:60]}", "sentences": gap_sentences})
 
-        if sentences:
-            result.append({"angle": angle, "sentences": sentences})
+    # Prepend provenance-matched paragraphs — they came first because they were written for this JD
+    result = result_provenance + result
+
+    # Direct JD similarity pass — catches paragraphs the user wrote for this JD that
+    # got miscategorized or whose canonical angle didn't rank in the top N.
+    # Embeds the JD query directly against all paragraph embeddings (not sentences),
+    # takes the top 5 paragraphs by cosine similarity, and adds any whose best sentence
+    # isn't already in the evidence pool.
+    try:
+        existing_texts: set[str] = {s["text"] for block in result for s in block["sentences"]}
+        para_rows = conn.execute(
+            """SELECT p.id, p.role, p.section, p.text, e.vector
+               FROM paragraphs p
+               JOIN embeddings e ON p.id = e.paragraph_id
+               WHERE p.active = 1"""
+        ).fetchall()
+        if para_rows:
+            scored_paras = sorted(
+                para_rows,
+                key=lambda r: _cosine(jd_vec, json.loads(r["vector"])),
+                reverse=True,
+            )
+            direct_sentences = []
+            seen_para_ids: set[int] = set()
+            for row in scored_paras[:8]:  # top 8 paragraphs by direct JD similarity
+                if row["id"] in seen_para_ids:
+                    continue
+                # pick the best sentence from this paragraph that isn't already in pool
+                sent_rows = conn.execute(
+                    """SELECT s.text, s.position, se.vector
+                       FROM sentences s
+                       JOIN sentence_embeddings se ON s.id = se.sentence_id
+                       WHERE s.paragraph_id = ?
+                       ORDER BY s.position""",
+                    (row["id"],),
+                ).fetchall()
+                best_sent = None
+                best_score = -1.0
+                for sr in sent_rows:
+                    if sr["text"] in existing_texts:
+                        continue
+                    sc = _cosine(jd_vec, json.loads(sr["vector"]))
+                    if sc > best_score:
+                        best_score = sc
+                        best_sent = sr
+                if best_sent is None:
+                    continue
+                seen_para_ids.add(row["id"])
+                existing_texts.add(best_sent["text"])
+                src = row["text"]
+                direct_sentences.append({
+                    "text": best_sent["text"],
+                    "source_paragraph": src[:250] + ("..." if len(src) > 250 else ""),
+                    "role": row["role"],
+                    "section": row["section"],
+                })
+            if direct_sentences:
+                result.append({
+                    "angle": "direct-jd-match",
+                    "sentences": direct_sentences,
+                    "jd_score": 1.0,
+                    "required": True,
+                    "rank": 0,
+                })
+    except Exception:
+        pass
 
     return result
+
+
+def link_claims_to_graph(
+    conn: sqlite3.Connection,
+    voyage_api_key: str,
+    model: str = "voyage-3-lite",
+    force: bool = False,
+) -> tuple[int, int]:
+    """Wire existing claims into the sentence_claims and claim_angles graph tables.
+
+    For each claim not yet linked:
+    - Find sentences in the same source paragraph (via source_para_hash → paragraphs → sentences)
+    - Score each sentence against the claim embedding; link any sentence scoring above threshold
+    - Write claim_angles rows from the claim's argument_categories JSON
+
+    Returns (sentence_links_created, angle_links_created).
+    """
+    try:
+        import voyageai  # type: ignore
+        client = voyageai.Client(api_key=voyage_api_key)
+    except (ImportError, Exception):
+        return 0, 0
+
+    if force:
+        claims = conn.execute(
+            "SELECT id, text, embedding, argument_categories, source_para_hash FROM claims"
+        ).fetchall()
+    else:
+        already_linked = {
+            r[0] for r in conn.execute("SELECT DISTINCT claim_id FROM sentence_claims")
+        }
+        claims = [
+            r for r in conn.execute(
+                "SELECT id, text, embedding, argument_categories, source_para_hash FROM claims"
+            ).fetchall()
+            if r["id"] not in already_linked
+        ]
+
+    if not claims:
+        return 0, 0
+
+    sent_links = 0
+    angle_links = 0
+    SCORE_THRESHOLD = 0.5
+
+    for claim in claims:
+        claim_id = claim["id"]
+        claim_text = claim["text"]
+        para_hash = claim["source_para_hash"]
+
+        # --- sentence_claims ---
+        if para_hash:
+            para_row = conn.execute(
+                "SELECT id FROM paragraphs WHERE text_hash = ? LIMIT 1", (para_hash,)
+            ).fetchone()
+            if para_row:
+                para_id = para_row["id"]
+                sent_rows = conn.execute(
+                    """SELECT s.id, s.text, se.vector
+                       FROM sentences s
+                       JOIN sentence_embeddings se ON s.id = se.sentence_id
+                       WHERE s.paragraph_id = ?""",
+                    (para_id,),
+                ).fetchall()
+                if sent_rows:
+                    # Get or compute claim embedding
+                    if claim["embedding"]:
+                        claim_vec = json.loads(claim["embedding"])
+                    else:
+                        try:
+                            res = client.embed([claim_text], model=model, input_type="document")
+                            claim_vec = res.embeddings[0]
+                            conn.execute(
+                                "UPDATE claims SET embedding = ? WHERE id = ?",
+                                (json.dumps(claim_vec).encode(), claim_id),
+                            )
+                        except Exception:
+                            claim_vec = None
+
+                    if claim_vec:
+                        for sent in sent_rows:
+                            score = _cosine(claim_vec, json.loads(sent["vector"]))
+                            if score >= SCORE_THRESHOLD:
+                                conn.execute(
+                                    "INSERT OR IGNORE INTO sentence_claims (sentence_id, claim_id, score) VALUES (?, ?, ?)",
+                                    (sent["id"], claim_id, score),
+                                )
+                                sent_links += 1
+
+        # --- claim_angles via embedding similarity ---
+        # Always classify claims against canonical angles using embeddings — this is more
+        # reliable than parsing argument_categories (which only fires for 6 of 18 angles).
+        # argument_categories is used as a secondary signal when available.
+        claim_vec = None
+        if claim["embedding"]:
+            claim_vec = json.loads(claim["embedding"])
+        elif claim_text:
+            try:
+                res = client.embed([claim_text], model=model, input_type="document")
+                claim_vec = res.embeddings[0]
+                conn.execute(
+                    "UPDATE claims SET embedding = ? WHERE id = ?",
+                    (json.dumps(claim_vec).encode(), claim_id),
+                )
+            except Exception:
+                pass
+
+        if claim_vec:
+            # Get cached angle description embeddings (or embed them now)
+            angle_names = list(CANONICAL_ANGLES.keys())
+            angle_descs = list(CANONICAL_ANGLES.values())
+            try:
+                desc_result = client.embed(angle_descs, model=model, input_type="document")
+                angle_scores = [
+                    (name, _cosine(claim_vec, vec))
+                    for name, vec in zip(angle_names, desc_result.embeddings)
+                ]
+                # Link top 2 angles scoring above 0.35 — ensures every claim is reachable
+                angle_scores.sort(key=lambda x: x[1], reverse=True)
+                for angle_name, score in angle_scores[:2]:
+                    if score >= 0.35:
+                        conn.execute(
+                            "INSERT OR IGNORE INTO claim_angles (claim_id, angle) VALUES (?, ?)",
+                            (claim_id, angle_name),
+                        )
+                        angle_links += 1
+            except Exception:
+                pass
+
+    conn.commit()
+    return sent_links, angle_links
 
 
 def query_similar(
