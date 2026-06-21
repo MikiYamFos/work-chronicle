@@ -1,4 +1,4 @@
-# Handoff — 2026-06-17
+# Handoff — 2026-06-21
 
 ## Branch: `flow_bugs`
 
@@ -12,124 +12,172 @@ for every model call and cannot afford broken runs caused by wrong fixes.
 
 ---
 
-## Fixes this session (2026-06-17)
+## Next major work: Two-stage paragraph-commit generation
+
+### The problem (root cause, not symptom)
+
+The letter generation model currently receives:
+- Full library (30+ paragraphs after prefilter)
+- 37-sentence argument evidence block
+- Bio, notes, JD
+
+With 200K+ tokens of context, the model synthesizes prose from the evidence block rather than lifting
+from the user's library paragraphs. The result: letters that violate rules, ignore the user's voice,
+and don't use the material they wrote. This is structural — no amount of prompting fixes a model that
+has too much latitude and too much context.
+
+### The fix: two-stage approach
+
+**Stage 1 — Paragraph selection** (cheap, small context)
+A separate model call (Haiku) receives the prefiltered library (8-10 paragraphs max) plus the JD and
+argument target. It returns a JSON list of 4-6 paragraph IDs it will use, with a one-sentence rationale
+for each. This commits the model to specific source material before writing begins.
+
+**Stage 2 — Assembly from selected paragraphs only** (smaller generation context)
+The letter writer receives ONLY the selected paragraphs (not the full library), the notes, bio, and JD.
+It writes the letter by assembling and lightly connecting those paragraphs — not synthesizing from
+scratch. The argument evidence block is either removed or reduced to the angle priority list only.
+
+### What this fixes
+- **Voice**: Model writes FROM the user's paragraphs, not over them
+- **Cost**: Generation context drops from ~200K to ~40K tokens
+- **Violations**: Less wandering = fewer invented constructions
+- **Library ignored**: Model commits to specific paragraphs before generation begins
+
+### Key files to touch
+- `coverletter/prompt.py`: New `build_user_message_stage2()` that takes `selected_paragraphs: list[int]`
+  instead of full library; removes or minimizes argument evidence block; emphasizes assembly over synthesis
+- `coverletter/align.py` or new `coverletter/select.py`: Stage 1 selection call — takes prefiltered
+  paragraphs + argument + JD, returns list of paragraph IDs with rationale
+- `coverletter/cli.py`: Wire stage 1 → stage 2 in the generation path; show user which paragraphs were
+  selected (ID + section) before generating so they can override if needed
+- `SYSTEM_PROMPT`: Add explicit "ASSEMBLY MODE" instruction — write FROM the source paragraphs; your
+  job is to connect them, not rewrite them; anchor phrases from source paragraphs must appear verbatim
+
+### Selection prompt design
+The stage 1 selector should receive:
+```
+=== ARGUMENT TARGET ===
+[argument]
+
+=== JD REQUIREMENTS ===
+[top 400 chars of JD]
+
+=== AVAILABLE PARAGRAPHS ===
+[ID] Role / Section [angle=X strength=Y]
+[first 150 chars of text]
+...
+
+Select 4-6 paragraphs that together make this argument. Return JSON:
+{"selected": [{"id": N, "reason": "one sentence"}]}
+```
+
+### What NOT to do
+- Do not use GraphRAG or knowledge graphs — the library is already structured; the problem is
+  generation latitude, not retrieval quality
+- Do not add more rules to SYSTEM_PROMPT — the system prompt is already too long; more rules
+  make the model worse, not better
+- Do not increase prefilter `top_n` — it should be reduced (8-10), not increased
+
+---
+
+## Fixes this session (2026-06-21)
+
+### QA question judge — conceptual questions for competence gaps (`question_judge.py`)
+- `_JUDGE_SYSTEM` COMPETENCE/TOOL GAPS had "What does the Airflow DAG do?" as a GOOD example
+- Model interpreted this as permission to ask "What does the gold layer enforce?" — textbook question
+- Fix: replaced example with three employer-specific examples; added explicit BAD category for
+  conceptual/definitional questions; added test: "does the question reference something specific
+  the person said they built or owned?"
+
+### Coach revision — prose vs instruction separation (`coach.py`)
+- `REWRITE_SYSTEM` instruction "USE IT" caused model to treat user meta-commentary as letter prose
+- "This is a great fit for me" (explaining what to argue) ended up in the letter
+- Fix: added instruction to separate reactions/instructions from actual prose content the user wants
+  in the letter; use only the prose parts
+
+### APPLICATION NOTES repositioned (`prompt.py`)
+- Notes were buried in `library_lines` (the first, large cached block) — the model read the
+  argument target right before the JD and used that for the opener, ignoring the notes
+- Fix: notes removed from `library_lines` and added as a separate block AFTER bio, BEFORE argument
+  target — now in recency position when the opener is written
+
+### Opener instruction rewritten with positive example (`prompt.py`)
+- Opener rule was all negative constraints — model ignored them in favor of argument framing
+- Fix: added explicit "THE OPENER DOES NOT START FROM THE ARGUMENT" carve-out; added positive
+  examples of what a good opener looks like when notes say "I believe in the mission"; added
+  explicit bad examples to reject ("Healthcare data is where wrong numbers...", "That is exactly
+  the kind of environment")
+- BEFORE RETURNING check 4 updated to flag openers that start from the argument
+
+### New hard checks in `_hard_check()` (`verify.py`)
+All of these previously survived generation and were never blocked:
+- **Any sentence starting with "That"**: scans all sentences (not just paragraph openers);
+  "That is exactly the kind of environment" now caught
+- **Fake contrast "not X; it was/is Y"**: regex catches "Correctness was not a goal I aimed for;
+  it was a baseline I enforced" and all variants
+- **Opener first sentence has no "I"**: opener must open from the candidate's perspective; catches
+  "Healthcare data is where wrong numbers have consequences..." style openers
+- **New banned phrases**: "is where wrong numbers", "carries a particular kind of weight",
+  "that is exactly the kind of environment", "at every stop i was the person"
+
+### Seniority gap prompt made legible (`cli.py`)
+- `[W]rite paragraph  [N]ote for regen  [S]kip` was completely opaque — user had no idea what
+  each choice did
+- Fix: added explanation lines before the prompt:
+  - W = open Q&A to write a new paragraph on this topic
+  - N = pass this as framing direction to the letter (no Q&A — uses content already in library)
+  - S = skip
+
+---
+
+## Fixes from 2026-06-17 session (still in effect)
 
 ### Gap loop display overhaul (`cli.py` `_gap_loop`)
-- Library-covered gaps were numbered alongside actionable ones — confusing because typing "all"
-  only processed actionable items but the user didn't know which numbers those were
-- Seniority gaps were routed straight to Q&A ("what experience to draw on?") even when the
-  issue was framing existing content more explicitly, not missing material — the user had no
-  idea what paragraph to write
-- Fix: library-covered gaps shown separately as "Pulled in on regen (N):" bullet list — no
-  numbers, no action needed, completely separate from the actionable section
-- Fix: actionable gaps renumbered starting from 1 so "1,2" maps to exactly what user sees
-- Fix: seniority gaps now offer [W]rite paragraph / [N]ote for regen / [S]kip — "Note" adds
-  the gap to covered_gaps so regen receives it as editorial direction without opening Q&A
+- Library-covered gaps were numbered alongside actionable ones — confusing
+- Seniority gaps routed straight to Q&A even when framing existing content was all that was needed
+- Fix: library-covered gaps shown as "Pulled in on regen (N):" — no numbers, separate section
+- Fix: actionable gaps renumbered from 1
+- Fix: seniority gaps now offer [W]rite / [N]ote / [S]kip
 
 ### Argument generator missing candidate motivation (`align.py`)
-- `generate_argument()` was passing only `profile.as_goals_text()` as the candidate section
-- working_style, values, and differentiators were not included — the model had no access to
-  the candidate's drives, what draws them to certain work, or their perspective on data quality
-- Result: argument always came out as a purely technical credential list with no connection
-  to employer mission, so the letter opener had nothing authentic to open from
+- `generate_argument()` was only passing `profile.as_goals_text()` — no working_style, values, differentiators
+- Result: argument always came out as credential list with no mission connection
 - Fix: candidate section now includes goals + working_style + values + differentiators
-- ARGUMENT_PROMPT updated: candidate clause rules now explicitly instruct the model to read
-  the candidate's drives and working style to find mission overlap, not just list credentials
 
-### ARGUMENT_PROMPT mission connection rule added (`align.py`)
-- Employer clause already had a rule to read the full JD including mission sections (prior session)
-- Candidate clause had no corresponding instruction — model defaulted to listing outputs
-- Fix: added explicit instruction to read working style and values, find overlap with employer
-  mission, and use that overlap as the argument (not a credential list)
+### Opener instruction — previous session
+- Opener rule was stated three times with contradictory language
+- ASSEMBLY RULES STEP A told model to scan JD for gaps — produced apology sentences
+- Fix: single opener rule, SYNTHESIS MODE / LIBRARY MODE explicitly separated
 
-### SYSTEM_PROMPT bio block framing (`prompt.py`)
-- Bio block was labeled "for biographical prompts" — model skipped it when writing letters
-- Fix: relabeled as source of genuine opener connection; explicit instruction to read before
-  writing the opener
-
-### VERIFY_PROMPT opener check (`verify.py`)
-- Added check 1: opener paragraph — flags generic industry statements with no candidate present,
-  or opener containing previous employer names
-
-### Hard check additions (`verify.py`)
+### Hard checks (prior session)
 - Progressive tense regex: catches "have been building", "was building", etc.
-- Auto-fix flow in cli.py: `_hard_check` runs post-generation; if violations found,
-  auto-propose-fix before rendering the letter to user
-
-### Propose-fix output constraint (`cli.py`)
-- Model was leaking chain-of-thought ("Wait. Let me re-read...") into propose-fix output
-- Fix: feedback string now ends with explicit output-only constraint
+- Auto-fix flow: `_hard_check` runs post-generation, auto-proposes fix before rendering
 
 ---
 
-## Prior session fixes (still in effect)
+## Known issues / still to watch
 
-### Revision context truncation (`build.py` ~line 923)
-- `_revise_paragraph` (direct revision bypass) was truncating user messages to 600 chars, total context to 2000
-- Fix: 2000 chars per message, 6000 total
-
-### Judge context — wrong approach then correct fix (`build.py`)
-- Initial (wrong) fix: bumped `[-4000:]` to `[-12000:]` — still the full bloated conversation
-- User identified the real design error: the judge only needs to know what the user actually said
-- Correct fix: `_build_judge_context` now includes ONLY user-role messages that are real answers
-  — skips `[JUDGE:...]` and `[DRAFT JUDGE:...]` injections (code noise, not user content)
-  — skips non-string content (tool results)
-  — no total truncation: user answers are small, the judge gets all of them
-- Both instances of `_build_judge_context` in build.py fixed identically (lines ~569 and ~688)
-
-### Coaching redirect loses prior content (`cli.py` `_coaching_pass`)
-- When user hit [R]edirect, `new_direction` was passed to `rewrite_sentence` with no memory of the
-  original direction — "keep more of my response" had no response to reference
-- Also: redirect used `input()` (single-line) instead of `_read_multiline`
-- Fix: redirect now accumulates `f"Prior direction: {user_input}\n\nPrevious rewrite: {rewritten}\n\nNew direction: {new_direction}"`
-  and updates `user_input` so each subsequent redirect carries the full history
-- Fix: `_read_multiline` instead of `input()` for the redirect prompt
-
-### Coaching constrained to single sentence (`coach.py`)
-- `REWRITE_SYSTEM` said "rewrite a single sentence" — output was always forced to one sentence
-  even when the original content or user's direction spanned multiple sentences
-- `REWRITE_PROMPT` and `REWRITE_DIRECTION` also said "sentence" throughout
-- Fix: all three updated to "passage" — output is however many sentences the content requires
-- `max_tokens` bumped 256 → 512
-
----
-
-## Prior session fixes (still in effect)
-
-### SYSTEM_PROMPT full rewrite (`prompt.py`)
-- Prior prompt had opener rule stated THREE times with contradictory language
-- ASSEMBLY RULES STEP A told model to scan JD for gaps — produced gap apology sentences
-- Rewrite: single opener rule, SYNTHESIS MODE and LIBRARY MODE explicitly separated,
-  "do NOT scan the JD for gaps" in synthesis mode, foundational "ARGUMENT IS THE COMPASS" section
-
-### Gap apology logic (`cli.py`, `prompt.py`)
-- Gaps user skips after seeing them → `skipped_gap_topics` → `unaddressed_gaps` param
-  → model may acknowledge one sentence only
-- Gaps model infers from JD on its own → hard banned
-
-### `_gap_has_library_ref` negation fix (`cli.py`)
-- Was matching `paragraph [N]` inside "paragraph [4] does not cover this"
-- Fix: checks 30 chars before citation for negation words
-
-### Semantic pre-classification removed (`cli.py`)
-- Semantic search was matching Snowflake gap to Redshift/BigQuery paragraph
-- Fix: only explicit alignment citations mark a gap as library-covered
-
-### 500 retry (`build.py`)
-- `_call_model` now retries up to 3 times with exponential backoff on status 500
-
-### Argument prompt (`align.py`)
-- False comparisons banned in thesis
-- Stakes-grounding required in candidate clause
-
-### Coaching loop delete (`cli.py`)
-- Added `[D]elete` option at initial prompt and after seeing a rewrite
-
----
-
-## Still to watch
-- Letter quality with new SYSTEM_PROMPT — needs a clean end-to-end test run
+- **Two-stage generation not yet implemented** — this is the next major work (documented above)
 - `driving_angle` in provenance passes gap kind not canonical angle name
 - `clio outline` → `clio generate --from-outline` path not tested end-to-end
 - Paragraphs without canonical angles: bulk-assign still needed
-- Coaching judge (the sentence coach `analyze_letter`) has separate context — not the same as QA judge
+- The coaching judge (sentence coach) has separate context — not the same as QA judge
+- Verb "actually" in draft paragraphs: sometimes survives because it appears in the user's original
+  text and the draft fidelity coach preserves it; hard check catches it in letters but not in library
+
+---
+
+## Opener rule (canonical, do not regress)
+
+The opener expresses CONNECTION between candidate and employer — not one then the other, but both
+at once. Neither is introduced and then handed off.
+
+**Source**: APPLICATION NOTES if present (in recency position, separate block before argument target).
+If notes say "I believe in the mission" → first sentence uses that language, not paraphrased.
+If no notes: read CANDIDATE GOALS and WORKING STYLE.
+
+**Never**: start from argument framing, stakes of the employer's domain, or "Employer is asking for
+someone who..." The opener starts from the candidate's genuine reason for writing.
+
+**Hard-blocked**: opener first sentence with no "I"; sentences starting with "That"; fake contrast.
