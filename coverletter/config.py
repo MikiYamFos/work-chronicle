@@ -35,6 +35,7 @@ class Config:
     experiences_file: Path = Path("experiences.md")
     custom_angles_file: Path = Path("custom_angles.toml")
     custom_categories_file: Path = Path("custom_categories.toml")
+    voice_file: Path = Path("voice.md")  # positive voice spec — loaded into Q&A and generation prompts
 
 
 def _resolve_paragraphs_files(override: str | None) -> list[Path]:
@@ -149,6 +150,10 @@ def load_config(
     custom_angles_file = _lib_dir / "custom_angles.toml"
     custom_categories_file = _lib_dir / "custom_categories.toml"
 
+    # voice.md — positive writing voice spec, auto-detected alongside paragraphs file
+    voice_env = os.environ.get("VOICE_FILE", "")
+    voice_file = Path(voice_env) if voice_env else _lib_dir / "voice.md"
+
     return Config(
         api_key=api_key,
         voyage_api_key=voyage_api_key,
@@ -165,4 +170,5 @@ def load_config(
         experiences_file=experiences_file,
         custom_angles_file=custom_angles_file,
         custom_categories_file=custom_categories_file,
+        voice_file=voice_file,
     )

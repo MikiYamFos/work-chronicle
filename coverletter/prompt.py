@@ -101,10 +101,17 @@ This is the same paragraph construction used in body paragraphs (ORIENT/CLAIM/ST
 STAKES/CONSEQUENCE/CONCLUSION) — applied to the question of why this candidate is
 writing to this specific employer.
 
-THE OPENER DOES NOT START FROM THE ARGUMENT. The argument is what the letter proves
-over its full length. The opener starts from the candidate's genuine reason for writing
-to this specific company. The argument emerges through the letter. It does not lead
-with itself.
+THE OPENER CONTAINS NO ARGUMENT CLAIMS. The argument is what the letter proves over
+its full length through the body paragraphs. The opener establishes why this candidate
+is writing to this specific employer. It does not preview the argument, introduce
+evidence claims, or announce what the letter will prove.
+
+This is the most common failure mode: the opener starts correctly (personal connection,
+mission alignment) and then adds one or two sentences that are argument claims — "I have
+built platforms where wrong data meant X, Y, Z" or "The ownership instincts I developed
+are exactly what this role requires." Those sentences belong in the first body paragraph,
+not the opener. If a sentence in the opener could be the first sentence of a body
+paragraph, it does not belong in the opener. Move it or cut it.
 
 THE OPENER EXPRESSES THE CONNECTION BETWEEN CANDIDATE AND EMPLOYER — not one and then
 the other, but both at once. The sentences should make it feel like this candidate and
@@ -119,22 +126,12 @@ pivoting to the candidate. The connection is the opening.
 
 SOURCE FOR THE CONNECTION — read this before writing a single word of the opener:
 
-If APPLICATION NOTES are present: they contain the candidate's own words about why they
-are drawn to this role. This is your first-sentence material. Specifically:
-- If the notes mention believing in the mission → the opener must lead with that genuine
-  connection to the mission, in the candidate's own language, not paraphrased into abstraction.
-- If the notes mention a specific strength or fit the candidate wants to emphasize → weave
-  that into the opener as the connection, not as a credential claim.
-- If the notes name a concrete thing they want the letter to argue → use that as the
-  connection that shapes the opener, expressed as a felt relationship to this work.
+If APPLICATION NOTES are present: use the candidate's own language from the notes for the
+first sentence. Do not paraphrase. If the notes mention several things, pick the one that
+most genuinely connects this person to this employer — the others inform tone only.
 
-If no APPLICATION NOTES are present: read CANDIDATE GOALS and WORKING STYLE to find what
-draws this candidate to this kind of work, what environments they thrive in, what missions
-resonate. Use that as the source.
-
-Either way: use the candidate's actual reasons, not the argument framing, to write the
-opener. The opener should feel like it could only have been written by this person about
-this company.
+If no APPLICATION NOTES: read CANDIDATE GOALS and WORKING STYLE for what draws this
+candidate to this kind of work.
 
 WHAT A GOOD OPENER LOOKS LIKE:
 
@@ -161,6 +158,11 @@ WHAT A BAD OPENER LOOKS LIKE (do not write these):
   BAD: "Community Care Physicians is building the data foundation that clinicians will
        make decisions from, and I want to be the person..." — employer described first,
        candidate handed off to
+  BAD (the most common failure): Two sentences of genuine connection followed by two
+       sentences of argument claims — "I know what it means when the administrative
+       layer works. Talkiatry is building that. I have built platforms where wrong data
+       meant X, Y, Z. The ownership instincts I developed are what this role requires."
+       The last two sentences are body paragraph material. Cut them from the opener.
 
 VOICE: Warm, direct, human. The candidate has a specific point of view about why this
 employer and this role, at this moment. That specificity is what makes it warm.
@@ -269,19 +271,26 @@ BANNED WORDS AND STRUCTURES:
 
 ═══ GENERATION MODE ═══
 
-SYNTHESIS MODE — when `=== ARGUMENT EVIDENCE ===` is present in the user message:
-  Write 3-5 body paragraphs synthesizing across multiple experiences. Do NOT write
-  one paragraph per angle block. Mix roles and projects where they reinforce the same
-  argument. The ANGLE PRIORITY list identifies ★ REQUIRED angles — each must have at
-  least one concrete claim in the letter. Do NOT scan the JD for additional gaps or
-  requirements. Write from the evidence provided. The evidence is complete.
+THE PARAGRAPH LIBRARY is your VOICE REFERENCE. It contains the candidate's writing —
+their rhythm, sentence length, register, specific phrasing. Write in this voice.
+Do not write in cleaner or more generic prose than the library. The library is what
+this person sounds like.
+
+SYNTHESIS MODE — when `=== ARGUMENT EVIDENCE ===` is present:
+  The evidence sentences are your FACTUAL CONSTRAINT — what you are allowed to claim.
+  Each sentence was selected because it proves a different facet of the argument from
+  a different experience. Your job: write 3-4 body paragraphs that synthesize across
+  ALL of them into a unified argument. Rules:
+  - Do not write one paragraph per evidence sentence
+  - Every factual claim must trace to one of the evidence sentences or its source paragraph
+  - Use the library paragraphs for voice and phrasing — not as the source of new claims
+  - Do NOT scan the JD for additional gaps or requirements. The evidence is complete.
+  - The argument target is the governing constraint. Every paragraph serves it.
 
 LIBRARY MODE — when no `=== ARGUMENT EVIDENCE ===` is present:
-  Select 3-4 body paragraphs from the library. Priority: paragraphs that directly
-  address the explicitly named tools and requirements in the JD, if the library has
-  coverage. Then fill remaining slots with best argument fit: domain expertise,
-  stakeholder work, quality and governance. Do not include paragraphs labeled
-  [CLOSER ONLY] as first or second body paragraph.
+  Select 3-4 body paragraphs from the library. Prioritize paragraphs that address
+  the explicitly named tools and requirements in the JD. Then fill remaining slots
+  by argument fit. Do not include [CLOSER ONLY] paragraphs as body paragraphs 1 or 2.
 
 Both modes:
   - Ground every claim in source paragraphs — no invention
@@ -296,10 +305,11 @@ Both modes:
    and subordinate clauses.
 2. More than 2 em-dashes in the full letter? Rewrite the weakest ones as proper sentences.
 3. Sentence starting with "That"? Rewrite.
-4. Opener started from the argument, from stakes framing, or from a description of what
-   the employer is looking for? Rewrite: the opener starts from the candidate's genuine
-   reason for writing to this company. If APPLICATION NOTES are present, the first
-   sentence must draw from them. No previous employer names.
+4. Read each sentence of the opener: could this sentence open a body paragraph? If yes,
+   it does not belong in the opener — move it to the first body paragraph or cut it.
+   The opener is CONNECTION ONLY. No argument claims. No evidence sentences. The first
+   sentence must start from the candidate (contains "I") and draw from APPLICATION NOTES
+   if present. No previous employer names.
 5. Any body paragraph opener that is a topic statement or meta-commentary? Replace
    with a concrete claim.
 6. Any false comparison ("not just X but Y", "not X; it is Y")? Remove.
@@ -768,11 +778,12 @@ def build_user_message(
     values: list[str] | None = None,
     goals: list[str] | None = None,
     avoid: list[str] | None = None,
-    angle_evidence: list[dict] | None = None,  # from db.build_angle_evidence — JD-specific, not cached
-    argument: str | None = None,  # provisional argument target — beacon for assembly
-    company_values: str | None = None,  # extracted values/mission from the JD
-    required_coverage: list[str] | None = None,  # gap topics that must be addressed (not pasted verbatim)
-    unaddressed_gaps: list[str] | None = None,   # gaps user saw and chose not to fill — may be acknowledged
+    angle_evidence: list[dict] | None = None,
+    argument: str | None = None,
+    company_values: str | None = None,
+    required_coverage: list[str] | None = None,
+    unaddressed_gaps: list[str] | None = None,
+    voice_spec: str | None = None,  # contents of voice.md — positive writing voice description
 ) -> list[ContentBlock]:
     """Return structured content blocks with the library portion marked as cacheable.
 
@@ -795,28 +806,21 @@ def build_user_message(
             library_lines.append(f"- {item}")
         library_lines.append("")
     library_lines.append("=== YOUR PARAGRAPH LIBRARY ===\n")
+    library_lines.append(
+        "Paragraphs are labeled [VOICE] or [DRAFT].\n"
+        "  [VOICE] — written or hand-approved by the candidate. This is the voice. "
+        "Write in this rhythm, these sentence structures, this register.\n"
+        "  [DRAFT] — machine-generated, not yet reviewed by the candidate. Use only "
+        "for the facts and specifics they contain. Do NOT imitate their phrasing.\n"
+        "\nWhen ARGUMENT EVIDENCE is present below, evidence sentences tell you WHAT "
+        "to argue. [VOICE] paragraphs tell you HOW to sound.\n"
+    )
     if role:
         library_lines.append(f"Target role: {role}\n")
     if company:
         library_lines.append(f"Company: {company}\n")
 
-    if angle_evidence:
-        # Paragraphs arrive pre-sorted by sentence-level relevance score.
-        # Always include openers/closers/frames; add top 8 body paragraphs by score.
-        priority = [
-            p for p in paragraphs
-            if p.meta.get("tone") in ("opener", "closer")
-            or _is_perspective(p)
-            or "why this role" in p.section.lower()
-            or "closing" in p.section.lower()
-        ]
-        priority_set = {id(p) for p in priority}
-        body = [p for p in paragraphs if id(p) not in priority_set]
-        display_paragraphs = priority + body
-    else:
-        display_paragraphs = paragraphs
-
-    for p in display_paragraphs:
+    for p in paragraphs:
         meta_str = ""
         if p.meta:
             meta_str = "  [" + ", ".join(f"{k}={v}" for k, v in p.meta.items()) + "]"
@@ -830,7 +834,10 @@ def build_user_message(
         )
         closer_label = " [CLOSER ONLY]" if _is_closer else ""
         id_label = p.db_id if p.db_id is not None else p.index
-        library_lines.append(f"[{id_label}] {role_label}{p.section}{meta_str}{frame_label}{closer_label}")
+        # layer 0 = approved, layer 2 = seed letter user wrote — genuine voice
+        # layer 1 = LLM-generated refinements not yet reviewed — facts only, not voice
+        voice_label = " [DRAFT — FACTS ONLY]" if p.layer == 1 else " [VOICE]"
+        library_lines.append(f"[{id_label}] {role_label}{p.section}{meta_str}{frame_label}{closer_label}{voice_label}")
         library_lines.append(p.text)
         library_lines.append("")
     if template:
@@ -868,9 +875,10 @@ def build_user_message(
             library_lines.append(f"- {topic}")
         library_lines.append("")
 
-    # Build biographical block separately — positioned after library, before JD.
-    # Recency matters: this is the last thing the model reads before writing.
-    # For biographical prompts this content is REQUIRED, not optional framing.
+    # Block order: bio first (most stable — never changes), library second (stable per candidate).
+    # Both are cached. The bio cache hits on every application; the library cache hits
+    # whenever the paragraph library hasn't changed since last run.
+    # JD-specific content (evidence, argument, notes, JD) is never cached.
     bio_lines: list[str] = []
     has_bio = working_style or values or avoid
     if has_bio:
@@ -893,79 +901,97 @@ def build_user_message(
                 bio_lines.append(f"- {item}")
             bio_lines.append("")
 
-    blocks: list[dict] = [
-        {
-            "type": "text",
-            "text": "\n".join(library_lines),
-            "cache_control": {"type": "ephemeral"},
-        },
-    ]
+    if voice_spec:
+        bio_lines.append("=== WRITING VOICE ===\n")
+        bio_lines.append(voice_spec.strip())
+        bio_lines.append("")
+
+    blocks: list[dict] = []
     if bio_lines:
         blocks.append({
             "type": "text",
             "text": "\n".join(bio_lines),
             "cache_control": {"type": "ephemeral"},
         })
+    blocks.append({
+        "type": "text",
+        "text": "\n".join(library_lines),
+        "cache_control": {"type": "ephemeral"},
+    })
 
     if notes:
         blocks.append({
             "type": "text",
             "text": (
                 "=== APPLICATION NOTES ===\n\n"
-                "The candidate's own words about why they are drawn to this role and what "
-                "to emphasize. THIS IS THE PRIMARY SOURCE FOR THE OPENER. Read before "
-                "writing the first paragraph. These are hard requirements, not suggestions.\n\n"
+                "The candidate's own words. Use the opener-relevant observation here as "
+                "the first sentence of the opener. Use the rest as tone signals.\n\n"
                 + notes.strip()
             ),
         })
 
     # Argument target + evidence — JD-specific, NOT cached.
-    # The argument target is the beacon: what the letter must argue.
-    # The evidence block is the required content for body paragraphs — write FROM it, not verbatim.
     if angle_evidence:
         if argument:
             blocks.append({
                 "type": "text",
-                "text": f"=== ARGUMENT TARGET ===\n{argument}",
+                "text": (
+                    "=== ARGUMENT TARGET — GOVERNING CONSTRAINT ===\n\n"
+                    "Every body paragraph must directly serve this argument. "
+                    "If a paragraph cannot be traced back to this argument, cut it.\n\n"
+                    + argument
+                ),
             })
-        required_angles = [b["angle"] for b in angle_evidence if b.get("required")]
-        supporting_angles = [b["angle"] for b in angle_evidence if not b.get("required")]
 
-        ev_lines = [
-            "=== ARGUMENT EVIDENCE ===",
-            "",
-            "ANGLE PRIORITY — ranked by how explicitly this JD requires each:",
-            f"  REQUIRED (★ must appear in the letter): {', '.join(required_angles) or 'none'}",
-            f"  SUPPORTING (weave in where they strengthen): {', '.join(supporting_angles) or 'none'}",
-            "",
-            "REQUIRED angles MUST each be represented by at least one concrete claim in a body paragraph.",
-            "Do not let any REQUIRED angle go unaddressed. SUPPORTING angles should be woven in where",
-            "they reinforce the argument — do not force them in at the expense of the required ones.",
-            "",
-            "Write 3-5 body paragraphs that SYNTHESIZE ACROSS MULTIPLE EXPERIENCES.",
-            "Do not write one paragraph per angle. Mix roles and projects into unified arguments.",
-            "The CLAIM is the argument. The EVIDENCE sentence anchors it. Write FROM the SOURCE PARAGRAPH.",
-            "Do not invent claims. Every factual claim must trace to a SOURCE PARAGRAPH below.",
-            "",
-        ]
-        for block in angle_evidence:
-            angle_name = block["angle"].upper()
-            required_marker = "★ REQUIRED" if block.get("required") else "supporting"
-            angle_desc = CANONICAL_ANGLES.get(block["angle"], "")
-            short_desc = angle_desc.split(" — ")[0].split(".")[0][:80] if angle_desc else ""
-            ev_lines.append(f"── {angle_name} [{required_marker}] ──")
-            if short_desc:
-                ev_lines.append(f"[{short_desc}]")
-            ev_lines.append("")
-            for entry in block["sentences"]:
+        # Detect format: new flat list (dicts with "argument_score") vs legacy angle blocks
+        is_flat = angle_evidence and "argument_score" in angle_evidence[0]
+
+        if is_flat:
+            ev_lines = [
+                "=== ARGUMENT EVIDENCE ===",
+                "",
+                f"These {len(angle_evidence)} sentences were selected because they best prove the argument above.",
+                "They come from different experiences — draw on all of them.",
+                "Write 3-4 body paragraphs that SYNTHESIZE across multiple experiences.",
+                "Do not write one paragraph per evidence sentence.",
+                "Every factual claim in the letter must trace to one of these sentences or its source paragraph.",
+                "",
+            ]
+            for i, entry in enumerate(angle_evidence, 1):
                 source_label = f"{entry['role']} / {entry['section']}"
-                if entry.get("claim"):
-                    ev_lines.append(f"CLAIM: {entry['claim']}")
-                ev_lines.append(f"EVIDENCE: \"{entry['text']}\"")
-                ev_lines.append(f"SOURCE ({source_label}):")
-                src = entry["source_paragraph"]
-                ev_lines.append(src[:250] + ("..." if len(src) > 250 else ""))
+                angle_tag = f"  [{entry['angle']}]" if entry.get("angle") else ""
+                ev_lines.append(f"[{i}] {source_label}{angle_tag}")
+                ev_lines.append(f'"{entry["text"]}"')
+                if entry.get("context_after"):
+                    ev_lines.append(f'  → "{entry["context_after"]}"')
+                ev_lines.append(f"SOURCE: {entry['source_paragraph'][:250]}{'...' if len(entry['source_paragraph']) > 250 else ''}")
                 ev_lines.append("")
+        else:
+            # Legacy angle-block format (fallback — build_angle_evidence path)
+            required_angles = [b["angle"] for b in angle_evidence if b.get("required")]
+            supporting_angles = [b["angle"] for b in angle_evidence if not b.get("required")]
+            ev_lines = [
+                "=== ARGUMENT EVIDENCE ===",
+                "",
+                f"  REQUIRED (must appear): {', '.join(required_angles) or 'none'}",
+                f"  SUPPORTING: {', '.join(supporting_angles) or 'none'}",
+                "",
+                "Write 3-5 body paragraphs SYNTHESIZING ACROSS MULTIPLE EXPERIENCES.",
+                "Do not write one paragraph per angle.",
+                "",
+            ]
+            for block in angle_evidence:
+                ev_lines.append(f"── {block['angle'].upper()} ──")
+                ev_lines.append("")
+                for entry in block["sentences"]:
+                    source_label = f"{entry['role']} / {entry['section']}"
+                    if entry.get("claim"):
+                        ev_lines.append(f"CLAIM: {entry['claim']}")
+                    ev_lines.append(f'EVIDENCE: "{entry["text"]}"')
+                    ev_lines.append(f"SOURCE ({source_label}):")
+                    ev_lines.append(entry["source_paragraph"][:250])
+                    ev_lines.append("")
+
         blocks.append({
             "type": "text",
             "text": "\n".join(ev_lines),
@@ -979,6 +1005,132 @@ def build_user_message(
             + "\n\nNote: use these values to frame why this candidate is a good fit — "
             "do not echo them back as assertions or summarise them. Show alignment through "
             "what the candidate has actually done."
+        )
+    blocks.append({"type": "text", "text": jd_block})
+    return blocks
+
+
+def build_user_message_stage2(
+    job_description: str,
+    selected_paragraphs: list[Paragraph],
+    role: str | None = None,
+    company: str | None = None,
+    resume: str | None = None,
+    notes: str | None = None,
+    working_style: list[str] | None = None,
+    values: list[str] | None = None,
+    argument: str | None = None,
+    company_values: str | None = None,
+    required_coverage: list[str] | None = None,
+    unaddressed_gaps: list[str] | None = None,
+) -> list[ContentBlock]:
+    """Stage 2 user message: only the selected paragraphs, no evidence block.
+
+    The model receives a small, committed set of source paragraphs and assembles
+    the letter FROM them rather than synthesizing across a large context.
+    """
+    library_lines: list[str] = []
+    if resume:
+        library_lines.append("=== CANDIDATE RESUME (background context — company names, dates, tools, roles) ===\n")
+        library_lines.append(resume.strip())
+        library_lines.append("")
+
+    library_lines.append("=== SELECTED PARAGRAPHS ===\n")
+    library_lines.append(
+        "These paragraphs were selected to make the argument. "
+        "Write FROM them. Key phrases must appear verbatim or near-verbatim.\n"
+    )
+    if role:
+        library_lines.append(f"Target role: {role}\n")
+    if company:
+        library_lines.append(f"Company: {company}\n")
+
+    for p in selected_paragraphs:
+        meta_str = ""
+        if p.meta:
+            meta_str = "  [" + ", ".join(f"{k}={v}" for k, v in p.meta.items()) + "]"
+        role_label = f"{p.role} / " if p.role != role else ""
+        frame_label = " [NARRATIVE FRAME]" if _is_perspective(p) else ""
+        _section_lower = p.section.lower()
+        _is_closer = (
+            p.meta.get("tone") == "closer"
+            or "why this role" in _section_lower
+            or "closing" in _section_lower
+        )
+        closer_label = " [CLOSER ONLY]" if _is_closer else ""
+        id_label = p.db_id if p.db_id is not None else p.index
+        library_lines.append(f"[{id_label}] {role_label}{p.section}{meta_str}{frame_label}{closer_label}")
+        library_lines.append(p.text)
+        library_lines.append("")
+
+    if required_coverage:
+        library_lines.append("=== REQUIRED COVERAGE — these topics must be addressed in the letter ===\n")
+        for topic in required_coverage:
+            library_lines.append(f"- {topic}")
+        library_lines.append("")
+
+    if unaddressed_gaps:
+        library_lines.append("=== UNADDRESSED GAPS — the writer reviewed these and chose not to fill them ===\n")
+        library_lines.append(
+            "You may acknowledge one or two briefly — a single sentence only, woven in, no apology.\n"
+        )
+        for topic in unaddressed_gaps:
+            library_lines.append(f"- {topic}")
+        library_lines.append("")
+
+    blocks: list[dict] = [
+        {
+            "type": "text",
+            "text": "\n".join(library_lines),
+            "cache_control": {"type": "ephemeral"},
+        },
+    ]
+
+    bio_lines: list[str] = []
+    has_bio = working_style or values
+    if has_bio:
+        bio_lines.append("=== CANDIDATE BACKGROUND, VALUES, AND WORKING STYLE ===\n")
+        bio_lines.append(
+            "Read before writing the opener. Source of the genuine connection to this employer.\n"
+        )
+        for item in list(working_style or []) + list(values or []):
+            bio_lines.append(f"- {item}")
+        bio_lines.append("")
+        blocks.append({
+            "type": "text",
+            "text": "\n".join(bio_lines),
+            "cache_control": {"type": "ephemeral"},
+        })
+
+    if notes:
+        blocks.append({
+            "type": "text",
+            "text": (
+                "=== APPLICATION NOTES ===\n\n"
+                "The candidate's own words. Use the opener-relevant observation here as "
+                "the first sentence of the opener. Use the rest as tone signals.\n\n"
+                + notes.strip()
+            ),
+        })
+
+    if argument:
+        blocks.append({
+            "type": "text",
+            "text": (
+                "=== ARGUMENT TARGET — GOVERNING CONSTRAINT ===\n\n"
+                "Every body paragraph must directly serve this argument. "
+                "If a paragraph cannot be traced back to this argument, cut it.\n\n"
+                + argument
+            ),
+        })
+
+    jd_block = "=== JOB DESCRIPTION ===\n" + job_description.strip()
+    if company_values:
+        jd_block += (
+            "\n\n=== COMPANY VALUES / MISSION ===\n"
+            + company_values.strip()
+            + "\n\nNote: show alignment through what the candidate has actually done, "
+            "not by echoing values back."
         )
     blocks.append({"type": "text", "text": jd_block})
     return blocks

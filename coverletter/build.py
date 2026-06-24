@@ -155,18 +155,48 @@ def _classify_gap(gap_description: str) -> str:
     return ""  # general — no gap block, core rules apply
 
 
+def _voice_examples_block(all_paragraphs: "list[Paragraph] | None") -> str:
+    """Return voice-calibration examples from user-written paragraphs (layer != 1).
+
+    Without examples the model defaults to polished LLM prose no matter what the
+    rules say. With 2-3 short excerpts from the user's actual writing it calibrates
+    to the real register before drafting anything.
+    """
+    if not all_paragraphs:
+        return ""
+    import re as _re
+    import random
+    voice_paras = [
+        p for p in all_paragraphs
+        if p.layer != 1
+        and p.meta.get("tone") not in ("opener", "closer")
+        and len(p.text.split()) > 20
+    ]
+    if not voice_paras:
+        return ""
+    samples = voice_paras[:3] if len(voice_paras) <= 3 else random.sample(voice_paras, 3)
+    lines = [
+        "VOICE EXAMPLES — this is what the writer's paragraphs sound like.",
+        "Match this register exactly. Do not write cleaner, more formal, or more polished than these.",
+        "",
+    ]
+    for p in samples:
+        sents = _re.split(r"(?<=[.!?])\s+", p.text.strip())
+        excerpt = " ".join(sents[:3])
+        lines.append(f'"{excerpt}"')
+        lines.append("")
+    return "\n".join(lines)
+
+
 def build_system_prompt(
     use_tools: bool = True,
     gap_description: str = "",
     has_resume: bool = False,
     has_framing: bool = False,
+    voice_paragraphs: "list[Paragraph] | None" = None,
+    voice_spec: str = "",
 ) -> str:
-    """Assemble the BUILD system prompt from only the relevant blocks.
-
-    Core rules always included. Tool block, gap type block, and context blocks
-    injected only when relevant — prevents the model from applying conflicting
-    rules that belong to a different context.
-    """
+    """Assemble the BUILD system prompt from only the relevant blocks."""
     parts = [_BUILD_CORE]
     if use_tools:
         parts.append(_BUILD_TOOLS)
@@ -177,6 +207,14 @@ def build_system_prompt(
         parts.append(_BUILD_CONTEXT_RESUME)
     if has_framing:
         parts.append(_BUILD_CONTEXT_FRAMING)
+    # Voice spec (voice.md) takes precedence — it's a positive written description of the writer's
+    # register. Fall back to sampled examples from the library if voice.md not available.
+    if voice_spec:
+        parts.append(voice_spec)
+    else:
+        voice_block = _voice_examples_block(voice_paragraphs)
+        if voice_block:
+            parts.append(voice_block)
     return "\n\n".join(parts)
 
 
@@ -954,6 +992,9 @@ def revise_draft(
         return current_draft
 
 
+
+
+
 def force_draft(
     history: list[dict],
     api_key: str,
@@ -962,12 +1003,11 @@ def force_draft(
     voyage_api_key: str = "",
     system: str = BUILD_SYSTEM,
 ) -> str:
-    """Force a draft from current history regardless of exchange count.
-
-    If the model returns a question instead of a draft, retries once with a
-    harder instruction before returning whatever it gave us.
-    """
-    forced = history + [{"role": "user", "content": _DRAFT_RULES_REMINDER}]
+    """Force a draft from current history regardless of exchange count."""
+    voice_block = _voice_examples_block(all_paragraphs)
+    reminder = (_voice_examples_block(all_paragraphs) + "\n\n" + _DRAFT_RULES_REMINDER
+                if voice_block else _DRAFT_RULES_REMINDER)
+    forced = history + [{"role": "user", "content": reminder}]
     draft, raw = qa_turn(forced, api_key, model, all_paragraphs, voyage_api_key=voyage_api_key, system=system)
     if draft:
         return draft

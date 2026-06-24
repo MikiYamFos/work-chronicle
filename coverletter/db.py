@@ -389,6 +389,19 @@ CREATE TABLE IF NOT EXISTS claim_angles (
     PRIMARY KEY (claim_id, angle)
 );
 
+-- Memoized derivation results per (JD, library state).
+-- Invalidated automatically when library_checksum changes (new paragraphs added).
+-- Stores the derived argument and the 8 argument-first evidence sentences so every
+-- subsequent run of the same JD skips generate_argument + build_argument_evidence.
+CREATE TABLE IF NOT EXISTS jd_evidence_cache (
+    jd_hash          TEXT NOT NULL,
+    library_checksum TEXT NOT NULL,
+    argument         TEXT NOT NULL,
+    evidence_json    TEXT NOT NULL,
+    created_at       TEXT DEFAULT (datetime('now')),
+    PRIMARY KEY (jd_hash, library_checksum)
+);
+
 CREATE INDEX IF NOT EXISTS idx_para_hash          ON paragraphs(text_hash);
 CREATE INDEX IF NOT EXISTS idx_para_source        ON paragraphs(source_file, active);
 CREATE INDEX IF NOT EXISTS idx_para_type          ON paragraphs(type, active);
@@ -1016,17 +1029,16 @@ def assign_angles_canonical(
     voyage_api_key: str,
     model: str = "voyage-3-lite",
     primary_threshold: float = 0.30,
-    secondary_threshold: float = 0.25,
 ) -> dict[str, int]:
     """Classify every active paragraph against canonical angle descriptions.
 
-    Embeds the 14 angle descriptions, then scores each paragraph embedding
-    against all of them. Assigns:
-      - Primary angle: highest scorer above primary_threshold
-      - Secondary angles: all others above secondary_threshold
+    Assigns exactly ONE primary angle per paragraph — the highest-scoring canonical
+    angle above primary_threshold. No secondary angles are assigned: with 18 angle
+    descriptions, cosine similarities cluster above 0.25 for nearly all paragraphs,
+    making secondary assignments meaningless noise that pollutes angle-based retrieval.
 
-    Human-labeled angles from markdown (angle_auto=0 in paragraph_angles)
-    keep their is_primary=1 status; the classifier adds secondaries around them.
+    Human-labeled angles (angle_auto=0) are preserved — the classifier updates
+    confidence but leaves the human label in place as primary.
 
     Returns {angle: count_assigned}.
     """
@@ -1036,7 +1048,6 @@ def assign_angles_canonical(
     except (ImportError, Exception):
         return {}
 
-    # Embed all canonical angle descriptions
     angle_names = list(CANONICAL_ANGLES.keys())
     angle_descs = [CANONICAL_ANGLES[a] for a in angle_names]
     try:
@@ -1045,7 +1056,6 @@ def assign_angles_canonical(
         return {}
     angle_vecs = {name: vec for name, vec in zip(angle_names, desc_result.embeddings)}
 
-    # Get all active paragraphs with embeddings
     rows = conn.execute(
         """SELECT p.id, e.vector FROM paragraphs p
            JOIN embeddings e ON p.id = e.paragraph_id
@@ -1058,54 +1068,65 @@ def assign_angles_canonical(
         para_id = row["id"]
         para_vec = json.loads(row["vector"])
 
-        scores = {
-            angle: _cosine(para_vec, angle_vecs[angle])
-            for angle in angle_names
-        }
-
+        scores = {angle: _cosine(para_vec, angle_vecs[angle]) for angle in angle_names}
         best_angle = max(scores, key=lambda a: scores[a])
         best_score = scores[best_angle]
 
         if best_score < primary_threshold:
             continue
 
-        # Always assign the canonical primary angle — angle tags in markdown are written
-        # by the seed/extract process, not the user, so there are no human labels to protect.
-        # Clear any existing non-canonical primary flag first so retrieval isn't confused.
-        conn.execute(
-            "UPDATE paragraph_angles SET is_primary=0 WHERE paragraph_id=? AND angle NOT IN (%s)"
-            % ",".join("?" * len(angle_names)),
-            (para_id, *angle_names),
-        )
-        conn.execute(
-            """INSERT INTO paragraph_angles (paragraph_id, angle, is_primary, confidence, angle_auto)
-               VALUES (?, ?, 1, ?, 1)
-               ON CONFLICT(paragraph_id, angle) DO UPDATE SET
-                   is_primary=1, confidence=excluded.confidence, angle_auto=1""",
-            (para_id, best_angle, best_score),
-        )
-        conn.execute(
-            "UPDATE paragraphs SET angle=?, angle_auto=1 WHERE id=?",
-            (best_angle, para_id),
-        )
-        assigned[best_angle] = assigned.get(best_angle, 0) + 1
+        # Check if this paragraph already has a human-labeled primary angle — preserve it.
+        human_primary = conn.execute(
+            "SELECT angle FROM paragraph_angles WHERE paragraph_id=? AND angle_auto=0 AND is_primary=1 LIMIT 1",
+            (para_id,),
+        ).fetchone()
 
-        # Assign secondary angles for all others above secondary threshold
-        for angle, score in scores.items():
-            if angle == best_angle:
-                continue
-            if score >= secondary_threshold:
-                conn.execute(
-                    """INSERT INTO paragraph_angles
-                           (paragraph_id, angle, is_primary, confidence, angle_auto)
-                       VALUES (?, ?, 0, ?, 1)
-                       ON CONFLICT(paragraph_id, angle) DO UPDATE SET
-                           confidence=excluded.confidence, angle_auto=1""",
-                    (para_id, angle, score),
-                )
+        if human_primary:
+            # Human label wins — delete any auto-assigned rows entirely (they're noise).
+            conn.execute(
+                "DELETE FROM paragraph_angles WHERE paragraph_id=? AND angle_auto=1",
+                (para_id,),
+            )
+        else:
+            # Auto-assign the best canonical angle as primary.
+            # Delete all other auto rows first — we want exactly one auto row per paragraph.
+            conn.execute(
+                "DELETE FROM paragraph_angles WHERE paragraph_id=? AND angle_auto=1 AND angle != ?",
+                (para_id, best_angle),
+            )
+            conn.execute(
+                """INSERT INTO paragraph_angles (paragraph_id, angle, is_primary, confidence, angle_auto)
+                   VALUES (?, ?, 1, ?, 1)
+                   ON CONFLICT(paragraph_id, angle) DO UPDATE SET
+                       is_primary=1, confidence=excluded.confidence, angle_auto=1""",
+                (para_id, best_angle, best_score),
+            )
+            conn.execute(
+                "UPDATE paragraphs SET angle=?, angle_auto=1 WHERE id=?",
+                (best_angle, para_id),
+            )
+            assigned[best_angle] = assigned.get(best_angle, 0) + 1
 
     conn.commit()
     return assigned
+
+
+def purge_secondary_angles(conn: sqlite3.Connection) -> int:
+    """Remove auto-assigned non-primary angle rows from paragraph_angles.
+
+    These were created by a previous version of assign_angles_canonical that used
+    a secondary_threshold=0.25, causing nearly every paragraph to be tagged with
+    nearly every angle (18 assignments per paragraph on average). They pollute
+    angle-based retrieval by making every paragraph appear relevant to every angle.
+
+    Safe to run at any time. Human-labeled rows (angle_auto=0) are never touched.
+    Returns number of rows deleted.
+    """
+    cursor = conn.execute(
+        "DELETE FROM paragraph_angles WHERE angle_auto=1 AND is_primary=0"
+    )
+    conn.commit()
+    return cursor.rowcount
 
 
 # ---------------------------------------------------------------------------
@@ -1202,6 +1223,63 @@ def paragraph_hash(text: str) -> str:
     return _hash(text)
 
 
+def get_gap_pinned_hashes(conn: sqlite3.Connection, jd_text: str) -> set[str]:
+    """Return text_hashes of paragraphs written to fill gaps for this specific JD.
+
+    These paragraphs must bypass the relevance filter entirely — they were written
+    for a gap description, not the JD vocabulary, so they rank below generic
+    high-overlap paragraphs despite being exactly what the letter needs.
+    """
+    jd_hash = _hash(jd_text.strip())
+    try:
+        rows = conn.execute(
+            "SELECT para_hash FROM paragraph_gap_provenance WHERE jd_hash = ?",
+            (jd_hash,),
+        ).fetchall()
+        return {row[0] for row in rows}
+    except Exception:
+        return set()
+
+
+def get_library_checksum(conn: sqlite3.Connection) -> str:
+    """Hash of all active paragraph text_hashes — changes when any paragraph is added or removed."""
+    rows = conn.execute(
+        "SELECT text_hash FROM paragraphs WHERE active = 1 ORDER BY text_hash"
+    ).fetchall()
+    combined = ",".join(r[0] for r in rows)
+    return hashlib.sha256(combined.encode()).hexdigest()[:16]
+
+
+def get_cached_evidence(
+    conn: sqlite3.Connection, jd_hash: str, library_checksum: str
+) -> "tuple[str, list] | None":
+    """Return (argument, evidence_list) if a valid cache entry exists, else None."""
+    row = conn.execute(
+        "SELECT argument, evidence_json FROM jd_evidence_cache WHERE jd_hash = ? AND library_checksum = ?",
+        (jd_hash, library_checksum),
+    ).fetchone()
+    if row:
+        return row["argument"], json.loads(row["evidence_json"])
+    return None
+
+
+def store_cached_evidence(
+    conn: sqlite3.Connection,
+    jd_hash: str,
+    library_checksum: str,
+    argument: str,
+    evidence: list,
+) -> None:
+    """Persist derived argument + evidence for this (JD, library) pair."""
+    conn.execute(
+        """INSERT OR REPLACE INTO jd_evidence_cache
+               (jd_hash, library_checksum, argument, evidence_json)
+           VALUES (?, ?, ?, ?)""",
+        (jd_hash, library_checksum, argument, json.dumps(evidence)),
+    )
+    conn.commit()
+
+
 def rank_paragraphs_by_sentences(
     conn: sqlite3.Connection,
     query_text: str,
@@ -1241,6 +1319,144 @@ def rank_paragraphs_by_sentences(
             best[h] = score
 
     return best
+
+
+def build_argument_evidence(
+    conn: sqlite3.Connection,
+    argument: str,
+    jd_text: str,
+    voyage_api_key: str,
+    n_evidence: int = 8,
+    model: str = "voyage-3-lite",
+) -> list[dict]:
+    """Select evidence sentences that together maximize argument power.
+
+    Scoring:
+      combined = 0.70 * argument_sim + 0.30 * jd_sim
+
+    Selection (greedy MMR):
+      After each pick, penalize remaining sentences from the same paragraph
+      and from the same (role, section). This enforces story diversity —
+      the letter argues one thing but proves it from multiple experiences.
+
+    Returns a flat list of up to n_evidence dicts, sorted by argument_score:
+      {text, role, section, angle, argument_score, source_paragraph, context_after}
+    """
+    try:
+        import voyageai  # type: ignore
+        client = voyageai.Client(api_key=voyage_api_key)
+    except (ImportError, Exception):
+        return []
+
+    # Load all active sentences + their embeddings in one query
+    rows = conn.execute(
+        """SELECT s.id, s.text, s.position, s.paragraph_id,
+                  p.role, p.section, p.text AS para_text,
+                  se.vector
+           FROM sentences s
+           JOIN paragraphs p ON s.paragraph_id = p.id
+           JOIN sentence_embeddings se ON s.id = se.sentence_id
+           WHERE p.active = 1
+           ORDER BY s.paragraph_id, s.position"""
+    ).fetchall()
+
+    if not rows:
+        return []
+
+    # Build sentence_id → next sentence text (for context shown to the writer)
+    sid_to_next: dict[int, str] = {}
+    all_rows_by_para: dict[int, list] = {}
+    for row in rows:
+        all_rows_by_para.setdefault(row["paragraph_id"], []).append(row)
+    for pid, para_rows in all_rows_by_para.items():
+        para_rows_sorted = sorted(para_rows, key=lambda r: r["position"])
+        for i, r in enumerate(para_rows_sorted):
+            if i + 1 < len(para_rows_sorted):
+                sid_to_next[r["id"]] = para_rows_sorted[i + 1]["text"]
+
+    # Get primary angle per paragraph
+    para_angle: dict[int, str] = {}
+    for pid_row in conn.execute(
+        "SELECT paragraph_id, angle FROM paragraph_angles WHERE is_primary = 1"
+    ):
+        para_angle[pid_row["paragraph_id"]] = pid_row["angle"]
+
+    # Embed argument and JD
+    try:
+        vecs = client.embed([argument, jd_text], model=model, input_type="query")
+        arg_vec = vecs.embeddings[0]
+        jd_vec = vecs.embeddings[1]
+    except Exception:
+        return []
+
+    # Score every sentence
+    candidates = []
+    for row in rows:
+        vec = json.loads(row["vector"])
+        arg_sim = _cosine(arg_vec, vec)
+        jd_sim = _cosine(jd_vec, vec)
+        combined = 0.70 * arg_sim + 0.30 * jd_sim
+        candidates.append({
+            "id": row["id"],
+            "text": row["text"],
+            "paragraph_id": row["paragraph_id"],
+            "role": row["role"],
+            "section": row["section"],
+            "para_text": row["para_text"],
+            "angle": para_angle.get(row["paragraph_id"], ""),
+            "argument_score": arg_sim,
+            "combined": combined,
+        })
+
+    # Greedy MMR selection with diversity penalties
+    selected: list[dict] = []
+    used_para_ids: set[int] = set()
+    used_experience_keys: dict[tuple, int] = {}  # (role, section) → count
+
+    remaining = sorted(candidates, key=lambda x: -x["combined"])
+
+    while len(selected) < n_evidence and remaining:
+        best = None
+        best_score = -1.0
+
+        for c in remaining:
+            score = c["combined"]
+            # Paragraph already used: strong penalty — same story shouldn't contribute twice
+            if c["paragraph_id"] in used_para_ids:
+                score *= 0.15
+            else:
+                # Same experience (role+section) used once: moderate penalty
+                exp_count = used_experience_keys.get((c["role"], c["section"]), 0)
+                if exp_count >= 2:
+                    score *= 0.20
+                elif exp_count == 1:
+                    score *= 0.60
+
+            if score > best_score:
+                best_score = score
+                best = c
+
+        if best is None:
+            break
+
+        remaining.remove(best)
+        used_para_ids.add(best["paragraph_id"])
+        exp_key = (best["role"], best["section"])
+        used_experience_keys[exp_key] = used_experience_keys.get(exp_key, 0) + 1
+
+        selected.append({
+            "text": best["text"],
+            "role": best["role"],
+            "section": best["section"],
+            "angle": best["angle"],
+            "argument_score": best["argument_score"],
+            "source_paragraph": best["para_text"][:300] + ("..." if len(best["para_text"]) > 300 else ""),
+            "context_after": sid_to_next.get(best["id"], ""),
+        })
+
+    # Sort final selection by argument score so strongest evidence is listed first
+    selected.sort(key=lambda x: -x["argument_score"])
+    return selected
 
 
 def build_angle_evidence(
