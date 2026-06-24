@@ -16,7 +16,8 @@ from coverletter.config import load_config
 from coverletter.llm import stream_cover_letter, stream_revision
 from coverletter.output import _flush_stdin, _prompt_choice, render_letter, save_letter, save_pdf
 from coverletter.parser import Paragraph, available_roles, filter_by_role, load_paragraphs, library_stats
-from coverletter.prompt import SHORT_RESPONSE_SYSTEM, SYSTEM_PROMPT, build_user_message, embed_classify, embed_prefilter, prefilter
+from coverletter.prompt import SHORT_RESPONSE_SYSTEM, SYSTEM_PROMPT, build_user_message, build_user_message_stage2, embed_classify, embed_prefilter, prefilter
+from coverletter.select import select_paragraphs
 from coverletter.resume import load_resume
 from coverletter.verify import verbatim_check, verify_letter
 
@@ -398,12 +399,15 @@ def _gap_loop(
             console.print(f"\n[bold]Gap {i}:[/bold] {gap}")
 
         try:
+            # Derive canonical angle from the gap text — not the loop kind ("JD"/"Seniority").
+            # The loop kind is not a canonical angle name and was never meant to be stored.
+            _gap_angle = _suggest_angle(gap, cfg.voyage_api_key)
             result = _qa_session(
                 gap, all_paragraphs, priority_file, cfg,
                 job_description=job_description, gap_description=gap,
                 voyage_api_key=cfg.voyage_api_key,
                 company=company,
-                driving_angle=kind,
+                driving_angle=_gap_angle,
             )
         except KeyboardInterrupt:
             console.print("\n[dim]Stopped. Any paragraphs saved above are in the library.[/dim]")
@@ -631,6 +635,26 @@ def _run_verification(
         if not line.strip().startswith("COULD NOT FIX:")
     ).strip()
 
+    # Hard-check the proposed fix itself — the fix model can introduce new violations.
+    # If any remain, do one more targeted pass against the remaining violations only.
+    from coverletter.verify import _hard_check
+    residual = _hard_check(proposed_clean)
+    if residual:
+        residual_feedback = (
+            "The proposed revision still has violations. Fix ONLY these — change nothing else:\n\n"
+            + "\n".join(f"  - {r}" for r in residual)
+            + "\n\nOutput ONLY the complete revised letter. No preamble. Starts with 'Dear'."
+        )
+        fix_messages = messages + [
+            {"role": "user", "content": feedback},
+            {"role": "assistant", "content": proposed_clean},
+        ]
+        with Live(Spinner("dots", text="Cleaning residual violations..."), refresh_per_second=10, console=console):
+            parts2: list[str] = []
+            for chunk in stream_revision(SYSTEM_PROMPT, fix_messages, residual_feedback, api_key, model):
+                parts2.append(chunk)
+        proposed_clean = "".join(parts2).strip()
+
     console.print()
     console.print(Rule("[bold]Proposed fix[/bold]", style="yellow"))
     render_letter(proposed_clean)
@@ -644,11 +668,11 @@ def _run_verification(
     console.print()
     _flush_stdin()
     choice = _prompt_choice(
-        "[A]ccept fix  [E]nter revision loop (keep current, fix manually)  [S]kip (keep current, ignore): ",
+        "[A]ccept fix  [E]dit fix further  [S]kip (keep current, ignore): ",
         {"a", "e", "s"},
     )
 
-    if choice == "a":
+    if choice in ("a", "e"):
         messages.append({"role": "user", "content": feedback})
         messages.append({"role": "assistant", "content": proposed_clean})
         # Re-check both after accepting
@@ -667,10 +691,8 @@ def _run_verification(
                 console.print(f"  [dim]• {f}[/dim]")
             for v in recheck_verbatim:
                 console.print(f"  [dim]• Invented: {v.sentence[:100]}[/dim]")
-    elif choice == "e":
-        # E = "I'll handle this myself" — do NOT accept proposed_clean.
-        # Keep the current letter; user addresses issues in the revision loop.
-        console.print("[dim]Current letter kept. Address issues in the revision loop below.[/dim]")
+        if choice == "e":
+            console.print("[dim]Fix accepted as base. Continue editing in the revision loop.[/dim]")
     else:
         console.print("[dim]Skipping fix. Current letter kept.[/dim]")
 
@@ -712,6 +734,9 @@ def main(
     total = sum(sum(s.values()) for s in stats.values())
     role_count = len(stats)
 
+    # Load voice spec once — travels into both Q&A drafts and letter generation
+    _voice_spec = cfg.voice_file.read_text(encoding="utf-8") if cfg.voice_file.exists() else ""
+
     prefilter_label = "semantic (Voyage)" if cfg.voyage_api_key else "keyword"
     files_label = " + ".join(f.name for f in cfg.paragraphs_files)
     console.print(
@@ -737,9 +762,18 @@ def main(
         role = select_role(all_paragraphs)
 
     role_paragraphs = filter_by_role(all_paragraphs, role) if role else all_paragraphs
+
+    # Quarantine layer-1 paragraphs (library_refined.md — LLM-generated Q&A drafts) from
+    # generation. They contribute bad evidence sentences and bad voice reference.
+    # They only appear in `clio edit-library` for review. Once approved into
+    # library_approved.md (layer 0), they enter generation clean.
+    _draft_count = sum(1 for p in role_paragraphs if p.layer == 1)
+    role_paragraphs = [p for p in role_paragraphs if p.layer != 1]
+
     if role:
         role_total = len(role_paragraphs)
-        console.print(f"Role: [bold]{role}[/bold] + General → {role_total} paragraphs available")
+        draft_note = f"  [dim]({_draft_count} draft paragraphs quarantined — run `clio edit-library` to approve)[/dim]" if _draft_count else ""
+        console.print(f"Role: [bold]{role}[/bold] + General → {role_total} paragraphs available{draft_note}")
 
     # Template resolution
     template_text: str | None = None
@@ -766,20 +800,8 @@ def main(
         ).strip()
         notes = raw_notes or None
 
-    if cfg.voyage_api_key:
-        filtered = embed_prefilter(role_paragraphs, job_description, cfg.top_n, cfg.voyage_api_key)
-    else:
-        filtered = prefilter(role_paragraphs, job_description, cfg.top_n)
-
-    # Apply known corrections to paragraph text before sending to the LLM
-    from coverletter.corrections import apply_corrections, load_corrections
-    corrections_file = cfg.paragraphs_files[0].parent / "corrections.md"
-    corrections = load_corrections(corrections_file)
-    corrected = apply_corrections(filtered, corrections)
-    if corrections:
-        n_applied = sum(1 for a, b in zip(filtered, corrected) if a.text != b.text)
-        if n_applied:
-            console.print(f"[dim]Applied {n_applied} correction(s) from corrections.md[/dim]\n")
+    # filtered is set after DB open (with gap pinning). Initialize here in case DB doesn't exist.
+    filtered: list[Paragraph] = []
 
     provisional_argument: str | None = None
 
@@ -791,8 +813,9 @@ def main(
     _conn = None  # DB connection — kept in scope for the post-gap-loop regeneration path
 
     # Always attach stable DB ids so paragraph labels are traceable regardless of Voyage key.
-    from coverletter.db import open_db, db_path, paragraph_hash
+    from coverletter.db import open_db, db_path, paragraph_hash, get_gap_pinned_hashes
     _db = db_path(cfg.paragraphs_files)
+    _gap_pinned_hashes: set[str] = set()
     if _db.exists():
         _conn = open_db(_db)
         hash_to_db_id = {
@@ -802,19 +825,60 @@ def main(
         for p in all_paragraphs:
             p.db_id = hash_to_db_id.get(paragraph_hash(p.text))
 
+        # Pin paragraphs written during a gap loop for this exact JD. They must appear in
+        # the filtered set regardless of vocabulary overlap with the JD text — they were
+        # written to address a gap description, not the JD's exact wording.
+        _gap_pinned_hashes = get_gap_pinned_hashes(_conn, job_description)
+        if _gap_pinned_hashes:
+            _n_pinned = sum(
+                1 for p in role_paragraphs if paragraph_hash(p.text) in _gap_pinned_hashes
+            )
+            if _n_pinned:
+                console.print(f"[dim]Pinning {_n_pinned} gap-written paragraph(s) for this JD[/dim]")
+            # Split role_paragraphs into pinned (bypass filter) + rest (scored normally)
+            _pinned_paras = [p for p in role_paragraphs if paragraph_hash(p.text) in _gap_pinned_hashes]
+            _rest_paras = [p for p in role_paragraphs if paragraph_hash(p.text) not in _gap_pinned_hashes]
+            _rest_budget = max(0, cfg.top_n - len(_pinned_paras))
+            if cfg.voyage_api_key:
+                _rest_filtered = embed_prefilter(_rest_paras, job_description, _rest_budget, cfg.voyage_api_key)
+            else:
+                _rest_filtered = prefilter(_rest_paras, job_description, _rest_budget)
+            filtered = _pinned_paras + _rest_filtered
+        elif cfg.voyage_api_key:
+            filtered = embed_prefilter(role_paragraphs, job_description, cfg.top_n, cfg.voyage_api_key)
+        else:
+            filtered = prefilter(role_paragraphs, job_description, cfg.top_n)
+    else:
+        # No DB — run prefilter directly
+        if cfg.voyage_api_key:
+            filtered = embed_prefilter(role_paragraphs, job_description, cfg.top_n, cfg.voyage_api_key)
+        else:
+            filtered = prefilter(role_paragraphs, job_description, cfg.top_n)
+
+    # Apply known corrections to paragraph text before sending to the LLM
+    from coverletter.corrections import apply_corrections, load_corrections
+    corrections_file = cfg.paragraphs_files[0].parent / "corrections.md"
+    corrections = load_corrections(corrections_file)
+    corrected = apply_corrections(filtered, corrections)
+    if corrections:
+        n_applied = sum(1 for a, b in zip(filtered, corrected) if a.text != b.text)
+        if n_applied:
+            console.print(f"[dim]Applied {n_applied} correction(s) from corrections.md[/dim]\n")
+
     if cfg.voyage_api_key:
         try:
             from coverletter.db import (
                 sync_from_markdown, compute_embeddings,
                 extract_and_store_sentences, compute_sentence_embeddings,
                 assign_angles_canonical,
-                rank_paragraphs_by_sentences, build_angle_evidence,
+                build_angle_evidence, build_argument_evidence,
+                get_library_checksum, get_cached_evidence, store_cached_evidence,
             )
             if _conn is None and _db.exists():
                 _conn = open_db(_db)
             if _conn is not None:
 
-                # Detect paragraphs added since the last sync
+                # Sync any new paragraphs to DB
                 all_hashes = {paragraph_hash(p.text) for p in all_paragraphs}
                 existing_hashes = {
                     row[0] for row in _conn.execute(
@@ -834,68 +898,77 @@ def main(
                         assign_angles_canonical(_conn, cfg.voyage_api_key)
                     console.print(f"[dim]Synced {new_count} new paragraph(s).[/dim]")
 
-                # Re-rank library paragraphs by sentence-level precision
-                sentence_scores = rank_paragraphs_by_sentences(
-                    _conn, job_description, cfg.voyage_api_key
-                )
-                if sentence_scores:
-                    def _sent_score(p: Paragraph) -> float:
-                        return sentence_scores.get(paragraph_hash(p.text), 0.0)
-                    corrected = sorted(corrected, key=_sent_score, reverse=True)
+                # Check derivation cache — argument + evidence are memoized per (JD, library).
+                # Cache invalidates automatically when library_checksum changes.
+                _jd_hash = paragraph_hash(job_description.strip())
+                _lib_checksum = get_library_checksum(_conn)
+                _cached = get_cached_evidence(_conn, _jd_hash, _lib_checksum)
 
-                # Build argument evidence organized by angle (no thesis yet — first pass).
-                angle_evidence = build_angle_evidence(
-                    _conn, job_description, cfg.voyage_api_key,
-                    top_angles=10, sentences_per_angle=3,
-                )
-                if angle_evidence:
-                    for block in angle_evidence:
-                        for entry in block["sentences"]:
-                            evidence_sentences.append(entry["text"])
-                            if entry.get("source_paragraph"):
-                                evidence_sentences.append(entry["source_paragraph"])
+                if _cached and not fast:
+                    provisional_argument, angle_evidence = _cached
+                    evidence_sentences = [e["text"] for e in angle_evidence]
+                    evidence_sentences += [e["source_paragraph"] for e in angle_evidence if e.get("source_paragraph")]
+                    console.print(f"[dim]Cache hit — argument + evidence loaded[/dim]")
+                    console.print(f"[dim]Argument: {provisional_argument}[/dim]")
+                    console.print(f"[dim]Argument evidence: {len(angle_evidence)} sentences (argument-first)[/dim]")
+                else:
+                    # Cache miss — run full derivation pipeline
+                    # Pass 1: broad evidence for argument generation (no argument yet)
+                    _first_pass = build_angle_evidence(
+                        _conn, job_description, cfg.voyage_api_key,
+                        top_angles=10, sentences_per_angle=3,
+                    )
+                    if _first_pass:
+                        for block in _first_pass:
+                            for entry in block["sentences"]:
+                                evidence_sentences.append(entry["text"])
+                                if entry.get("source_paragraph"):
+                                    evidence_sentences.append(entry["source_paragraph"])
+
+                    # Derive argument grounded in what the candidate actually wrote
+                    if not fast:
+                        with Live(Spinner("dots", text="Deriving argument..."), refresh_per_second=10, console=console):
+                            try:
+                                provisional_argument = generate_argument(
+                                    job_description, cfg.api_key, cfg.model,
+                                    profile=profile,
+                                    evidence_sentences=evidence_sentences if evidence_sentences else None,
+                                )
+                            except Exception:
+                                provisional_argument = None
+                        if provisional_argument:
+                            console.print(f"[dim]Argument: {provisional_argument}[/dim]")
+
+                    # Pass 2: argument-first evidence selection — 8 sentences, diverse across experiences
+                    if provisional_argument:
+                        try:
+                            focused = build_argument_evidence(
+                                _conn, provisional_argument, job_description,
+                                cfg.voyage_api_key, n_evidence=8,
+                            )
+                            if focused:
+                                angle_evidence = focused
+                                evidence_sentences = [e["text"] for e in focused]
+                                evidence_sentences += [e["source_paragraph"] for e in focused if e.get("source_paragraph")]
+                                console.print(f"[dim]Argument evidence: {len(angle_evidence)} sentences (argument-first)[/dim]")
+                                # Store for next run
+                                store_cached_evidence(_conn, _jd_hash, _lib_checksum, provisional_argument, focused)
+                        except Exception:
+                            pass
         except Exception:
             pass
 
-    # Derive argument AFTER evidence is built so it can be grounded in what the candidate
-    # actually wrote, not just what the JD asks for.
-    if cfg.voyage_api_key and not fast:
-        with Live(Spinner("dots", text="Deriving argument target..."), refresh_per_second=10, console=console):
+    # Without Voyage key: derive argument from JD + profile alone
+    if not cfg.voyage_api_key and not fast:
+        with Live(Spinner("dots", text="Deriving argument..."), refresh_per_second=10, console=console):
             try:
                 provisional_argument = generate_argument(
-                    job_description, cfg.api_key, cfg.model,
-                    profile=profile,
-                    evidence_sentences=evidence_sentences if evidence_sentences else None,
+                    job_description, cfg.api_key, cfg.model, profile=profile,
                 )
             except Exception:
                 provisional_argument = None
         if provisional_argument:
             console.print(f"[dim]Argument: {provisional_argument}[/dim]")
-
-    # Re-retrieve evidence with argument as focus beacon (if we got one).
-    if cfg.voyage_api_key and provisional_argument and _conn is not None:
-        try:
-            from coverletter.db import build_angle_evidence as _bae
-            focused = _bae(
-                _conn, job_description, cfg.voyage_api_key,
-                top_angles=10, sentences_per_angle=3,
-                thesis_text=provisional_argument,
-            )
-            if focused:
-                angle_evidence = focused
-                evidence_sentences = []
-                for block in angle_evidence:
-                    for entry in block["sentences"]:
-                        evidence_sentences.append(entry["text"])
-                        if entry.get("source_paragraph"):
-                            evidence_sentences.append(entry["source_paragraph"])
-        except Exception:
-            pass
-
-    if angle_evidence:
-        n_sents = sum(len(a["sentences"]) for a in angle_evidence)
-        n_req = sum(1 for a in angle_evidence if a.get("required"))
-        console.print(f"[dim]Argument evidence: {len(angle_evidence)} angles ({n_req} required), {n_sents} sentences[/dim]")
 
     # Ask how the user wants to approach this letter — their answer shapes generation
     # and can be saved to working_style so the model has it in future runs.
@@ -923,13 +996,32 @@ def main(
             })
             console.print(f"[green]Saved to {save_approach}.[/green]")
 
-    user_message = build_user_message(
-        job_description, corrected, role=role, company=company,
-        resume=resume_text or None,
-        template=template_text, notes=notes,
-        angle_evidence=angle_evidence,
-        argument=provisional_argument,
-    )
+    # Build generation prompt.
+    # Full role_paragraphs (not a selected subset) goes in the cached library block —
+    # stable across all applications for this candidate, so the prompt cache hits every time.
+    # The evidence sentences (angle_evidence) tell the model WHAT to argue; the library is
+    # the voice reference it writes FROM.
+    _library_for_prompt = role_paragraphs  # full library, cached block
+
+    if angle_evidence:
+        user_message = build_user_message(
+            job_description, _library_for_prompt, role=role, company=company,
+            resume=resume_text or None,
+            template=template_text, notes=notes,
+            angle_evidence=angle_evidence,
+            argument=provisional_argument,
+            voice_spec=_voice_spec or None,
+        )
+    else:
+        # No evidence (no Voyage key or derivation failed) — model selects from full library.
+        user_message = build_user_message_stage2(
+            job_description, _library_for_prompt, role=role, company=company,
+            resume=resume_text or None,
+            notes=notes,
+            working_style=list(profile.working_style) if profile.working_style else None,
+            values=list(profile.values) if profile.values else None,
+            argument=provisional_argument,
+        )
 
     # Build conversation history — enables revision loop
     # content is a list of blocks (structured) for the first user message to enable caching
@@ -1085,34 +1177,47 @@ def main(
                                 compute_sentence_embeddings(_conn, cfg.voyage_api_key)
                                 assign_angles_canonical(_conn, cfg.voyage_api_key)
                                 link_claims_to_graph(_conn, cfg.voyage_api_key)
-                        # Rebuild angle evidence with newly-added paragraphs
+                        # Rebuild argument evidence — new paragraph may change best evidence set.
+                        # Invalidate cache for this JD so the next run re-derives cleanly.
+                        from coverletter.db import build_argument_evidence as _bae_regen, get_library_checksum as _glc, store_cached_evidence as _sce_regen
+                        _new_lib_checksum = _glc(_conn)
                         with Live(Spinner("dots", text="Rebuilding argument evidence..."), refresh_per_second=10, console=console):
-                            regen_angle_evidence = build_angle_evidence(
-                                _conn, job_description, cfg.voyage_api_key,
-                                top_angles=10, sentences_per_angle=3,
-                                thesis_text=provisional_argument,
-                                required_gap_queries=gap_covered_topics or None,
+                            regen_angle_evidence = _bae_regen(
+                                _conn, provisional_argument or job_description,
+                                job_description, cfg.voyage_api_key,
+                                n_evidence=8,
                             )
                         regen_evidence_sentences = []
                         if regen_angle_evidence:
-                            for block in regen_angle_evidence:
-                                for entry in block["sentences"]:
-                                    regen_evidence_sentences.append(entry["text"])
-                                    if entry.get("source_paragraph"):
-                                        regen_evidence_sentences.append(entry["source_paragraph"])
-                            n_sents = sum(len(a["sentences"]) for a in regen_angle_evidence)
-                            console.print(f"[dim]Argument evidence: {len(regen_angle_evidence)} angles, {n_sents} sentences[/dim]")
+                            regen_evidence_sentences = [e["text"] for e in regen_angle_evidence]
+                            regen_evidence_sentences += [e["source_paragraph"] for e in regen_angle_evidence if e.get("source_paragraph")]
+                            console.print(f"[dim]Argument evidence: {len(regen_angle_evidence)} sentences (argument-first)[/dim]")
+                            if provisional_argument:
+                                _sce_regen(_conn, _jd_hash, _new_lib_checksum, provisional_argument, regen_angle_evidence)
                     except Exception:
                         pass
 
-                user_message = build_user_message(
-                    job_description, corrected, role=role, company=company,
-                    resume=resume_text or None, template=template_text, notes=notes,
-                    angle_evidence=regen_angle_evidence,
-                    argument=provisional_argument,
-                    required_coverage=gap_covered_topics or None,
-                    unaddressed_gaps=skipped_gap_topics or None,
-                )
+                if regen_angle_evidence:
+                    user_message = build_user_message(
+                        job_description, role_paragraphs, role=role, company=company,
+                        resume=resume_text or None, template=template_text, notes=notes,
+                        angle_evidence=regen_angle_evidence,
+                        argument=provisional_argument,
+                        required_coverage=gap_covered_topics or None,
+                        unaddressed_gaps=skipped_gap_topics or None,
+                        voice_spec=_voice_spec or None,
+                    )
+                else:
+                    user_message = build_user_message_stage2(
+                        job_description, role_paragraphs, role=role, company=company,
+                        resume=resume_text or None,
+                        notes=notes,
+                        working_style=list(profile.working_style) if profile.working_style else None,
+                        values=list(profile.values) if profile.values else None,
+                        argument=provisional_argument,
+                        required_coverage=gap_covered_topics or None,
+                        unaddressed_gaps=skipped_gap_topics or None,
+                    )
                 messages = [{"role": "user", "content": user_message}]
                 console.print()
                 with Live(Spinner("dots", text="Regenerating..."), refresh_per_second=10, console=console):
@@ -1318,11 +1423,25 @@ def _qa_session(
     context = _build_initial_context(topic, job_description, gap_description, framing_context=framing_ctx)
     history: list[dict] = [{"role": "user", "content": context}]
 
+    # Build system prompt with voice spec (voice.md) if available, else sampled examples.
+    from coverletter.build import build_system_prompt as _bsp
+    _voice_spec = ""
+    if hasattr(cfg, "voice_file") and cfg.voice_file.exists():
+        _voice_spec = cfg.voice_file.read_text(encoding="utf-8")
+    _qa_system = _bsp(
+        use_tools=True,
+        gap_description=gap_description or "",
+        has_resume=bool(getattr(cfg, "resume_file", None)),
+        has_framing=bool(framing_ctx),
+        voice_paragraphs=all_paragraphs,
+        voice_spec=_voice_spec,
+    )
+
     console.print(f"\n[bold blue]Building:[/bold blue] {topic}")
     console.print("[dim]Answer the questions. 'draft' to draft now. 'done' to exit.[/dim]\n")
 
     with Live(Spinner("dots", text="Thinking..."), refresh_per_second=10, console=console):
-        pending_draft, question = qa_turn(history, cfg.api_key, cfg.model, all_paragraphs, voyage_api_key=voyage_api_key)
+        pending_draft, question = qa_turn(history, cfg.api_key, cfg.model, all_paragraphs, voyage_api_key=voyage_api_key, system=_qa_system)
     console.print(f"[dim]{running_total()}[/dim]")
 
     if question:
@@ -1356,21 +1475,19 @@ def _qa_session(
 
             elif choice == "k":
                 if not pending_draft:
-                    # Draft is empty — force one from history instead of asking questions
                     with Live(Spinner("dots", text="Drafting..."), refresh_per_second=10, console=console):
-                        pending_draft = force_draft(history, cfg.api_key, cfg.model, all_paragraphs, voyage_api_key=voyage_api_key)
+                        pending_draft = force_draft(history, cfg.api_key, cfg.model, all_paragraphs, voyage_api_key=voyage_api_key, system=_qa_system)
                 else:
                     history.append({"role": "assistant", "content": pending_draft})
                     history.append({"role": "user", "content": "Let's keep going — what else do you need?"})
                     pending_draft = None
                     with Live(Spinner("dots", text="Continuing..."), refresh_per_second=10, console=console):
-                        _, question = qa_turn(history, cfg.api_key, cfg.model, all_paragraphs, voyage_api_key=voyage_api_key)
+                        _, question = qa_turn(history, cfg.api_key, cfg.model, all_paragraphs, voyage_api_key=voyage_api_key, system=_qa_system)
                     if question:
                         console.print(f"\n[cyan]{question}[/cyan]\n")
                         history.append({"role": "assistant", "content": question})
 
         else:
-            # Waiting for user answer — do NOT flush here; user may have typed while spinner ran
             user_input = _read_multiline()
 
             if not user_input or user_input.lower() == "done":
@@ -1378,16 +1495,16 @@ def _qa_session(
 
             if user_input.lower() == "draft":
                 with Live(Spinner("dots", text="Drafting..."), refresh_per_second=10, console=console):
-                    pending_draft = force_draft(history, cfg.api_key, cfg.model, all_paragraphs, voyage_api_key=voyage_api_key)
+                    pending_draft = force_draft(history, cfg.api_key, cfg.model, all_paragraphs, voyage_api_key=voyage_api_key, system=_qa_system)
             else:
                 history.append({"role": "user", "content": user_input})
                 exchange_count += 1
                 if exchange_count >= MAX_EXCHANGES:
                     with Live(Spinner("dots", text="Drafting..."), refresh_per_second=10, console=console):
-                        pending_draft = force_draft(history, cfg.api_key, cfg.model, all_paragraphs, voyage_api_key=voyage_api_key)
+                        pending_draft = force_draft(history, cfg.api_key, cfg.model, all_paragraphs, voyage_api_key=voyage_api_key, system=_qa_system)
                 else:
                     with Live(Spinner("dots", text="Thinking..."), refresh_per_second=10, console=console):
-                        pending_draft, question = qa_turn(history, cfg.api_key, cfg.model, all_paragraphs, voyage_api_key=voyage_api_key)
+                        pending_draft, question = qa_turn(history, cfg.api_key, cfg.model, all_paragraphs, voyage_api_key=voyage_api_key, system=_qa_system)
                     if question:
                         console.print(f"\n[cyan]{question}[/cyan]\n")
                         history.append({"role": "assistant", "content": question})
@@ -3381,6 +3498,176 @@ def sync_library(ctx: click.Context, paragraphs: str | None, embed: bool, angles
     table.add_row("[dim]Missing angle[/dim]",      str(s["missing_angle"]))
     table.add_row("[dim]DB[/dim]",                 str(path))
     console.print(table)
+
+
+@main.command("fix-angles")
+@click.option("--paragraphs", "-p", default=None, help="Path to paragraphs MD file")
+@click.pass_context
+def fix_angles_command(ctx: click.Context, paragraphs: str | None) -> None:
+    """Fix paragraph_angles table integrity: purge secondary auto-assignments and re-assign primaries.
+
+    Previous versions of assign_angles_canonical used a secondary_threshold=0.25, causing
+    almost every paragraph to receive almost every angle (avg 15 assignments per paragraph).
+    These secondary rows make every paragraph appear relevant to every angle and pollute
+    angle-based retrieval in build_angle_evidence.
+
+    This command:
+      1. Deletes all auto-assigned non-primary angle rows (angle_auto=1 AND is_primary=0)
+      2. Re-runs primary angle assignment to ensure each paragraph has exactly one primary
+      3. Reports before/after counts
+
+    Human-labeled angles (angle_auto=0) are never touched.
+    """
+    from coverletter.db import (
+        open_db, db_path, assign_angles_canonical, purge_secondary_angles,
+    )
+    paragraphs = paragraphs or (ctx.obj or {}).get("paragraphs")
+    cfg = load_config(paragraphs)
+    path = db_path(cfg.paragraphs_files)
+    if not path.exists():
+        console.print("[red]No DB found. Run `clio sync` first.[/red]")
+        return
+
+    conn = open_db(path)
+    before = conn.execute("SELECT COUNT(*) FROM paragraph_angles").fetchone()[0]
+    before_primary = conn.execute("SELECT COUNT(*) FROM paragraph_angles WHERE is_primary=1").fetchone()[0]
+    console.print(f"Before: {before} total angle rows ({before_primary} primary)")
+
+    deleted = purge_secondary_angles(conn)
+    console.print(f"Deleted {deleted} secondary auto-assigned rows")
+
+    if cfg.voyage_api_key:
+        with Live(Spinner("dots", text="Re-assigning primary angles..."), refresh_per_second=10, console=console):
+            assigned = assign_angles_canonical(conn, cfg.voyage_api_key)
+        console.print(f"Re-assigned {sum(assigned.values())} primary angles")
+    else:
+        console.print("[yellow]No VOYAGE_API_KEY — skipping primary re-assignment.[/yellow]")
+
+    after = conn.execute("SELECT COUNT(*) FROM paragraph_angles").fetchone()[0]
+    after_primary = conn.execute("SELECT COUNT(*) FROM paragraph_angles WHERE is_primary=1").fetchone()[0]
+    console.print(f"After:  {after} total angle rows ({after_primary} primary)")
+
+    # Show distribution of primary angles
+    dist = conn.execute(
+        "SELECT angle, COUNT(*) as n FROM paragraph_angles WHERE is_primary=1 GROUP BY angle ORDER BY n DESC"
+    ).fetchall()
+    if dist:
+        console.print("\n[bold]Primary angle distribution:[/bold]")
+        for r in dist:
+            console.print(f"  [dim]{r['angle']}[/dim]: {r['n']}")
+
+
+@main.command("audit-library")
+@click.option("--paragraphs", "-p", default=None, help="Path to paragraphs MD file")
+@click.option("--fix", is_flag=True, default=False, help="Auto-fix violations using the model")
+@click.pass_context
+def audit_library(ctx: click.Context, paragraphs: str | None, fix: bool) -> None:
+    """Scan every library paragraph for rule violations.
+
+    Runs the same hard checks used on generated letters — banned phrases, progressive
+    tense, fake contrast, 'That' openers — against the library paragraphs themselves.
+    Paragraphs that fail are listed with the specific violation. Use --fix to send each
+    violating paragraph to the model for correction.
+
+    Common source of violations: paragraphs saved from bad generated letters before the
+    rules were enforced at library-save time.
+    """
+    from coverletter.verify import _hard_check, _BANNED_PHRASES, _FAKE_CONTRAST
+    import re
+
+    paragraphs = paragraphs or (ctx.obj or {}).get("paragraphs")
+    cfg = load_config(paragraphs)
+    all_paragraphs = load_paragraphs(cfg.paragraphs_files)
+
+    def _check_paragraph(text: str) -> list[str]:
+        """Run hard checks on a single paragraph text (not a full letter)."""
+        failures = []
+        lower = text.lower()
+        for phrase in _BANNED_PHRASES:
+            if phrase in lower:
+                for sent in re.split(r"(?<=[.!?])\s+", text):
+                    if phrase in sent.lower():
+                        failures.append(f"banned phrase '{phrase}': {sent.strip()[:100]}")
+                        break
+        _PROGRESSIVE = re.compile(
+            r"\b(have|has|had|was|were)\s+been\s+\w+ing\b|\b(was|were)\s+\w+ing\b",
+            re.IGNORECASE,
+        )
+        for sent in re.split(r"(?<=[.!?])\s+", text):
+            if _PROGRESSIVE.search(sent):
+                failures.append(f"progressive tense: {sent.strip()[:100]}")
+        for sent in re.split(r"(?<=[.!?])\s+", text):
+            sent = sent.strip()
+            if re.match(r"^that\b", sent, re.IGNORECASE):
+                failures.append(f"sentence starts with 'That': {sent[:80]}")
+        if _FAKE_CONTRAST.search(text):
+            for sent in re.split(r"(?<=[.!?])\s+", text):
+                if _FAKE_CONTRAST.search(sent):
+                    failures.append(f"fake contrast: {sent.strip()[:100]}")
+        return failures
+
+    violations: list[tuple] = []  # (paragraph, [failures])
+    clean = 0
+    for p in all_paragraphs:
+        fails = _check_paragraph(p.text)
+        if fails:
+            violations.append((p, fails))
+        else:
+            clean += 1
+
+    console.print(f"\n[bold]Library audit:[/bold] {len(all_paragraphs)} paragraphs")
+    console.print(f"  [green]{clean} clean[/green]   [red]{len(violations)} with violations[/red]\n")
+
+    if not violations:
+        console.print("[green]All paragraphs pass.[/green]")
+        return
+
+    for p, fails in violations:
+        role_label = f"{p.role} / " if p.role else ""
+        console.print(f"[bold red]── {role_label}{p.section} ──[/bold red]")
+        for f in fails:
+            console.print(f"  [red]✗[/red] {f}")
+        console.print(f"  [dim]{p.text[:120]}...[/dim]" if len(p.text) > 120 else f"  [dim]{p.text}[/dim]")
+        console.print()
+
+    if fix:
+        from coverletter.provider import get_provider
+        _FIX_SYSTEM = (
+            "You are editing a paragraph to fix rule violations. "
+            "Return ONLY the corrected paragraph text. No preamble.\n\n"
+            "Rules:\n"
+            "- No progressive tense: 'have been building', 'was building', 'were running' → rewrite as simple past or present\n"
+            "- No em-dash (—)\n"
+            "- No sentence starting with 'That'\n"
+            "- No fake contrast ('not X; it was Y', 'not X — it is Y')\n"
+            "- No banned phrases: actually, not just, not only, not simply, this matters because, "
+            "career-long pattern, I have been the, I combine, I am strongest in\n"
+            "Preserve the meaning, specific facts, and the writer's voice exactly. Fix only the violations."
+        )
+        provider = get_provider(cfg.model, cfg.api_key)
+        fixed_count = 0
+        for p, fails in violations:
+            role_label = f"{p.role} / " if p.role else ""
+            console.print(f"[bold]Fixing: {role_label}{p.section}[/bold]")
+            violation_list = "\n".join(f"- {f}" for f in fails)
+            prompt = f"Violations to fix:\n{violation_list}\n\nParagraph:\n{p.text}"
+            try:
+                fixed = provider.complete(_FIX_SYSTEM, prompt, max_tokens=600, temperature=0)
+                remaining = _check_paragraph(fixed)
+                if remaining:
+                    console.print(f"  [yellow]Still has violations after fix:[/yellow]")
+                    for r in remaining:
+                        console.print(f"    [yellow]✗ {r}[/yellow]")
+                    console.print(f"  [dim]{fixed[:200]}[/dim]")
+                else:
+                    console.print(f"  [green]Fixed — paste this replacement into your paragraphs file:[/green]")
+                    console.print(fixed)
+                    fixed_count += 1
+            except Exception as e:
+                console.print(f"  [red]Fix failed: {e}[/red]")
+            console.print()
+        console.print(f"[bold]{fixed_count}/{len(violations)} paragraphs fixed cleanly.[/bold]")
+        console.print("[dim]Copy fixed paragraphs into your .md file, then run `clio sync` to rebuild embeddings.[/dim]")
 
 
 @main.command("claims")

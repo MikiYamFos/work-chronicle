@@ -271,12 +271,30 @@ def _hard_check(letter_text: str) -> list[str]:
     # Skip salutation (starts with "Dear")
     opener_para = next((p for p in paras if not p.lower().startswith("dear")), None)
     if opener_para:
-        first_sent = re.split(r"(?<=[.!?])\s+", opener_para)[0].strip()
+        opener_sents = re.split(r"(?<=[.!?])\s+", opener_para)
+        first_sent = opener_sents[0].strip()
         if not re.search(r'\bI\b', first_sent):
             failures.append(
                 f"Opener first sentence has no 'I' — opener must open from the candidate's perspective, "
                 f"not from a description of the employer's domain or stakes: {first_sent[:120]}"
             )
+
+        # Opener argument-claim leak: sentences 3+ that read as evidence claims, not connection.
+        # Pattern: "I have [past-tense verb]ed [specific things]" or "The [noun phrase] I [verb]ed are [thesis]"
+        # These belong in body paragraphs. They signal the model front-loaded the argument.
+        _CLAIM_OPENERS = re.compile(
+            r"^(I have built|I have spent|I have owned|I have worked|I have delivered|"
+            r"I have designed|I have written|I have run|I have managed|"
+            r"The \w+ (instincts?|standards?|skills?|experience|expertise) I)",
+            re.IGNORECASE,
+        )
+        for sent in opener_sents[2:]:  # only check sentence 3 onward
+            sent = sent.strip()
+            if _CLAIM_OPENERS.match(sent):
+                failures.append(
+                    f"Opener contains argument claim (sentence belongs in first body paragraph, "
+                    f"not the opener): {sent[:120]}"
+                )
 
     return failures
 

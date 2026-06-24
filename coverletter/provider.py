@@ -136,18 +136,30 @@ class AnthropicProvider(Provider):
         if supports_temperature(self.model):
             kwargs["temperature"] = temperature
 
-        with client.messages.stream(**kwargs) as s:
-            for text in s.text_stream:
-                yield text
-            final = s.get_final_message()
-            usage = final.usage
-            record(
-                self.model,
-                usage.input_tokens,
-                usage.output_tokens,
-                cache_creation_tokens=getattr(usage, "cache_creation_input_tokens", 0) or 0,
-                cache_read_tokens=getattr(usage, "cache_read_input_tokens", 0) or 0,
-            )
+        import time
+        last_exc = None
+        for attempt in range(3):
+            try:
+                with client.messages.stream(**kwargs) as s:
+                    for text in s.text_stream:
+                        yield text
+                    final = s.get_final_message()
+                    usage = final.usage
+                    record(
+                        self.model,
+                        usage.input_tokens,
+                        usage.output_tokens,
+                        cache_creation_tokens=getattr(usage, "cache_creation_input_tokens", 0) or 0,
+                        cache_read_tokens=getattr(usage, "cache_read_input_tokens", 0) or 0,
+                    )
+                return
+            except anthropic.APIStatusError as e:
+                if e.status_code in (500, 529) and attempt < 2:
+                    last_exc = e
+                    time.sleep(3 * (attempt + 1))
+                    continue
+                raise
+        raise last_exc
 
 
 # ---------------------------------------------------------------------------
